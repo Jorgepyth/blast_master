@@ -1,6 +1,7 @@
 from enum import Enum
 from pydantic import BaseModel, model_validator
 from datetime import datetime
+from typing import Optional
 
 class StructuralBias(str, Enum):
     BOS = "BOS"
@@ -42,6 +43,11 @@ class EfficiencyAudit(BaseModel):
 
     specific_bias_compliance: str = ""
     false_regime_rate: str = ""
+
+    # Text blocks
+    notes: Optional[str] = None
+    lesson_learned: Optional[str] = None
+    edge_description: Optional[str] = None
 
     @model_validator(mode='after')
     def calculate_audit_metrics(self) -> 'EfficiencyAudit':

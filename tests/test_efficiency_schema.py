@@ -3,9 +3,9 @@ from cli.schemas.efficiency import EfficiencyAnalysis, Direction, Strength
 
 def test_perfect_long_setup():
     analysis = EfficiencyAnalysis(
-        P0_direction=Direction.LONG, P0_strength=Strength.STRONG,
-        P2_direction=Direction.LONG, P2_strength=Strength.STRONG,
-        P3_direction=Direction.LONG, P3_strength=Strength.STRONG,
+        p0_direction=Direction.LONG, p0_strength=Strength.STRONG,
+        p2_direction=Direction.LONG, p2_strength=Strength.STRONG,
+        p3_direction=Direction.LONG, p3_strength=Strength.STRONG,
     )
     assert analysis.Calc_edge == 3.0
     assert analysis.Market_Bias == "Bullish"
@@ -15,9 +15,9 @@ def test_perfect_long_setup():
 
 def test_purely_neutral_setup():
     analysis = EfficiencyAnalysis(
-        P0_direction=Direction.NEUTRAL, P0_strength=Strength.MID,
-        P2_direction=Direction.NEUTRAL, P2_strength=Strength.MID,
-        P3_direction=Direction.NEUTRAL, P3_strength=Strength.MID,
+        p0_direction=Direction.NEUTRAL, p0_strength=Strength.MID,
+        p2_direction=Direction.NEUTRAL, p2_strength=Strength.MID,
+        p3_direction=Direction.NEUTRAL, p3_strength=Strength.MID,
     )
     assert analysis.Calc_edge == 0.0
     assert analysis.Market_Bias == "Choppy / Neutral"
