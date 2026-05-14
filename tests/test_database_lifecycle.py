@@ -28,7 +28,11 @@ def test_database_lifecycle(test_engine):
         "p3_direction": "Long", "p3_strength": "Strong",
         "Calc_edge": 3.0, "Market_Bias": "Bullish"
     }
-    create_record(record_id, asset, efficiency_data, engine=test_engine)
+    create_record(record_id, payload_data={
+        "asset": asset,
+        "efficiency": efficiency_data,
+        "efficiency_layers": []
+    }, engine=test_engine)
     
     with Session(test_engine) as session:
         record = session.get(EfficiencyDepartment, record_id)
@@ -36,7 +40,7 @@ def test_database_lifecycle(test_engine):
         assert record.asset == "BTC/USDT"
         assert record.calc_edge == 3.0
     
-    # 2. Update with Tactical data and transition to OPEN
+    # 2. Update with Tactical data and transition to PENDING_AUDITS
     tactical_data = {
         "p4_direction": "Long", "p4_strength": "Strong",
         "p1_direction": "Long", "p1_strength": "Strong",
@@ -48,17 +52,32 @@ def test_database_lifecycle(test_engine):
         "long_prob": 0.85, "short_prob": 0.15, "no_trade_prob": 0.0,
         "trade_status": "Trade_taken_good_execution"
     }
-    update_record_state(record_id, LifecycleState.OPEN, tactical=tactical_data, engine=test_engine)
+    update_record_state(record_id, LifecycleState.PENDING_AUDITS, append_payload={
+        "tactical": tactical_data,
+        "tactical_layers": []
+    }, engine=test_engine)
     
     with Session(test_engine) as session:
         record = session.get(EfficiencyDepartment, record_id)
-        assert record.state == LifecycleState.OPEN.value
+        assert record.state == LifecycleState.PENDING_AUDITS.value
         assert record.tactical_department is not None
         assert record.tactical_department.calc_edge == 4.0
     
-    # 3. Update with Audit data and transition to READY_FOR_NOTION
+    # 3. Update with Efficiency Audit data and remain in PENDING_AUDITS
+    audit_eff_data = {"bias_a": "Bullish"}
+    update_record_state(record_id, LifecycleState.PENDING_AUDITS, append_payload={
+        "audit_efficiency": audit_eff_data
+    }, engine=test_engine)
+    
+    with Session(test_engine) as session:
+        record = session.get(EfficiencyDepartment, record_id)
+        assert record.state == LifecycleState.PENDING_AUDITS.value
+        
+    # 4. Update with Tactical Audit data and transition to READY_FOR_NOTION
     audit_data = {"compliance": "Edge_valid"}
-    update_record_state(record_id, LifecycleState.READY_FOR_NOTION, audit_tactical=audit_data, engine=test_engine)
+    update_record_state(record_id, LifecycleState.READY_FOR_NOTION, append_payload={
+        "audit_tactical": audit_data
+    }, engine=test_engine)
     
     with Session(test_engine) as session:
         record = session.get(EfficiencyDepartment, record_id)
@@ -66,7 +85,7 @@ def test_database_lifecycle(test_engine):
         assert record.tactical_audit is not None
         assert record.tactical_audit.compliance == "Edge_valid"
 
-    # 4. Verify get_records_by_state formatting matches payload
+    # 5. Verify get_records_by_state formatting matches payload
     records = get_records_by_state(LifecycleState.READY_FOR_NOTION, engine=test_engine)
     assert len(records) == 1
     assert records[0]["payload"]["asset"] == "BTC/USDT"

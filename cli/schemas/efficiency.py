@@ -73,9 +73,9 @@ class EfficiencyAnalysis(BaseModel):
         else:
             self.Market_Bias = "Choppy / Neutral"
             
-        self.Long_prob = max(0.15, min(0.85, self.Calc_edge * 0.2833))
-        self.Short_prob = max(0.15, min(0.85, -self.Calc_edge * 0.2833))
-        self.No_trade_prob = 1.0 - self.Long_prob - self.Short_prob
+        self.Long_prob = round(max(0.15, min(0.85, self.Calc_edge * 0.2833)), 3)
+        self.Short_prob = round(max(0.15, min(0.85, -self.Calc_edge * 0.2833)), 3)
+        self.No_trade_prob = round(1.0 - self.Long_prob - self.Short_prob, 3)
         
         return self
 

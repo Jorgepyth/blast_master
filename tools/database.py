@@ -11,8 +11,7 @@ class LifecycleState(str, Enum):
     ANALYSIS = "ANALYSIS"
     PENDING_TACTICS = "PENDING_TACTICS"
     OPEN = "OPEN"
-    CLOSED_PENDING = "CLOSED_PENDING"
-    PENDING_EFFICIENCY_AUDIT = "PENDING_EFFICIENCY_AUDIT"
+    PENDING_AUDITS = "PENDING_AUDITS"
     READY_FOR_NOTION = "READY_FOR_NOTION"
     COMPLETED = "COMPLETED"
     SYNCED = "SYNCED"
@@ -63,8 +62,8 @@ class EfficiencyDepartment(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     state: Mapped[str] = mapped_column(String, default=LifecycleState.ANALYSIS.value)
     asset: Mapped[str] = mapped_column(String)
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
-    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.UTC))
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.UTC), onupdate=lambda: datetime.datetime.now(datetime.UTC))
     
     market_bias: Mapped[str] = mapped_column(String)
     calc_edge: Mapped[float] = mapped_column(Float)
@@ -89,8 +88,8 @@ class EfficiencyAudit(Base):
     resolution_time: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
     
     lesson_learned: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
-    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.UTC))
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.UTC), onupdate=lambda: datetime.datetime.now(datetime.UTC))
 
     efficiency_department: Mapped["EfficiencyDepartment"] = relationship(back_populates="efficiency_audit")
 
@@ -111,8 +110,8 @@ class TacticalDepartment(Base):
     short_prob: Mapped[float] = mapped_column(Float)
     no_trade_prob: Mapped[float] = mapped_column(Float)
     
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
-    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.UTC))
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.UTC), onupdate=lambda: datetime.datetime.now(datetime.UTC))
 
     efficiency_department: Mapped["EfficiencyDepartment"] = relationship(back_populates="tactical_department")
 
@@ -146,18 +145,18 @@ class TacticalAudit(Base):
     behavioral_errors: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     cognitive_patterns: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
 
-    # Financial and execution metrics (Atomic precision)
-    risk_usd: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
-    size: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    # Financial and execution metrics
+    risk_usd: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    size: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     r_r: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    entry_price: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
-    closing_price: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
-    take_profit: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
-    stop_loss: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
-    pnl_and_cost: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
-    mae_adverse: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
-    captured_mae: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
-    mfe_favorable: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    entry_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    closing_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    take_profit: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    stop_loss: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    pnl_and_cost: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    mae_adverse: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    captured_mae: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    mfe_favorable: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     
     # Text blocks
     lesson_learned: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -172,6 +171,13 @@ def init_db(db_url: str = "sqlite:///.data/journal.db"):
         os.makedirs(os.path.dirname(db_url.split("sqlite:///")[1]), exist_ok=True)
     engine_default = create_engine(db_url)
     Base.metadata.create_all(engine_default)
+    
+    # Safe migration for legacy state
+    from sqlalchemy import text
+    with Session(engine_default) as session:
+        session.execute(text("UPDATE efficiency_department SET state = 'PENDING_TACTICAL_AUDIT' WHERE state = 'CLOSED_PENDING'"))
+        session.commit()
+        
     return engine_default
 
 def get_assets(engine=None) -> List[str]:
@@ -179,12 +185,17 @@ def get_assets(engine=None) -> List[str]:
     with Session(eng) as session:
         return [a.asset_name for a in session.scalars(select(AssetConfig)).all()]
 
-def add_asset(asset_name: str, engine=None) -> None:
+def add_asset(asset_name: str, category: str = "Crypto", code: str = None, display_name: str = None, engine=None) -> None:
+    if code is None:
+        code = asset_name
+    if display_name is None:
+        display_name = asset_name
+
     eng = engine or engine_default
     with Session(eng) as session:
         existing = session.scalar(select(AssetConfig).where(AssetConfig.asset_name == asset_name))
         if not existing:
-            new_asset = AssetConfig(asset_name=asset_name)
+            new_asset = AssetConfig(asset_name=asset_name, category=category, code=code, display_name=display_name)
             session.add(new_asset)
             session.commit()
 
@@ -197,132 +208,150 @@ def _to_primitives(model: Any) -> dict:
         return {}
     return {k: v.value if hasattr(v, 'value') else v for k, v in d.items()}
 
-def create_record(record_id: str, asset: str, efficiency_data: Any, engine=None) -> str:
+def create_record(record_id: str, payload_data: dict, engine=None) -> str:
+    from rich.console import Console
+    console = Console()
     eng = engine or engine_default
     with Session(eng) as session:
-        d = _to_primitives(efficiency_data)
-        
-        new_record = EfficiencyDepartment(
-            id=record_id,
-            state=LifecycleState.ANALYSIS.value,
-            asset=asset,
-            market_bias=d.get('Market_Bias'),
-            calc_edge=d.get('Calc_edge')
-        )
-        session.add(new_record)
-        
-        if hasattr(efficiency_data, 'to_db_layers'):
-            for layer_input in efficiency_data.to_db_layers():
+        try:
+            asset = payload_data.get("asset")
+            d = payload_data.get("efficiency", {})
+            
+            new_record = EfficiencyDepartment(
+                id=record_id,
+                state=LifecycleState.ANALYSIS.value,
+                asset=asset,
+                market_bias=d.get('Market_Bias'),
+                calc_edge=d.get('Calc_edge')
+            )
+            session.add(new_record)
+            
+            layers = payload_data.get("efficiency_layers", [])
+            for layer_dict in layers:
                 al = AnalysisLayer(
                     trade_id=record_id,
                     department='EFFICIENCY',
-                    layer_name=layer_input.layer_name,
-                    direction=layer_input.direction.value if hasattr(layer_input.direction, 'value') else layer_input.direction,
-                    strength=layer_input.strength.value if hasattr(layer_input.strength, 'value') else layer_input.strength,
-                    score=layer_input.score,
-                    thesis=layer_input.thesis
+                    layer_name=layer_dict.get('layer_name'),
+                    direction=layer_dict.get('direction'),
+                    strength=layer_dict.get('strength'),
+                    score=layer_dict.get('score'),
+                    thesis=layer_dict.get('thesis')
                 )
                 session.add(al)
 
-        session.commit()
-        return record_id
-
-def update_record_state(record_id: str, new_state: LifecycleState, engine=None, **kwargs):
-    eng = engine or engine_default
-    with Session(eng) as session:
-        stmt = select(EfficiencyDepartment).where(EfficiencyDepartment.id == record_id)
-        record = session.scalars(stmt).first()
-        if not record:
+            session.commit()
+            return record_id
+        except Exception as e:
+            session.rollback()
+            console.print(f"[bold red]Database Error in create_record: {e}[/bold red]")
             return False
-            
-        record.state = new_state.value
-        
-        if 'audit_efficiency' in kwargs:
-            ae_dict = _to_primitives(kwargs['audit_efficiency'])
-            valid_keys = {c.key for c in EfficiencyAudit.__table__.columns}
-            filtered_ae = {k: v for k, v in ae_dict.items() if k in valid_keys}
-            
-            if record.efficiency_audit:
-                for k, v in filtered_ae.items():
-                    setattr(record.efficiency_audit, k, v)
-                record.efficiency_audit.updated_at = datetime.datetime.utcnow()
-            else:
-                new_ae = EfficiencyAudit(id=record_id, **filtered_ae)
-                session.add(new_ae)
+
+def update_record_state(record_id: str, new_state: LifecycleState, append_payload: dict = None, engine=None):
+    from rich.console import Console
+    console = Console()
+    eng = engine or engine_default
+    append_payload = append_payload or {}
+    with Session(eng) as session:
+        try:
+            stmt = select(EfficiencyDepartment).where(EfficiencyDepartment.id == record_id)
+            record = session.scalars(stmt).first()
+            if not record:
+                return False
                 
-        if 'tactical' in kwargs:
-            t_dict = _to_primitives(kwargs['tactical'])
-            valid_keys = {c.key for c in TacticalDepartment.__table__.columns}
-            filtered_t = {k: v for k, v in t_dict.items() if k in valid_keys}
+            record.state = new_state.value
+
+            if 'trade_status' in append_payload:
+                ts_val = append_payload['trade_status']
+                if record.tactical_department:
+                    record.tactical_department.trade_status = ts_val
+                    record.tactical_department.updated_at = datetime.datetime.now(datetime.UTC)
             
-            if record.tactical_department:
-                for k, v in filtered_t.items():
-                    setattr(record.tactical_department, k, v)
-                record.tactical_department.updated_at = datetime.datetime.utcnow()
-            else:
-                new_t = TacticalDepartment(id=record_id, **filtered_t)
-                session.add(new_t)
+            if 'audit_efficiency' in append_payload:
+                ae_dict = append_payload['audit_efficiency']
+                valid_keys = {c.key for c in EfficiencyAudit.__table__.columns}
+                filtered_ae = {k: v for k, v in ae_dict.items() if k in valid_keys}
                 
-            # Handle AnalysisLayers for P4, P1 (Assuming they are added initially or appended)
-            # To prevent duplication on update, we could delete existing TACTICAL layers for this trade.
-            session.query(AnalysisLayer).filter(
-                AnalysisLayer.trade_id == record_id, 
-                AnalysisLayer.department == 'TACTICAL'
-            ).delete()
-            
-            if hasattr(kwargs['tactical'], 'to_db_layers'):
-                for layer_input in kwargs['tactical'].to_db_layers():
+                if record.efficiency_audit:
+                    for k, v in filtered_ae.items():
+                        setattr(record.efficiency_audit, k, v)
+                    record.efficiency_audit.updated_at = datetime.datetime.now(datetime.UTC)
+                else:
+                    new_ae = EfficiencyAudit(id=record_id, **filtered_ae)
+                    session.add(new_ae)
+                    
+            if 'tactical' in append_payload:
+                t_dict = append_payload['tactical']
+                valid_keys = {c.key for c in TacticalDepartment.__table__.columns}
+                filtered_t = {k: v for k, v in t_dict.items() if k in valid_keys}
+                
+                if record.tactical_department:
+                    for k, v in filtered_t.items():
+                        setattr(record.tactical_department, k, v)
+                    record.tactical_department.updated_at = datetime.datetime.now(datetime.UTC)
+                else:
+                    new_t = TacticalDepartment(id=record_id, **filtered_t)
+                    session.add(new_t)
+                    
+                # Handle AnalysisLayers for P4, P1 (Assuming they are added initially or appended)
+                # To prevent duplication on update, we could delete existing TACTICAL layers for this trade.
+                session.query(AnalysisLayer).filter(
+                    AnalysisLayer.trade_id == record_id, 
+                    AnalysisLayer.department == 'TACTICAL'
+                ).delete()
+                
+                t_layers = append_payload.get('tactical_layers', [])
+                for layer_dict in t_layers:
                     al = AnalysisLayer(
                         trade_id=record_id,
                         department='TACTICAL',
-                        layer_name=layer_input.layer_name,
-                        direction=layer_input.direction.value if hasattr(layer_input.direction, 'value') else layer_input.direction,
-                        strength=layer_input.strength.value if hasattr(layer_input.strength, 'value') else layer_input.strength,
-                        score=layer_input.score,
-                        thesis=layer_input.thesis
+                        layer_name=layer_dict.get('layer_name'),
+                        direction=layer_dict.get('direction'),
+                        strength=layer_dict.get('strength'),
+                        score=layer_dict.get('score'),
+                        thesis=layer_dict.get('thesis')
                     )
                     session.add(al)
 
-        if 'bias_a' in kwargs:
-            bias_a_val = kwargs['bias_a'].value if hasattr(kwargs['bias_a'], 'value') else kwargs['bias_a']
-            if record.efficiency_audit:
-                record.efficiency_audit.bias_a = bias_a_val
-                record.efficiency_audit.updated_at = datetime.datetime.utcnow()
-            else:
-                new_ae = EfficiencyAudit(id=record_id, bias_a=bias_a_val)
-                session.add(new_ae)
+            if 'bias_a' in append_payload:
+                bias_a_val = append_payload['bias_a']
+                if record.efficiency_audit:
+                    record.efficiency_audit.bias_a = bias_a_val
+                    record.efficiency_audit.updated_at = datetime.datetime.now(datetime.UTC)
+                else:
+                    new_ae = EfficiencyAudit(id=record_id, bias_a=bias_a_val)
+                    session.add(new_ae)
+                    
+            if 'audit_tactical' in append_payload:
+                at_dict = append_payload['audit_tactical']
+                if 'size_btc' in at_dict and 'size' not in at_dict:
+                    at_dict['size'] = at_dict['size_btc']
+                    
+                valid_keys = {c.key for c in TacticalAudit.__table__.columns}
+                filtered_at = {k: v for k, v in at_dict.items() if k in valid_keys}
                 
-        if 'audit_tactical' in kwargs:
-            at_dict = _to_primitives(kwargs['audit_tactical'])
-            if 'size_btc' in at_dict and 'size' not in at_dict:
-                at_dict['size'] = at_dict['size_btc']
-                
-            valid_keys = {c.key for c in TacticalAudit.__table__.columns}
-            filtered_at = {}
-            for k, v in at_dict.items():
-                if k in valid_keys:
-                    # Convert to atomic if necessary for specific monetary fields that might be floats
-                    if v is not None and k in ['risk_usd', 'size', 'entry_price', 'closing_price', 'take_profit', 'stop_loss', 'pnl_and_cost', 'mae_adverse', 'captured_mae', 'mfe_favorable']:
-                        # Depending on upstream schema, this might be a float. We store as int (BigInteger).
-                        filtered_at[k] = int(v) if isinstance(v, float) else v
-                    else:
-                        filtered_at[k] = v
-            
-            if record.tactical_audit:
-                for k, v in filtered_at.items():
-                    setattr(record.tactical_audit, k, v)
-            else:
-                new_at = TacticalAudit(id=record_id, **filtered_at)
-                session.add(new_at)
+                if record.tactical_audit:
+                    for k, v in filtered_at.items():
+                        setattr(record.tactical_audit, k, v)
+                else:
+                    new_at = TacticalAudit(id=record_id, **filtered_at)
+                    session.add(new_at)
 
-        record.updated_at = datetime.datetime.utcnow()
-        session.commit()
-        return True
+            record.updated_at = datetime.datetime.now(datetime.UTC)
+            session.commit()
+            return True
+        except Exception as e:
+            session.rollback()
+            console.print(f"[bold red]Database Error in update_record_state: {e}[/bold red]")
+            return False
 
-def get_records_by_state(state: LifecycleState, engine=None) -> List[dict]:
+def get_records_by_state(state: LifecycleState | List[LifecycleState], engine=None) -> List[dict]:
     eng = engine or engine_default
     with Session(eng) as session:
-        stmt = select(EfficiencyDepartment).where(EfficiencyDepartment.state == state.value)
+        if isinstance(state, list):
+            state_vals = [s.value for s in state]
+            stmt = select(EfficiencyDepartment).where(EfficiencyDepartment.state.in_(state_vals))
+        else:
+            stmt = select(EfficiencyDepartment).where(EfficiencyDepartment.state == state.value)
         records = session.scalars(stmt).all()
         
         results = []

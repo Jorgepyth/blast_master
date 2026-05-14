@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Optional, List, Any
-from datetime import datetime
-from pydantic import BaseModel, Field, model_serializer, field_validator
+from datetime import datetime, timezone, timedelta
+from pydantic import BaseModel, Field, model_serializer, model_validator
 
 class ComplianceState(str, Enum):
     INVALID_EDGE = "Invalid_edge"
@@ -27,12 +27,13 @@ class Session(str, Enum):
     ASIA_OFF = "Asia/Off"
     NEW_YORK = "New York"
     LONDON = "London"
+    LONDON_NY_OVERLAP = "London/NY Overlap"
     SKIP = "Skip"
 
 class ExitType(str, Enum):
-    SCALE_OUT = "Scale-out"
-    STOP_ORDER = "Stop Order"
-    MANUAL = "Manual"
+    STOP_ORDER = "stop order"
+    TIME = "time"
+    MANUAL = "manual"
     SKIP = "Skip"
 
 class TradeDecision(str, Enum):
@@ -73,25 +74,76 @@ class HTFTrendContext(str, Enum):
     BULLISH = "bullish"
     SKIP = "Skip"
 
+class TrendContext(str, Enum):
+    SIDEWAYS = "sideways"
+    BEARISH = "bearish"
+    BULLISH = "bullish"
+    SKIP = "Skip"
+
 class ConfirmationStatus(str, Enum):
-    YES = "Yes"
+    YES_BAD_ENTRY = "yes but bad entry poing(too tight)"
+    YES_CLOSED_EARLY = "yes but closed too early - Fear"
     NO = "No"
-    YES_BAD_ENTRY = "Yes but bad entry point (too tight)"
-    YES_CLOSED_EARLY = "Yes but closed too early - Fear"
+    YES = "Yes"
+    YES_LATE_ENTRY = "Yes but late entry"
+    SKIP = "Skip"
+
+class ConfirmationParams(str, Enum):
+    KL_SUPPORT_RESISTANCE = "KL as support/resistance"
+    CONVERGENCE_MAIN_TREND = "convergence with main trend"
+    CONVERGENCE_5M_TREND = "convergence with 5M trend"
+    LIMIT_ORDER = "limit order"
+    FRACTAL_5_10_15 = "5-10-15 min fractal confirmation"
+    FRACTAL_1M = "1 min fractal confirmation"
+    FRACTAL_1H = "1H fractal confirmation (continuation or inflection)"
+    DIVERGENCE_MAIN_TREND = "divergence with main trend"
+    DIVERGENCE_5M_TREND = "divergence with 5M trend"
+    KEY_LEVEL_TARGET = "key level as target"
+    GRABBED_LIQUIDITY = "grabbed liquidity"
+    RETRACEMENT_0_4_0_6 = "retracement 0.4-0.6 in X trend"
+    CONVERGENCE_X_Y = "convergence in X & Y Trend"
+    DIVERGENCE_X_Y = "Divergence in X & Y Trend"
+    BREATHING_PRE_TRADE = "breathing pre-trade + process visualization"
     SKIP = "Skip"
 
 class Emotions(str, Enum):
-    CONSISTENCY = "Consistency"
-    STATISTICAL_THINKING = "Statistical Thinking"
+    TRADED_ON_PHONE = "traded on the phone"
+    CONSISTENCY = "consistency"
+    STATISTICAL_THINKING = "statistical thinking"
+    ACCOUNTABILITY = "accountability"
+    DECISIVENESS = "decisiveness"
+    BLAMING = "blaming"
+    SYSTEM_HOPING = "system hoping"
+    HOPE_HOLD = "hope hold"
+    HESITATION = "hesitation"
+    EGO_ATTACHMENT = "ego attatchment to PNL"
+    LACK_OF_DISCIPLINE = "lack of discipline"
+    ANXIETY_IMMEDIATE_RESULTS = "anxiety for immediate results"
+    FOCUS_PRESENCE = "focus / presence"
+    DETACHED_NEUTRALITY = "detatched neutrality"
+    FLOW_ZONE = "flow / in the zone"
+    EQUANIMITY = "equanimity - same mindest after win or loss"
+    LOSS_ACCEPTANCE = "loss acceptance"
+    GROUNDED_CONFIDENCE = "grounded confidence on your edge"
+    CALM_SERENITY = "calm / serenity"
+    CLOSED_TOO_EARLY = "closed too early"
+    PATIENCE = "patience"
+    ANXIETY = "anxiety"
+    BOREDOM = "boredom"
+    SHAME = "shame"
+    FRUSTRATION = "frustration"
+    FEAR_NOT_GOOD_ENOUGH = "fear of not being good enough"
     FOMO = "FOMO"
-    HOPE_HOLD = "Hope-Hold"
-    ACCOUNTABILITY = "Accountability"
-    DECISIVENESS = "Decisiveness"
-    DETACHED_NEUTRALITY = "Detached Neutraility"
-    LOSS_ACCEPTANCE = "Loss Acceptance"
-    COURAGE = "Courage"
-    IMPATIENCE = "Impatience"
-    BOREDOM = "Boredom"
+    FEAR_OF_LOSING = "fear of losing"
+    FEAR_BEING_WRONG = "fear of being wrong"
+    IMPATIENCE = "impatience"
+    REVENGE_TRADE = "revenge trade"
+    OVERLEVERAGING = "overleveraging"
+    OVERTRADING = "overtrading"
+    GREED = "greed"
+    COURAGE = "courange"
+    MAINTAINED_COURAGE = "mantained courage"
+    FORBIDDEN_FRIENDSHIP = "forbidden friendship"
     SKIP = "Skip"
 
 class BehavioralErrors(str, Enum):
@@ -116,55 +168,163 @@ class TacticalAudit(BaseModel):
     # Categorical data
     tier_setup: Optional[TierSetup] = None
     market_state: Optional[MarketState] = None
-    session: Optional[Session] = None
     exit_type: Optional[ExitType] = None
-    trade_decision: Optional[TradeDecision] = None
     followed_plan: Optional[FollowedPlan] = None
     primary_emotion: Optional[PrimaryEmotion] = None
     setup_type: Optional[SetupType] = None
     htf_trend_context: Optional[HTFTrendContext] = None
     confirmation_status: Optional[ConfirmationStatus] = None
 
+    # New manual categorical/text fields
+    ltf_trend_context: Optional[TrendContext] = None
+    pre_trade_emotions: Optional[str] = None
+    mid_trade_emotions: Optional[str] = None
+    post_trade_emotions: Optional[str] = None
+    confirmation_params: Optional[List[ConfirmationParams]] = None
+
     # Numeric scales
-    anxiety_level: Optional[int] = Field(default=None, ge=1, le=10)
-    impatience_level: Optional[int] = Field(default=None, ge=1, le=10)
-    mental_clarity_level: Optional[int] = Field(default=None, ge=1, le=10)
+    anxiety_level: Optional[int] = Field(default=None, ge=1, le=5)
+    impatience_level: Optional[int] = Field(default=None, ge=1, le=5)
+    mental_clarity_level: Optional[int] = Field(default=None, ge=1, le=5)
 
     # Multi-Select fields
     emotions: Optional[List[Emotions]] = None
     behavioral_errors: Optional[List[BehavioralErrors]] = None
     cognitive_patterns: Optional[List[CognitivePatterns]] = None
 
-    # Financial and execution metrics
-    risk_usd: Optional[float] = None
+    # Manual Financial and Execution Metrics
+    cost: Optional[float] = 0.0
     size: Optional[float] = None
-    r_r: Optional[float] = None
     entry_price: Optional[float] = None
     closing_price: Optional[float] = None
     take_profit: Optional[float] = None
     stop_loss: Optional[float] = None
-    pnl_and_cost: Optional[float] = None
-    captured_mae: Optional[float] = Field(default=None, ge=0, le=10)
-    captured_mfe: Optional[float] = Field(default=None, ge=0, le=10)
+    mae: Optional[float] = Field(default=None, ge=0.0, le=10.0)
+    mfe: Optional[float] = Field(default=None, ge=0.0, le=10.0)
 
     # Text blocks
     lesson_learned: Optional[str] = None
 
+    # Automated fields
+    trade_decision: Optional[str] = None
+    r_r: Optional[float] = None
+    r_multiple: Optional[float] = None
+    notional_size_usd: Optional[float] = None
+    risk_usd: Optional[float] = None
+    dist_to_sl: Optional[float] = None
+    dist_to_tp: Optional[float] = None
+    pnl: Optional[float] = None
+    pnl_and_cost: Optional[float] = None
+    trade_duration: Optional[str] = None
+    session: Optional[str] = None
+    captured_mfe: Optional[float] = None
+
+    @model_validator(mode='after')
+    def calculate_automated_fields(self):
+        ep = self.entry_price
+        cp = self.closing_price
+        tp = self.take_profit
+        sl = self.stop_loss
+        size = self.size
+        cost = self.cost or 0.0
+        mfe = self.mfe
+
+        if ep is not None and sl is not None and size is not None:
+            # trade_decision = "Long" if entry_price > stop_loss else "Short"
+            td = "Long" if ep > sl else "Short"
+            self.trade_decision = td
+
+            # notional_size_usd = entry_price * size
+            self.notional_size_usd = ep * size
+
+            # risk_usd = size * abs(entry_price - stop_loss)
+            self.risk_usd = size * abs(ep - sl)
+
+            # dist_to_sl = abs(entry_price - stop_loss) / entry_price
+            if ep != 0:
+                self.dist_to_sl = abs(ep - sl) / ep
+            else:
+                self.dist_to_sl = 0.0
+
+            if tp is not None and ep != 0:
+                # dist_to_tp = abs(entry_price - take_profit) / entry_price
+                self.dist_to_tp = abs(ep - tp) / ep
+
+                # r_r = (take_profit - entry_price) / abs(entry_price - stop_loss) [Invert numerator for Short]
+                sl_dist_abs = abs(ep - sl)
+                if sl_dist_abs != 0:
+                    if td == "Long":
+                        self.r_r = (tp - ep) / sl_dist_abs
+                    else:
+                        self.r_r = (ep - tp) / sl_dist_abs
+                else:
+                    self.r_r = 0.0
+
+            if cp is not None:
+                # pnl = (closing_price - entry_price) * size [Invert terms for Short]
+                if td == "Long":
+                    self.pnl = (cp - ep) * size
+                else:
+                    self.pnl = (ep - cp) * size
+
+                # pnl_and_cost = pnl - cost
+                self.pnl_and_cost = self.pnl - cost
+
+                # r_multiple = (closing_price - entry_price) / abs(entry_price - stop_loss) [Invert numerator for Short]
+                sl_dist_abs = abs(ep - sl)
+                if sl_dist_abs != 0:
+                    if td == "Long":
+                        self.r_multiple = (cp - ep) / sl_dist_abs
+                    else:
+                        self.r_multiple = (ep - cp) / sl_dist_abs
+                else:
+                    self.r_multiple = 0.0
+
+                # captured_mfe = 0.0 if r_multiple < 0 or mfe == 0 else (r_multiple / mfe)
+                if self.r_multiple < 0 or not mfe or mfe == 0.0:
+                    self.captured_mfe = 0.0
+                else:
+                    self.captured_mfe = self.r_multiple / mfe
+
+        if self.entry_time and self.exit_time:
+            # trade_duration = "Xh Ym"
+            delta = self.exit_time - self.entry_time
+            total_seconds = int(delta.total_seconds())
+            hours = total_seconds // 3600
+            minutes = (total_seconds % 3600) // 60
+            self.trade_duration = f"{hours}h {minutes}m"
+
+        if self.entry_time:
+            # session = Evaluated on entry_time local Guatemala timezone (UTC-6)
+            # Ensure entry_time is timezone aware, assuming input is local if naive
+            dt = self.entry_time
+            if dt.tzinfo is None:
+                guatemala_tz = timezone(timedelta(hours=-6))
+                dt = dt.replace(tzinfo=guatemala_tz)
+            else:
+                dt = dt.astimezone(timezone(timedelta(hours=-6)))
+                
+            hr = dt.hour
+            # session = "London/NY Overlap" if 7 <= hr < 10 else "New York" if 10 <= hr < 15 else "London" if 2 <= hr < 7 else "Asia/Off"
+            if 7 <= hr < 10:
+                self.session = Session.LONDON_NY_OVERLAP.value
+            elif 10 <= hr < 15:
+                self.session = Session.NEW_YORK.value
+            elif 2 <= hr < 7:
+                self.session = Session.LONDON.value
+            else:
+                self.session = Session.ASIA_OFF.value
+
+        return self
+
     @model_serializer(mode='wrap')
-    def serialize_model(self, handler):
-        d = handler(self)
-        for field in ['risk_usd', 'size', 'entry_price', 'closing_price', 'take_profit', 'stop_loss', 'pnl_and_cost']:
-            if d.get(field) is not None:
-                d[field] = round(d[field] * 100_000_000)
-        return d
-        
-    @field_validator('risk_usd', 'size', 'entry_price', 'closing_price', 'take_profit', 'stop_loss', 'pnl_and_cost', mode='before')
-    @classmethod
-    def parse_atomic(cls, v: Any) -> Optional[float]:
-        if v is None:
-            return None
-        # If the input is an integer, we safely assume it's an atomic value from the database
-        # (CLI input always passes through get_optional_float and returns a float type)
-        if isinstance(v, int):
-            return float(v) / 100_000_000.0
-        return float(v)
+    def serialize_financials(self, handler) -> dict:
+        data = handler(self)
+        fields_to_scale = [
+            "entry_price", "closing_price", "take_profit", "stop_loss",
+            "pnl", "pnl_and_cost", "risk_usd", "notional_size_usd", "cost", "size"
+        ]
+        for field in fields_to_scale:
+            if data.get(field) is not None:
+                data[field] = int(round(data[field] * 10**8))
+        return data
