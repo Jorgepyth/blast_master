@@ -46,7 +46,7 @@ class AnalysisLayer(Base):
     __tablename__ = "analysis_layer"
     
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    trade_id: Mapped[str] = mapped_column(String, ForeignKey("efficiency_department.id", ondelete="CASCADE"))
+    trade_id: Mapped[str] = mapped_column(String, ForeignKey("unified_department.id", ondelete="CASCADE"))
     department: Mapped[str] = mapped_column(String)
     layer_name: Mapped[str] = mapped_column(String)
     direction: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -54,30 +54,42 @@ class AnalysisLayer(Base):
     score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     thesis: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    efficiency_department: Mapped["EfficiencyDepartment"] = relationship(back_populates="analysis_layers")
+    unified_department: Mapped["UnifiedDepartment"] = relationship(back_populates="analysis_layers")
 
-class EfficiencyDepartment(Base):
-    __tablename__ = "efficiency_department"
+class UnifiedDepartment(Base):
+    __tablename__ = "unified_department"
     
     id: Mapped[str] = mapped_column(String, primary_key=True)
     state: Mapped[str] = mapped_column(String, default=LifecycleState.ANALYSIS.value)
     asset: Mapped[str] = mapped_column(String)
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.UTC))
-    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.UTC), onupdate=lambda: datetime.datetime.now(datetime.UTC))
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.now)
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.now, onupdate=datetime.datetime.now)
     
+    # Unified Fields
     market_bias: Mapped[str] = mapped_column(String)
     calc_edge: Mapped[float] = mapped_column(Float)
     edge_description: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    
+    # Tactical fields merged in
+    trade_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    p4_hierarchy: Mapped[str] = mapped_column(String)
+    p1_timeframe: Mapped[str] = mapped_column(String)
+    p1_type: Mapped[str] = mapped_column(String)
+    nodes_l1: Mapped[int] = mapped_column(Integer)
+    nodes_l2: Mapped[int] = mapped_column(Integer)
+    tactical_classification: Mapped[str] = mapped_column(String)
+    long_prob: Mapped[float] = mapped_column(Float)
+    short_prob: Mapped[float] = mapped_column(Float)
+    no_trade_prob: Mapped[float] = mapped_column(Float)
 
-    analysis_layers: Mapped[List["AnalysisLayer"]] = relationship(back_populates="efficiency_department", cascade="all, delete-orphan")
-    efficiency_audit: Mapped[Optional["EfficiencyAudit"]] = relationship(back_populates="efficiency_department", cascade="all, delete-orphan", single_parent=True)
-    tactical_department: Mapped[Optional["TacticalDepartment"]] = relationship(back_populates="efficiency_department", cascade="all, delete-orphan", single_parent=True)
-    tactical_audit: Mapped[Optional["TacticalAudit"]] = relationship(back_populates="efficiency_department", cascade="all, delete-orphan", single_parent=True)
+    analysis_layers: Mapped[List["AnalysisLayer"]] = relationship(back_populates="unified_department", cascade="all, delete-orphan")
+    efficiency_audit: Mapped[Optional["EfficiencyAudit"]] = relationship(back_populates="unified_department", cascade="all, delete-orphan", single_parent=True)
+    tactical_audit: Mapped[Optional["TacticalAudit"]] = relationship(back_populates="unified_department", cascade="all, delete-orphan", single_parent=True)
 
 class EfficiencyAudit(Base):
     __tablename__ = "efficiency_audit"
     
-    id: Mapped[str] = mapped_column(String, ForeignKey("efficiency_department.id", ondelete="CASCADE"), primary_key=True)
+    id: Mapped[str] = mapped_column(String, ForeignKey("unified_department.id", ondelete="CASCADE"), primary_key=True)
     bias_a: Mapped[str] = mapped_column(String)
     resolution_type: Mapped[Optional[str]] = mapped_column(String, nullable=True, default="Open")
     real_bias_b: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -88,37 +100,15 @@ class EfficiencyAudit(Base):
     resolution_time: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
     
     lesson_learned: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.UTC))
-    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.UTC), onupdate=lambda: datetime.datetime.now(datetime.UTC))
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.now)
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.now, onupdate=datetime.datetime.now)
 
-    efficiency_department: Mapped["EfficiencyDepartment"] = relationship(back_populates="efficiency_audit")
-
-class TacticalDepartment(Base):
-    __tablename__ = "tactical_department"
-    
-    id: Mapped[str] = mapped_column(String, ForeignKey("efficiency_department.id", ondelete="CASCADE"), primary_key=True)
-    trade_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    p4_hierarchy: Mapped[str] = mapped_column(String)
-    p1_timeframe: Mapped[str] = mapped_column(String)
-    p1_type: Mapped[str] = mapped_column(String)
-    nodes_l1: Mapped[int] = mapped_column(Integer)
-    nodes_l2: Mapped[int] = mapped_column(Integer)
-    tactical_classification: Mapped[str] = mapped_column(String)
-    
-    calc_edge: Mapped[float] = mapped_column(Float)
-    long_prob: Mapped[float] = mapped_column(Float)
-    short_prob: Mapped[float] = mapped_column(Float)
-    no_trade_prob: Mapped[float] = mapped_column(Float)
-    
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.UTC))
-    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.UTC), onupdate=lambda: datetime.datetime.now(datetime.UTC))
-
-    efficiency_department: Mapped["EfficiencyDepartment"] = relationship(back_populates="tactical_department")
+    unified_department: Mapped["UnifiedDepartment"] = relationship(back_populates="efficiency_audit")
 
 class TacticalAudit(Base):
     __tablename__ = "tactical_audit"
     
-    id: Mapped[str] = mapped_column(String, ForeignKey("efficiency_department.id", ondelete="CASCADE"), primary_key=True)
+    id: Mapped[str] = mapped_column(String, ForeignKey("unified_department.id", ondelete="CASCADE"), primary_key=True)
     compliance: Mapped[str] = mapped_column(String)
     entry_time: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
     exit_time: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
@@ -151,6 +141,7 @@ class TacticalAudit(Base):
     r_r: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     entry_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     closing_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    could_hit_tp: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     take_profit: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     stop_loss: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     pnl_and_cost: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -161,7 +152,7 @@ class TacticalAudit(Base):
     # Text blocks
     lesson_learned: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
-    efficiency_department: Mapped["EfficiencyDepartment"] = relationship(back_populates="tactical_audit")
+    unified_department: Mapped["UnifiedDepartment"] = relationship(back_populates="tactical_audit")
 
 engine_default = None
 
@@ -173,12 +164,42 @@ def init_db(db_url: str = "sqlite:///.data/journal.db"):
     Base.metadata.create_all(engine_default)
     
     # Safe migration for legacy state
-    from sqlalchemy import text
-    with Session(engine_default) as session:
-        session.execute(text("UPDATE efficiency_department SET state = 'PENDING_TACTICAL_AUDIT' WHERE state = 'CLOSED_PENDING'"))
-        session.commit()
-        
+    from sqlalchemy import text, inspect
+    with engine_default.begin() as conn:
+        try:
+            conn.execute(text("UPDATE unified_department SET state = 'PENDING_AUDITS' WHERE state = 'PENDING_TACTICAL_AUDIT'"))
+        except Exception:
+            pass
+
+        # Migrate TacticalAudit table
+        inspector = inspect(engine_default)
+        if "tactical_audit" in inspector.get_table_names():
+            columns = [col['name'] for col in inspector.get_columns('tactical_audit')]
+            if 'could_hit_tp' not in columns:
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN could_hit_tp VARCHAR"))
+                
     return engine_default
+
+def copy_assets_to_current_db():
+    main_db_url = "sqlite:///.data/journal.db"
+    main_engine = create_engine(main_db_url)
+    
+    with Session(main_engine) as main_session:
+        assets = main_session.scalars(select(AssetConfig)).all()
+        
+    with Session(engine_default) as current_session:
+        for asset in assets:
+            exists = current_session.execute(select(AssetConfig).where(AssetConfig.asset_name == asset.asset_name)).first()
+            if not exists:
+                new_asset = AssetConfig(
+                    asset_name=asset.asset_name, 
+                    category=asset.category,
+                    code=asset.code,
+                    display_name=asset.display_name,
+                    active=asset.active
+                )
+                current_session.add(new_asset)
+        current_session.commit()
 
 def get_assets(engine=None) -> List[str]:
     eng = engine or engine_default
@@ -208,44 +229,6 @@ def _to_primitives(model: Any) -> dict:
         return {}
     return {k: v.value if hasattr(v, 'value') else v for k, v in d.items()}
 
-def create_record(record_id: str, payload_data: dict, engine=None) -> str:
-    from rich.console import Console
-    console = Console()
-    eng = engine or engine_default
-    with Session(eng) as session:
-        try:
-            asset = payload_data.get("asset")
-            d = payload_data.get("efficiency", {})
-            
-            new_record = EfficiencyDepartment(
-                id=record_id,
-                state=LifecycleState.ANALYSIS.value,
-                asset=asset,
-                market_bias=d.get('Market_Bias'),
-                calc_edge=d.get('Calc_edge')
-            )
-            session.add(new_record)
-            
-            layers = payload_data.get("efficiency_layers", [])
-            for layer_dict in layers:
-                al = AnalysisLayer(
-                    trade_id=record_id,
-                    department='EFFICIENCY',
-                    layer_name=layer_dict.get('layer_name'),
-                    direction=layer_dict.get('direction'),
-                    strength=layer_dict.get('strength'),
-                    score=layer_dict.get('score'),
-                    thesis=layer_dict.get('thesis')
-                )
-                session.add(al)
-
-            session.commit()
-            return record_id
-        except Exception as e:
-            session.rollback()
-            console.print(f"[bold red]Database Error in create_record: {e}[/bold red]")
-            return False
-
 def update_record_state(record_id: str, new_state: LifecycleState, append_payload: dict = None, engine=None):
     from rich.console import Console
     console = Console()
@@ -253,7 +236,7 @@ def update_record_state(record_id: str, new_state: LifecycleState, append_payloa
     append_payload = append_payload or {}
     with Session(eng) as session:
         try:
-            stmt = select(EfficiencyDepartment).where(EfficiencyDepartment.id == record_id)
+            stmt = select(UnifiedDepartment).where(UnifiedDepartment.id == record_id)
             record = session.scalars(stmt).first()
             if not record:
                 return False
@@ -262,9 +245,7 @@ def update_record_state(record_id: str, new_state: LifecycleState, append_payloa
 
             if 'trade_status' in append_payload:
                 ts_val = append_payload['trade_status']
-                if record.tactical_department:
-                    record.tactical_department.trade_status = ts_val
-                    record.tactical_department.updated_at = datetime.datetime.now(datetime.UTC)
+                record.trade_status = ts_val
             
             if 'audit_efficiency' in append_payload:
                 ae_dict = append_payload['audit_efficiency']
@@ -274,49 +255,16 @@ def update_record_state(record_id: str, new_state: LifecycleState, append_payloa
                 if record.efficiency_audit:
                     for k, v in filtered_ae.items():
                         setattr(record.efficiency_audit, k, v)
-                    record.efficiency_audit.updated_at = datetime.datetime.now(datetime.UTC)
+                    record.efficiency_audit.updated_at = datetime.datetime.now()
                 else:
                     new_ae = EfficiencyAudit(id=record_id, **filtered_ae)
                     session.add(new_ae)
                     
-            if 'tactical' in append_payload:
-                t_dict = append_payload['tactical']
-                valid_keys = {c.key for c in TacticalDepartment.__table__.columns}
-                filtered_t = {k: v for k, v in t_dict.items() if k in valid_keys}
-                
-                if record.tactical_department:
-                    for k, v in filtered_t.items():
-                        setattr(record.tactical_department, k, v)
-                    record.tactical_department.updated_at = datetime.datetime.now(datetime.UTC)
-                else:
-                    new_t = TacticalDepartment(id=record_id, **filtered_t)
-                    session.add(new_t)
-                    
-                # Handle AnalysisLayers for P4, P1 (Assuming they are added initially or appended)
-                # To prevent duplication on update, we could delete existing TACTICAL layers for this trade.
-                session.query(AnalysisLayer).filter(
-                    AnalysisLayer.trade_id == record_id, 
-                    AnalysisLayer.department == 'TACTICAL'
-                ).delete()
-                
-                t_layers = append_payload.get('tactical_layers', [])
-                for layer_dict in t_layers:
-                    al = AnalysisLayer(
-                        trade_id=record_id,
-                        department='TACTICAL',
-                        layer_name=layer_dict.get('layer_name'),
-                        direction=layer_dict.get('direction'),
-                        strength=layer_dict.get('strength'),
-                        score=layer_dict.get('score'),
-                        thesis=layer_dict.get('thesis')
-                    )
-                    session.add(al)
-
             if 'bias_a' in append_payload:
                 bias_a_val = append_payload['bias_a']
                 if record.efficiency_audit:
                     record.efficiency_audit.bias_a = bias_a_val
-                    record.efficiency_audit.updated_at = datetime.datetime.now(datetime.UTC)
+                    record.efficiency_audit.updated_at = datetime.datetime.now()
                 else:
                     new_ae = EfficiencyAudit(id=record_id, bias_a=bias_a_val)
                     session.add(new_ae)
@@ -336,7 +284,7 @@ def update_record_state(record_id: str, new_state: LifecycleState, append_payloa
                     new_at = TacticalAudit(id=record_id, **filtered_at)
                     session.add(new_at)
 
-            record.updated_at = datetime.datetime.now(datetime.UTC)
+            record.updated_at = datetime.datetime.now()
             session.commit()
             return True
         except Exception as e:
@@ -349,9 +297,9 @@ def get_records_by_state(state: LifecycleState | List[LifecycleState], engine=No
     with Session(eng) as session:
         if isinstance(state, list):
             state_vals = [s.value for s in state]
-            stmt = select(EfficiencyDepartment).where(EfficiencyDepartment.state.in_(state_vals))
+            stmt = select(UnifiedDepartment).where(UnifiedDepartment.state.in_(state_vals))
         else:
-            stmt = select(EfficiencyDepartment).where(EfficiencyDepartment.state == state.value)
+            stmt = select(UnifiedDepartment).where(UnifiedDepartment.state == state.value)
         records = session.scalars(stmt).all()
         
         results = []
@@ -361,6 +309,10 @@ def get_records_by_state(state: LifecycleState | List[LifecycleState], engine=No
                 "efficiency": {
                     "Market_Bias": r.market_bias,
                     "Calc_edge": r.calc_edge,
+                },
+                "tactical": {
+                    "tactical_classification": r.tactical_classification,
+                    "calc_edge": r.calc_edge,
                 },
                 "analysis_layers": [
                     {
@@ -381,14 +333,11 @@ def get_records_by_state(state: LifecycleState | List[LifecycleState], engine=No
                     "specific_bias_compliance": r.efficiency_audit.specific_bias_compliance,
                     "false_regime_rate": r.efficiency_audit.false_regime_rate
                 }
-            if r.tactical_department:
-                payload["tactical"] = {
-                    "tactical_classification": r.tactical_department.tactical_classification,
-                    "calc_edge": r.tactical_department.calc_edge
-                }
             if r.tactical_audit:
                 payload["audit_tactical"] = {
-                    "compliance": r.tactical_audit.compliance
+                    "compliance": r.tactical_audit.compliance,
+                    "trade_status": r.trade_status,
+                    "could_hit_tp": r.tactical_audit.could_hit_tp
                 }
                 
             results.append({
@@ -400,4 +349,3 @@ def get_records_by_state(state: LifecycleState | List[LifecycleState], engine=No
             })
             
         return results
-

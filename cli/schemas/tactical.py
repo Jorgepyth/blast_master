@@ -42,10 +42,10 @@ class TradeStatus(str, Enum):
 class TacticalAnalysis(BaseModel):
     p4_direction: Direction
     p4_strength: Strength
-    p4_thesis: Optional[str] = None
+    p4_thesis: str
     p1_direction: Direction
     p1_strength: Strength
-    p1_thesis: Optional[str] = None
+    p1_thesis: str
     
     p4_hierarchy: Hierarchy
     p1_timeframe: Timeframe
@@ -55,37 +55,13 @@ class TacticalAnalysis(BaseModel):
     tactical_classification: TacticalClassification
     trade_status: Optional[TradeStatus] = None
 
-    calc_edge: float = 0.0
+    calc_edge: float
     long_prob: float = 0.0
     short_prob: float = 0.0
     no_trade_prob: float = 0.0
 
     @model_validator(mode='after')
     def calculate_derived_tactics(self) -> 'TacticalAnalysis':
-        def get_direction_weight(direction: Direction) -> int:
-            if direction == Direction.LONG: return 1
-            if direction == Direction.SHORT: return -1
-            return 0
-            
-        def get_strength_weight(strength: Strength) -> int:
-            if strength == Strength.STRONG: return 2
-            if strength == Strength.MID: return 1
-            if strength == Strength.WEAK: return 0
-            return 0
-
-        self.calc_edge = 0.0
-        
-        # P4
-        s4 = 0 if self.p4_direction == Direction.NEUTRAL else get_direction_weight(self.p4_direction) * get_strength_weight(self.p4_strength)
-        self.calc_edge += s4
-        
-        # P1
-        s1 = 0 if self.p1_direction == Direction.NEUTRAL else get_direction_weight(self.p1_direction) * get_strength_weight(self.p1_strength)
-        self.calc_edge += s1
-
-        if self.calc_edge == 0.0:
-            self.tactical_classification = TacticalClassification.NA
-
         self.long_prob = round(max(0.15, min(0.85, self.calc_edge * 0.2125)), 3)
         self.short_prob = round(max(0.15, min(0.85, -self.calc_edge * 0.2125)), 3)
         self.no_trade_prob = round(1.0 - self.long_prob - self.short_prob, 3)

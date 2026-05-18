@@ -197,6 +197,7 @@ class TacticalAudit(BaseModel):
     size: Optional[float] = None
     entry_price: Optional[float] = None
     closing_price: Optional[float] = None
+    could_hit_tp: Optional[str] = None
     take_profit: Optional[float] = None
     stop_loss: Optional[float] = None
     mae: Optional[float] = Field(default=None, ge=0.0, le=10.0)

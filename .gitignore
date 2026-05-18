@@ -27,4 +27,4 @@ checkpoint_*.ipynb
 
 # --- IDEs (VS Code / PyCharm) ---
 .vscode/
-.idea/
+prompt_de_analisis.txt

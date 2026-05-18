@@ -17,61 +17,28 @@ class AnalysisLayerInput(BaseModel):
     direction: Direction
     strength: Strength
     score: int = 0
-    thesis: Optional[str] = None
+    thesis: str
 
 class EfficiencyAnalysis(BaseModel):
     p0_direction: Direction
     p0_strength: Strength
-    p0_thesis: Optional[str] = None
+    p0_thesis: str
     p2_direction: Direction
     p2_strength: Strength
-    p2_thesis: Optional[str] = None
+    p2_thesis: str
     p3_direction: Direction
     p3_strength: Strength
-    p3_thesis: Optional[str] = None
+    p3_thesis: str
     
-    Calc_edge: float = 0.0
-    Market_Bias: str = ""
-    edge_description: Optional[str] = None
+    Calc_edge: float
+    Market_Bias: str
+    edge_description: str
     Long_prob: float = 0.0
     Short_prob: float = 0.0
     No_trade_prob: float = 0.0
 
     @model_validator(mode='after')
     def calculate_derived_fields(self) -> 'EfficiencyAnalysis':
-        def get_direction_weight(direction: Direction) -> int:
-            if direction == Direction.LONG: return 1
-            if direction == Direction.SHORT: return -1
-            return 0
-            
-        def get_strength_weight(strength: Strength) -> int:
-            if strength == Strength.STRONG: return 3
-            if strength == Strength.MID: return 2
-            if strength == Strength.WEAK: return 1
-            return 0
-
-        total_score = 0.0
-        
-        # P0
-        s0 = get_direction_weight(self.p0_direction) * get_strength_weight(self.p0_strength)
-        total_score += s0 * 0.5
-        
-        # P2
-        s2 = get_direction_weight(self.p2_direction) * get_strength_weight(self.p2_strength)
-        total_score += s2 * 0.3
-        
-        # P3
-        s3 = get_direction_weight(self.p3_direction) * get_strength_weight(self.p3_strength)
-        total_score += s3 * 0.2
-
-        self.Calc_edge = total_score
-        
-        if self.Calc_edge > 0.5:
-            self.Market_Bias = "Bullish"
-        elif self.Calc_edge < -0.5:
-            self.Market_Bias = "Bearish"
-        else:
-            self.Market_Bias = "Choppy / Neutral"
             
         self.Long_prob = round(max(0.15, min(0.85, self.Calc_edge * 0.2833)), 3)
         self.Short_prob = round(max(0.15, min(0.85, -self.Calc_edge * 0.2833)), 3)
@@ -86,9 +53,9 @@ class EfficiencyAnalysis(BaseModel):
             return 0
             
         def get_strength_weight(strength: Strength) -> int:
-            if strength == Strength.STRONG: return 3
-            if strength == Strength.MID: return 2
-            if strength == Strength.WEAK: return 1
+            if strength == Strength.STRONG: return 2
+            if strength == Strength.MID: return 1
+            if strength == Strength.WEAK: return 0
             return 0
             
         layers = []
