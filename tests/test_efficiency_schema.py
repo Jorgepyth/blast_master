@@ -12,9 +12,9 @@ def test_perfect_long_setup():
     )
     assert analysis.Calc_edge == 3.0
     assert analysis.Market_Bias == "Bullish"
-    assert round(analysis.Long_prob, 2) == 0.85
-    assert analysis.Short_prob == 0.15
-    assert round(analysis.No_trade_prob, 2) == 0.00
+    assert analysis.Long_prob == 0.315
+    assert analysis.Short_prob == 0.058
+    assert analysis.No_trade_prob == 0.627
 
 def test_purely_neutral_setup():
     analysis = EfficiencyAnalysis(
@@ -27,6 +27,6 @@ def test_purely_neutral_setup():
     )
     assert analysis.Calc_edge == 0.0
     assert analysis.Market_Bias == "Choppy / Neutral"
-    assert analysis.Long_prob == 0.15
-    assert analysis.Short_prob == 0.15
-    assert analysis.No_trade_prob == 0.70
+    assert analysis.Long_prob == 0.150
+    assert analysis.Short_prob == 0.150
+    assert analysis.No_trade_prob == 0.700

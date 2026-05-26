@@ -212,6 +212,8 @@ class TacticalAudit(BaseModel):
     r_multiple: Optional[float] = None
     notional_size_usd: Optional[float] = None
     risk_usd: Optional[float] = None
+    notional_size: Optional[float] = None
+    capital_at_risk: Optional[float] = None
     dist_to_sl: Optional[float] = None
     dist_to_tp: Optional[float] = None
     pnl: Optional[float] = None
@@ -237,9 +239,15 @@ class TacticalAudit(BaseModel):
 
             # notional_size_usd = entry_price * size
             self.notional_size_usd = ep * size
+            self.notional_size = ep * size
 
             # risk_usd = size * abs(entry_price - stop_loss)
             self.risk_usd = size * abs(ep - sl)
+            
+            if td == "Long":
+                self.capital_at_risk = size * (ep - sl)
+            else:
+                self.capital_at_risk = size * (sl - ep)
 
             # dist_to_sl = abs(entry_price - stop_loss) / entry_price
             if ep != 0:
@@ -318,14 +326,3 @@ class TacticalAudit(BaseModel):
 
         return self
 
-    @model_serializer(mode='wrap')
-    def serialize_financials(self, handler) -> dict:
-        data = handler(self)
-        fields_to_scale = [
-            "entry_price", "closing_price", "take_profit", "stop_loss",
-            "pnl", "pnl_and_cost", "risk_usd", "notional_size_usd", "cost", "size"
-        ]
-        for field in fields_to_scale:
-            if data.get(field) is not None:
-                data[field] = int(round(data[field] * 10**8))
-        return data

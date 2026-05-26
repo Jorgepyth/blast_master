@@ -39,9 +39,15 @@ class EfficiencyAnalysis(BaseModel):
 
     @model_validator(mode='after')
     def calculate_derived_fields(self) -> 'EfficiencyAnalysis':
-            
-        self.Long_prob = round(max(0.15, min(0.85, self.Calc_edge * 0.2833)), 3)
-        self.Short_prob = round(max(0.15, min(0.85, -self.Calc_edge * 0.2833)), 3)
+        import math
+        scaling_factor = 0.2833
+        e_long = math.exp(self.Calc_edge * scaling_factor)
+        e_short = math.exp(-self.Calc_edge * scaling_factor)
+        e_no_trade = math.exp(1.54)
+        
+        total = e_long + e_short + e_no_trade
+        self.Long_prob = round(e_long / total, 3)
+        self.Short_prob = round(e_short / total, 3)
         self.No_trade_prob = round(1.0 - self.Long_prob - self.Short_prob, 3)
         
         return self

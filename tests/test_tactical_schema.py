@@ -19,8 +19,9 @@ def test_perfect_long_tactical_setup():
         calc_edge=4.0
     )
     assert analysis.calc_edge == 4.0
-    assert analysis.long_prob == 0.85
-    assert analysis.short_prob == 0.15
+    assert analysis.long_prob == 0.315
+    assert analysis.short_prob == 0.058
+    assert analysis.no_trade_prob == 0.627
     assert analysis.tactical_classification == TacticalClassification.CONTINUATION_PRESSURE
 
 def test_zero_edge_overrides_classification():

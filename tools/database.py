@@ -68,7 +68,7 @@ class UnifiedDepartment(Base):
     # Unified Fields
     market_bias: Mapped[str] = mapped_column(String)
     calc_edge: Mapped[float] = mapped_column(Float)
-    edge_description: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    edge_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     
     # Tactical fields merged in
     trade_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -81,6 +81,8 @@ class UnifiedDepartment(Base):
     long_prob: Mapped[float] = mapped_column(Float)
     short_prob: Mapped[float] = mapped_column(Float)
     no_trade_prob: Mapped[float] = mapped_column(Float)
+    efficiency_page_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    tactical_page_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     analysis_layers: Mapped[List["AnalysisLayer"]] = relationship(back_populates="unified_department", cascade="all, delete-orphan")
     efficiency_audit: Mapped[Optional["EfficiencyAudit"]] = relationship(back_populates="unified_department", cascade="all, delete-orphan", single_parent=True)
@@ -148,6 +150,8 @@ class TacticalAudit(Base):
     mae_adverse: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     captured_mae: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     mfe_favorable: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    notional_size: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    capital_at_risk: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     
     # Text blocks
     lesson_learned: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -170,13 +174,24 @@ def init_db(db_url: str = "sqlite:///.data/journal.db"):
             conn.execute(text("UPDATE unified_department SET state = 'PENDING_AUDITS' WHERE state = 'PENDING_TACTICAL_AUDIT'"))
         except Exception:
             pass
-
         # Migrate TacticalAudit table
         inspector = inspect(engine_default)
         if "tactical_audit" in inspector.get_table_names():
             columns = [col['name'] for col in inspector.get_columns('tactical_audit')]
             if 'could_hit_tp' not in columns:
                 conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN could_hit_tp VARCHAR"))
+            if 'notional_size' not in columns:
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN notional_size REAL DEFAULT 0.0"))
+            if 'capital_at_risk' not in columns:
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN capital_at_risk REAL DEFAULT 0.0"))
+
+        # Migrate UnifiedDepartment table
+        if "unified_department" in inspector.get_table_names():
+            columns = [col['name'] for col in inspector.get_columns('unified_department')]
+            if 'efficiency_page_id' not in columns:
+                conn.execute(text("ALTER TABLE unified_department ADD COLUMN efficiency_page_id VARCHAR"))
+            if 'tactical_page_id' not in columns:
+                conn.execute(text("ALTER TABLE unified_department ADD COLUMN tactical_page_id VARCHAR"))
                 
     return engine_default
 
@@ -273,6 +288,10 @@ def update_record_state(record_id: str, new_state: LifecycleState, append_payloa
                 at_dict = append_payload['audit_tactical']
                 if 'size_btc' in at_dict and 'size' not in at_dict:
                     at_dict['size'] = at_dict['size_btc']
+                if 'mae' in at_dict and 'mae_adverse' not in at_dict:
+                    at_dict['mae_adverse'] = at_dict['mae']
+                if 'mfe' in at_dict and 'mfe_favorable' not in at_dict:
+                    at_dict['mfe_favorable'] = at_dict['mfe']
                     
                 valid_keys = {c.key for c in TacticalAudit.__table__.columns}
                 filtered_at = {k: v for k, v in at_dict.items() if k in valid_keys}
@@ -306,6 +325,7 @@ def get_records_by_state(state: LifecycleState | List[LifecycleState], engine=No
         for r in records:
             payload = {
                 "asset": r.asset,
+                "edge_description": r.edge_description,
                 "efficiency": {
                     "Market_Bias": r.market_bias,
                     "Calc_edge": r.calc_edge,

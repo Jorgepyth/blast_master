@@ -65,8 +65,15 @@ class TacticalAnalysis(BaseModel):
         if self.calc_edge == 0.0:
             self.tactical_classification = TacticalClassification.NA
             
-        self.long_prob = round(max(0.15, min(0.85, self.calc_edge * 0.2125)), 3)
-        self.short_prob = round(max(0.15, min(0.85, -self.calc_edge * 0.2125)), 3)
+        import math
+        scaling_factor = 0.2125
+        e_long = math.exp(self.calc_edge * scaling_factor)
+        e_short = math.exp(-self.calc_edge * scaling_factor)
+        e_no_trade = math.exp(1.54)
+        
+        total = e_long + e_short + e_no_trade
+        self.long_prob = round(e_long / total, 3)
+        self.short_prob = round(e_short / total, 3)
         self.no_trade_prob = round(1.0 - self.long_prob - self.short_prob, 3)
 
         return self

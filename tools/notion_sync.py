@@ -65,38 +65,82 @@ def post_to_notion(payload: dict) -> dict:
     return resp.json()
 
 def sync_records():
-    records = get_records_by_state(LifecycleState.READY_FOR_NOTION)
+    # Fetch both READY_FOR_NOTION and FAILED states to allow retry!
+    records = get_records_by_state([LifecycleState.READY_FOR_NOTION, LifecycleState.FAILED])
     if not records:
         print("No records to sync.")
         return
 
     os.makedirs(".tmp", exist_ok=True)
     
-    for r in records:
-        try:
-            payload = r["payload"]
-            eff = payload.get("efficiency", {})
-            eff_audit = payload.get("audit_efficiency", {})
-            tact = payload.get("tactical", {})
-            tact_audit = payload.get("audit_tactical", {})
-            asset = payload.get("asset", "Unknown")
+    from sqlalchemy.orm import Session
+    from tools.database import engine_default, UnifiedDepartment
+    import tools.database
+    
+    engine = engine_default or init_db()
+    
+    with Session(engine) as session:
+        for r in records:
+            try:
+                db_record = session.get(UnifiedDepartment, r["id"])
+                if not db_record:
+                    continue
+                
+                # If already fully synced, skip
+                if db_record.state == LifecycleState.SYNCED.value:
+                    continue
 
-            eff_notion_payload = map_efficiency_payload(r["id"], asset, eff, eff_audit)
-            eff_resp = post_to_notion(eff_notion_payload)
-            eff_page_id = eff_resp["id"]
+                payload = r["payload"]
+                eff = payload.get("efficiency", {})
+                eff_audit = payload.get("audit_efficiency", {})
+                tact = payload.get("tactical", {})
+                tact_audit = payload.get("audit_tactical", {})
+                asset = payload.get("asset", "Unknown")
 
-            tact_notion_payload = map_tactical_payload(r["id"], tact, tact_audit, eff_page_id)
-            post_to_notion(tact_notion_payload)
+                # Before generating a new page in Notion for the Efficiency database,
+                # query the local database record. If an efficiency_page_id is already populated,
+                # skip the network call and reuse the identifier.
+                eff_page_id = db_record.efficiency_page_id
+                if not eff_page_id:
+                    eff_notion_payload = map_efficiency_payload(r["id"], asset, eff, eff_audit)
+                    eff_resp = post_to_notion(eff_notion_payload)
+                    eff_page_id = eff_resp["id"]
+                    db_record.efficiency_page_id = eff_page_id
+                    session.commit()
+                    print(f"Created Efficiency page in Notion: {eff_page_id}")
+                else:
+                    print(f"Skipping Efficiency page creation, reusing ID: {eff_page_id}")
 
-            update_record_state(r["id"], LifecycleState.SYNCED)
-            print(f"Successfully synced trade {r['id']}")
+                # Execute the Tactical database network call.
+                tact_page_id = db_record.tactical_page_id
+                if not tact_page_id:
+                    tact_notion_payload = map_tactical_payload(r["id"], tact, tact_audit, eff_page_id)
+                    tact_resp = post_to_notion(tact_notion_payload)
+                    tact_page_id = tact_resp["id"]
+                    db_record.tactical_page_id = tact_page_id
+                    session.commit()
+                    print(f"Created Tactical page in Notion: {tact_page_id}")
 
-        except Exception as e:
-            error_msg = f"Failed to sync trade {r['id']}: {str(e)}"
-            print(error_msg)
-            with open(".tmp/sync_errors.log", "a") as f:
-                f.write(error_msg + "\n")
-            update_record_state(r["id"], LifecycleState.FAILED)
+                # Transition record state to SYNCED
+                db_record.state = LifecycleState.SYNCED.value
+                session.commit()
+                print(f"Successfully synced trade {r['id']}")
+
+            except Exception as e:
+                session.rollback()
+                error_msg = f"Failed to sync trade {r['id']}: {str(e)}"
+                print(error_msg)
+                with open(".tmp/sync_errors.log", "a") as f:
+                    f.write(error_msg + "\n")
+                
+                try:
+                    with Session(engine) as err_session:
+                        err_record = err_session.get(UnifiedDepartment, r["id"])
+                        if err_record:
+                            err_record.state = LifecycleState.FAILED.value
+                            err_session.commit()
+                except Exception as db_err:
+                    print(f"Failed to set state to FAILED: {db_err}")
 
 if __name__ == "__main__":
     init_db()
