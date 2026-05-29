@@ -117,11 +117,12 @@ def check_daemon_status():
         pass
     return "[bold red]OFFLINE[/bold red]"
 
-def get_total_records_count():
+def get_total_records_count(engine=None):
     from sqlalchemy.orm import Session
     from sqlalchemy import func
     try:
-        with Session(engine_default) as db_session:
+        eng = engine or engine_default
+        with Session(eng) as db_session:
             return db_session.query(func.count(UnifiedDepartment.id)).scalar()
     except Exception:
         return 0
@@ -135,17 +136,17 @@ class CLIState:
         self.total_records = 0
         self.tracked_assets = []
         
-    def refresh_metrics(self):
+    def refresh_metrics(self, engine=None):
         try:
-            self.pending_records = get_records_by_state(LifecycleState.PENDING_AUDITS)
+            self.pending_records = get_records_by_state(LifecycleState.PENDING_AUDITS, engine=engine)
         except Exception:
             self.pending_records = []
             
         self.daemon_status = check_daemon_status()
-        self.total_records = get_total_records_count()
+        self.total_records = get_total_records_count(engine=engine)
         
         try:
-            self.tracked_assets = get_assets()
+            self.tracked_assets = get_assets(engine=engine)
         except Exception:
             self.tracked_assets = []
 
@@ -343,12 +344,13 @@ def render_pending_audits_table(records) -> Panel:
         
     return Panel(table, title="[bold secondary]Pending Audits Queue[/bold secondary]", border_style="secondary", box=box.ROUNDED)
 
-def get_latest_analysis_record():
+def get_latest_analysis_record(engine=None):
     from tools.database import engine_default, UnifiedDepartment
     from sqlalchemy.orm import Session
     from sqlalchemy import select, desc
     try:
-        with Session(engine_default) as db_session:
+        eng = engine or engine_default
+        with Session(eng) as db_session:
             stmt = select(UnifiedDepartment).order_by(desc(UnifiedDepartment.created_at)).limit(1)
             record = db_session.scalars(stmt).first()
             if record:
@@ -381,9 +383,9 @@ def get_latest_analysis_record():
         pass
     return None
 
-def render_wizard_layout(step_num, step_title, session, active_key, state: CLIState):
+def render_wizard_layout(step_num, step_title, session, active_key, state: CLIState, engine=None):
     try:
-        audit_records = get_records_by_state(LifecycleState.PENDING_AUDITS)
+        audit_records = get_records_by_state(LifecycleState.PENDING_AUDITS, engine=engine)
     except Exception:
         audit_records = []
     pending_audits = len(audit_records)
@@ -472,7 +474,7 @@ def render_wizard_layout(step_num, step_title, session, active_key, state: CLISt
     left_layout["pending_queue"].update(queue_panel)
     outer_layout["left_col"].update(left_layout)
     
-    prev = get_latest_analysis_record()
+    prev = get_latest_analysis_record(engine=engine)
     if not prev:
         empty_text = Text()
         empty_text.append("\n\n   No previous analyses found in database.\n", style="muted italic")

@@ -25,12 +25,12 @@ class StructuralResolution(str, Enum):
     NA = "N/A"
 
 class FailureReason(str, Enum):
+    LIQUIDITY_SWEEP = "Liquidity Sweep -- Hizo el movimiento pero barrió mi punto de invalidación por un tick - error de precisión"
+    REGIME_DECAY = "Regime Decay -- Predije X / el mercado se quedo choppy"
+    REVERSAL = "Reversal --prefije X / el mercado se fue Bullish/Bearish agresivo"
+    OVERLAP = "Overlap -- nuevo bias antes de resolucion"
+    RANGE_EXPANSION = "Range Expansion -- predije choppy y el precio hizo un rompimiento del rango"
     NA = "N/A"
-    LIQUIDITY_SWEEP = "Liquidity Sweep"
-    REGIME_DECAY = "Regime Decay"
-    REVERSAL = "Reversal"
-    OVERLAP = "Overlap"
-    RANGE_EXPANSION = "Range Expansion"
 
 class EfficiencyAudit(BaseModel):
     efficiency_id: str

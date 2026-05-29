@@ -66,10 +66,14 @@ class TacticalAnalysis(BaseModel):
             self.tactical_classification = TacticalClassification.NA
             
         import math
-        scaling_factor = 0.2125
+        import os
+        
+        scaling_factor = float(os.getenv("TACTICAL_SCALING_FACTOR", 0.2125))
+        no_trade_exponent = float(os.getenv("NO_TRADE_BASE_EXPONENT", 1.54))
+        
         e_long = math.exp(self.calc_edge * scaling_factor)
         e_short = math.exp(-self.calc_edge * scaling_factor)
-        e_no_trade = math.exp(1.54)
+        e_no_trade = math.exp(no_trade_exponent)
         
         total = e_long + e_short + e_no_trade
         self.long_prob = round(e_long / total, 3)

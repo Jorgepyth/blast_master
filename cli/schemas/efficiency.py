@@ -40,10 +40,14 @@ class EfficiencyAnalysis(BaseModel):
     @model_validator(mode='after')
     def calculate_derived_fields(self) -> 'EfficiencyAnalysis':
         import math
-        scaling_factor = 0.2833
+        import os
+        
+        scaling_factor = float(os.getenv("EFFICIENCY_SCALING_FACTOR", 0.2833))
+        no_trade_exponent = float(os.getenv("NO_TRADE_BASE_EXPONENT", 1.54))
+        
         e_long = math.exp(self.Calc_edge * scaling_factor)
         e_short = math.exp(-self.Calc_edge * scaling_factor)
-        e_no_trade = math.exp(1.54)
+        e_no_trade = math.exp(no_trade_exponent)
         
         total = e_long + e_short + e_no_trade
         self.Long_prob = round(e_long / total, 3)

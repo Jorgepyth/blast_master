@@ -182,8 +182,8 @@ class AnalysisSession:
 
         if step_num is not None:
             state.active_session = ACTIVE_SESSION
-            state.refresh_metrics()
-            render_wizard_layout(step_num, step_title, self, key, state)
+            state.refresh_metrics(get_active_engine())
+            render_wizard_layout(step_num, step_title, self, key, state, get_active_engine())
             
         try:
             val = func(*args, **kwargs)
@@ -202,6 +202,33 @@ class AnalysisSession:
                 raise RestartFlowException()
 
 ACTIVE_SESSION = None
+ACTIVE_ENGINE = None
+
+def get_active_engine():
+    global ACTIVE_ENGINE
+    if ACTIVE_SESSION is not None:
+        return ACTIVE_ENGINE
+    
+    from tools.database import engine_default
+    if engine_default is not None:
+        return engine_default
+    else:
+        # Fallback default directly to permanent production location
+        from tools.database import init_db
+        return init_db("sqlite:///.data/journal.db")
+
+def to_local_display(dt, fmt="%Y-%m-%d %H:%M"):
+    if dt is None:
+        return "N/A"
+    if dt.tzinfo is not None:
+        guatemala_offset = datetime.timezone(datetime.timedelta(hours=-6))
+        return dt.astimezone(guatemala_offset).strftime(fmt)
+    else:
+        # If naive, assume UTC coordinate and translate to local UTC-6
+        dt_utc = dt.replace(tzinfo=datetime.timezone.utc)
+        guatemala_offset = datetime.timezone(datetime.timedelta(hours=-6))
+        return dt_utc.astimezone(guatemala_offset).strftime(fmt)
+
 state = CLIState()
 TEST_SESSIONS_FILE = ".data/test_sessions.json"
 
@@ -312,6 +339,9 @@ class PauseAuditException(Exception):
 class GoBackException(Exception):
     pass
 
+class ExitToMainMenuException(Exception):
+    pass
+
 class RestartFlowException(Exception):
     pass
 
@@ -403,7 +433,7 @@ def get_mandatory_text(prompt_text, multiline=False, default=""):
         )).execute()
         if val and val.strip():
             return val.strip()
-def format_indented_block(text_value, indent_spaces=11, first_line_flush=True, wrap_width=None):
+def format_indented_block(text_value, indent_spaces=11, first_line_flush=True, wrap_width=80):
     if not text_value:
         return ""
     prefix = " " * indent_spaces
@@ -422,10 +452,38 @@ def format_indented_block(text_value, indent_spaces=11, first_line_flush=True, w
         
     if not lines:
         return ""
+        
+    # Strip trailing whitespace to guarantee horizontal bounds
+    lines = [line.rstrip() for line in lines]
+    
     if first_line_flush:
         return lines[0] + "".join(f"\n{prefix}{line}" for line in lines[1:])
     else:
         return prefix + lines[0] + "".join(f"\n{prefix}{line}" for line in lines[1:])
+
+def determine_market_bias(i_cd: float) -> str:
+    if abs(i_cd) < 0.26:
+        return "Choppy / Neutral"
+    elif i_cd >= 0.26:
+        return "Bullish"
+    else:
+        return "Bearish"
+
+def calculate_probabilities(calc_edge: float) -> tuple:
+    import math
+    import os
+    scaling_factor = float(os.getenv("TACTICAL_SCALING_FACTOR", 0.2125))
+    no_trade_exponent = float(os.getenv("NO_TRADE_BASE_EXPONENT", 1.54))
+    
+    e_long = math.exp(calc_edge * scaling_factor)
+    e_short = math.exp(-calc_edge * scaling_factor)
+    e_no_trade = math.exp(no_trade_exponent)
+    
+    total = e_long + e_short + e_no_trade
+    long_prob = round(e_long / total, 3)
+    short_prob = round(e_short / total, 3)
+    no_trade_prob = round(1.0 - long_prob - short_prob, 3)
+    return long_prob, short_prob, no_trade_prob
 
 def get_optional_text(prompt_text, multiline=False):
     message = f"{prompt_text} (Optional, press Enter to skip) >"
@@ -526,8 +584,8 @@ def flow_test_drive():
             ACTIVE_SESSION = {"id": session_id, "name": name}
             
             from tools.database import copy_assets_to_current_db, init_db
-            init_db(f"sqlite:///.data/{session_id}.db")
-            copy_assets_to_current_db()
+            ACTIVE_ENGINE = init_db(f"sqlite:///.data/{session_id}.db")
+            copy_assets_to_current_db(ACTIVE_ENGINE)
             
             console.print(f"[green]Session '{name}' created and loaded![/green]")
             input("Press Enter to continue...")
@@ -552,8 +610,7 @@ def flow_test_drive():
                     TestSessionManager.delete_session(del_choice)
                     if ACTIVE_SESSION and ACTIVE_SESSION["id"] == del_choice:
                         ACTIVE_SESSION = None
-                        from tools.database import init_db
-                        init_db("sqlite:///.data/journal.db")
+                        ACTIVE_ENGINE = None
                     console.print("[green]Session deleted.[/green]")
                     input("Press Enter to continue...")
         else:
@@ -561,7 +618,7 @@ def flow_test_drive():
             ACTIVE_SESSION = {"id": s_id, "name": sessions[s_id]["name"]}
             TestSessionManager.update_last_played(s_id)
             from tools.database import init_db
-            init_db(f"sqlite:///.data/{s_id}.db")
+            ACTIVE_ENGINE = init_db(f"sqlite:///.data/{s_id}.db")
             console.print(f"[green]Session '{ACTIVE_SESSION['name']}' loaded![/green]")
             input("Press Enter to continue...")
             return
@@ -577,7 +634,7 @@ def start():
     global ACTIVE_SESSION
     
     state.active_session = ACTIVE_SESSION
-    state.refresh_metrics()
+    state.refresh_metrics(get_active_engine())
     state.active_idx = 0
     
     layout = build_persistent_layout(state)
@@ -635,8 +692,9 @@ def start():
                                 choices=[
                                     Choice("add_asset", name="[1] Add New Asset"),
                                     Choice("add_backdated_analysis", name="[2] Add Backdated Analysis"),
-                                    Choice("executed_trades_repair", name="[3] Repair Executed Trades"),
-                                    Choice("back", name="[4] Back to Main Menu")
+                                    Choice("repair_analysis_audits", name="[3] Repair executed analysis & audits"),
+                                    Choice("back", name="[4] Back to Main Menu"),
+                                    Choice("add_new_whitelisted_asset", name="[5] Add New Asset to Whitelist")
                                 ],
                                 pointer=">",
                                 qmark=""
@@ -648,7 +706,7 @@ def start():
                                 if not category:
                                     category = "Crypto"
                                 try:
-                                    add_asset(new_asset, category)
+                                    add_asset(new_asset, category, engine=get_active_engine())
                                     console.print(f"[green]Successfully added {new_asset} to database.[/green]")
                                 except Exception as e:
                                     console.print(f"[bold red]Failed to add asset: {e}[/bold red]")
@@ -664,15 +722,19 @@ def start():
                                 except Exception as e:
                                     console.print(f"[bold red]Error adding backdated analysis: {e}[/bold red]")
                                 input("Press Enter to continue...")
-                            elif config_choice == "executed_trades_repair":
-                                flow_executed_trades_repair()
+                            elif config_choice == "repair_analysis_audits":
+                                flow_repair_analysis_audits()
+                            elif config_choice == "add_new_whitelisted_asset":
+                                try:
+                                    flow_add_whitelisted_asset()
+                                except Exception as e:
+                                    console.print(f"[bold red]Error adding whitelisted asset: {e}[/bold red]")
                         elif selected_choice == "t":
                             flow_test_drive()
                         elif selected_choice == "e":
                             ACTIVE_SESSION = None
                             state.active_session = None
-                            from tools.database import init_db
-                            init_db("sqlite:///.data/journal.db")
+                            ACTIVE_ENGINE = None
                             console.print("[yellow]Exiting Test Flight and restoring main database connection...[/yellow]")
                             import time
                             time.sleep(1)
@@ -681,7 +743,7 @@ def start():
                             break
                     finally:
                         state.active_session = ACTIVE_SESSION
-                        state.refresh_metrics()
+                        state.refresh_metrics(get_active_engine())
                         
                         layout = build_persistent_layout(state)
                         layout["body"].update(build_welcome_body(state))
@@ -701,59 +763,465 @@ def format_percentage(value):
     return f"{value * 100:.3f}%"
 
 def flow_review_analysis():
-    from tools.database import engine_default, UnifiedDepartment, AnalysisLayer
+    import datetime
+    import calendar
     from sqlalchemy.orm import Session
-    from sqlalchemy import select, desc
     
+    # Unify Table Generation via LEFT JOINs
+    # Rolling 10 items grid query
+    rolling_query = """
+    SELECT u.id, u.asset, u.market_bias, u.calc_edge, u.created_at, 
+           e.bias_a, e.real_bias_b, e.resolution_type, 
+           t.compliance, u.trade_status
+    FROM unified_department u
+    LEFT JOIN efficiency_audit e ON u.id = e.id
+    LEFT JOIN tactical_audit t ON u.id = t.id
+    ORDER BY u.created_at DESC LIMIT 10;
+    """
+
+    def format_row_value(val, is_bias=False, is_compliance=False, is_status=False, is_edge=False):
+        if val is None or val == "":
+            return "[yellow]Pending[/yellow]"
+        val_str = str(val)
+        if is_edge:
+            try:
+                edge_val = float(val)
+                edge_style = "bold green" if edge_val >= 0.26 else "bold red" if edge_val <= -0.26 else "bold yellow"
+                return f"[{edge_style}]{edge_val:.4f}[/{edge_style}]"
+            except ValueError:
+                return f"[yellow]{val_str}[/yellow]"
+        if is_bias:
+            if val_str in ["Bullish", "Long", "BOS", "CHOCH", "Validated Range Expansion", "Trend Reversal"]:
+                bias_style = "bold green"
+            elif val_str in ["Bearish", "Short"]:
+                bias_style = "bold red"
+            else:
+                bias_style = "bold yellow"
+            return f"[{bias_style}]{val_str}[/{bias_style}]"
+        if is_compliance:
+            comp_style = "bold green" if "Edge_valid" in val_str else "bold red" if val_str in ["Invalid_edge", "No_edge"] else "bold yellow"
+            return f"[{comp_style}]{val_str}[/{comp_style}]"
+        if is_status:
+            status_style = "bold green" if "good" in val_str.lower() else "bold red" if "bad" in val_str.lower() else "bold yellow"
+            return f"[{status_style}]{val_str}[/{status_style}]"
+        return val_str
+
+    def render_ledger_table(rows):
+        SHORTHANDS = {
+            "Choppy / Neutral": "Neutral",
+            "Confirmed (A equal to B)": "Conf (A=B)",
+            "Invalidated (B not equal to A)": "Inval (B!=A)",
+            "Overlap Invalidated (New Bias before resolution)": "Overlap Inval",
+            "Trade_taken_bad_execution": "Taken (Bad Ex)",
+            "Trade_taken_good_execution": "Taken (Good Ex)",
+            "Trade_not_taken_valid_edge": "Not Taken (Valid)"
+        }
+
+        table = Table(box=box.ROUNDED, border_style="magenta", expand=True)
+        table.add_column("#", justify="center", style="dim")
+        table.add_column("Short ID", justify="center", style="cyan", no_wrap=True, max_width=10, overflow="ellipsis")
+        table.add_column("Asset", justify="center", style="bold white", no_wrap=True, max_width=15, overflow="ellipsis")
+        table.add_column("Market Bias", justify="center", no_wrap=True, max_width=12, overflow="ellipsis")
+        table.add_column("Calc Edge", justify="right", no_wrap=True, max_width=10, overflow="ellipsis")
+        table.add_column("Created At", justify="center", style="dim cyan", no_wrap=True, max_width=16, overflow="ellipsis")
+        table.add_column("Bias A", justify="center", no_wrap=True, max_width=12, overflow="ellipsis")
+        table.add_column("Real Bias B", justify="center", no_wrap=True, max_width=12, overflow="ellipsis")
+        table.add_column("Resolution Type", justify="center", no_wrap=True, max_width=15, overflow="ellipsis")
+        table.add_column("Compliance", justify="center", no_wrap=True, max_width=15, overflow="ellipsis")
+        table.add_column("Trade Status", justify="center", no_wrap=True, max_width=20, overflow="ellipsis")
+        
+        for idx, row in enumerate(rows):
+            r_id, asset, market_bias, calc_edge, created_at, bias_a, real_bias_b, resolution_type, compliance, trade_status = row
+            
+            # Apply SHORTHANDS mapping blueprint
+            market_bias = SHORTHANDS.get(market_bias, market_bias)
+            bias_a = SHORTHANDS.get(bias_a, bias_a)
+            real_bias_b = SHORTHANDS.get(real_bias_b, real_bias_b)
+            resolution_type = SHORTHANDS.get(resolution_type, resolution_type)
+            compliance = SHORTHANDS.get(compliance, compliance)
+            trade_status = SHORTHANDS.get(trade_status, trade_status)
+            
+            if isinstance(created_at, datetime.datetime):
+                created_display = to_local_display(created_at)
+            else:
+                created_display = str(created_at)[:16]
+            created_str = f"[dim cyan]{created_display}[/dim cyan]"
+            
+            table.add_row(
+                str(idx + 1),
+                r_id[:8],
+                asset,
+                format_row_value(market_bias, is_bias=True),
+                format_row_value(calc_edge, is_edge=True),
+                created_str,
+                format_row_value(bias_a, is_bias=True),
+                format_row_value(real_bias_b, is_bias=True),
+                format_row_value(resolution_type, is_bias=True),
+                format_row_value(compliance, is_compliance=True),
+                format_row_value(trade_status, is_status=True)
+            )
+        return table
+
+    def format_json_field(val):
+        if not val:
+            return "[yellow]Pending[/yellow]"
+        try:
+            import json
+            if isinstance(val, str):
+                lst = json.loads(val)
+            else:
+                lst = val
+            if isinstance(lst, list):
+                return ", ".join(str(x) for x in lst)
+            return str(lst)
+        except Exception:
+            return str(val)
+
+    def show_unified_detail(selected_id, raw_conn):
+        detail_query = """
+        SELECT u.id, u.asset, u.market_bias, u.calc_edge, u.created_at, u.updated_at, u.edge_description, u.trade_status,
+               u.p4_hierarchy, u.p1_timeframe, u.p1_type, u.nodes_l1, u.nodes_l2, u.tactical_classification,
+               u.long_prob, u.short_prob, u.no_trade_prob,
+               e.bias_a, e.resolution_type, e.real_bias_b, e.structural_resolution, e.failure_reason,
+               e.specific_bias_compliance, e.false_regime_rate, e.lesson_learned as e_lesson,
+               t.compliance, t.entry_time, t.exit_time, t.tier_setup, t.market_state, t.exit_type,
+               t.followed_plan, t.primary_emotion, t.setup_type, t.htf_trend_context, t.ltf_trend_context,
+               t.confirmation_status, t.anxiety_level, t.impatience_level, t.mental_clarity_level,
+               t.emotions, t.behavioral_errors, t.cognitive_patterns, t.size, t.entry_price,
+               t.closing_price, t.could_hit_tp, t.take_profit, t.stop_loss, t.pnl_and_cost,
+               t.mae_adverse, t.captured_mae, t.mfe_favorable, t.notional_size, t.capital_at_risk,
+               t.lesson_learned as t_lesson, t.session,
+               al.department, al.layer_name, al.direction, al.strength, al.thesis
+        FROM unified_department u
+        LEFT JOIN efficiency_audit e ON u.id = e.id
+        LEFT JOIN tactical_audit t ON u.id = t.id
+        LEFT JOIN analysis_layer al ON u.id = al.trade_id
+        WHERE u.id = ?;
+        """
+        cursor = raw_conn.execute(detail_query, (selected_id,))
+        detail_rows = cursor.fetchall()
+        
+        if not detail_rows:
+            console.print("[bold red]Analysis record not found![/bold red]")
+            input("Press Enter to continue...")
+            return
+            
+        cols = [
+            "id", "asset", "market_bias", "calc_edge", "created_at", "updated_at", "edge_description", "trade_status",
+            "p4_hierarchy", "p1_timeframe", "p1_type", "nodes_l1", "nodes_l2", "tactical_classification",
+            "long_prob", "short_prob", "no_trade_prob",
+            "bias_a", "resolution_type", "real_bias_b", "structural_resolution", "failure_reason",
+            "specific_bias_compliance", "false_regime_rate", "e_lesson",
+            "compliance", "entry_time", "exit_time", "tier_setup", "market_state", "exit_type",
+            "followed_plan", "primary_emotion", "setup_type", "htf_trend_context", "ltf_trend_context",
+            "confirmation_status", "anxiety_level", "impatience_level", "mental_clarity_level",
+            "emotions", "behavioral_errors", "cognitive_patterns", "size", "entry_price",
+            "closing_price", "could_hit_tp", "take_profit", "stop_loss", "pnl_and_cost",
+            "mae_adverse", "captured_mae", "mfe_favorable", "notional_size", "capital_at_risk",
+            "t_lesson", "session"
+        ]
+        
+        record = {}
+        for i, col in enumerate(cols):
+            record[col] = detail_rows[0][i]
+            
+        # Extract layers
+        layers_dict = {}
+        for row in detail_rows:
+            l_dept = row[-5]
+            l_name = row[-4]
+            l_dir = row[-3]
+            l_str = row[-2]
+            l_thesis = row[-1]
+            if l_name:
+                layers_dict[l_name] = {
+                    "department": l_dept,
+                    "direction": l_dir,
+                    "strength": l_str,
+                    "thesis": l_thesis
+                }
+
+        # Perform programmatic metric calculations in Python
+        ep = record["entry_price"]
+        cp = record["closing_price"]
+        sl = record["stop_loss"]
+        tp = record["take_profit"]
+        size = record["size"]
+        mfe = record["mfe_favorable"]
+        
+        record["trade_decision"] = None
+        record["notional_size_usd"] = None
+        record["risk_usd"] = None
+        record["dist_to_sl"] = None
+        record["dist_to_tp"] = None
+        record["r_r"] = None
+        record["pnl"] = None
+        record["cost"] = 0.0
+        record["r_multiple"] = None
+        record["captured_mfe"] = None
+        record["trade_duration"] = None
+        
+        if ep is not None and sl is not None and size is not None:
+            td = "Long" if ep > sl else "Short"
+            record["trade_decision"] = td
+            record["notional_size_usd"] = ep * size
+            record["risk_usd"] = size * abs(ep - sl)
+            
+            if td == "Long":
+                record["capital_at_risk"] = size * (ep - sl)
+            else:
+                record["capital_at_risk"] = size * (sl - ep)
+                
+            if ep != 0:
+                record["dist_to_sl"] = abs(ep - sl) / ep
+            else:
+                record["dist_to_sl"] = 0.0
+                
+            if tp is not None and ep != 0:
+                record["dist_to_tp"] = abs(ep - tp) / ep
+                sl_dist_abs = abs(ep - sl)
+                if sl_dist_abs != 0:
+                    if td == "Long":
+                        record["r_r"] = (tp - ep) / sl_dist_abs
+                    else:
+                        record["r_r"] = (ep - tp) / sl_dist_abs
+                else:
+                    record["r_r"] = 0.0
+            
+            if cp is not None:
+                if td == "Long":
+                    record["pnl"] = (cp - ep) * size
+                else:
+                    record["pnl"] = (ep - cp) * size
+                    
+                if record["pnl_and_cost"] is not None:
+                    record["cost"] = record["pnl"] - record["pnl_and_cost"]
+                else:
+                    record["cost"] = 0.0
+                    
+                sl_dist_abs = abs(ep - sl)
+                if sl_dist_abs != 0:
+                    if td == "Long":
+                        record["r_multiple"] = (cp - ep) / sl_dist_abs
+                    else:
+                        record["r_multiple"] = (ep - cp) / sl_dist_abs
+                else:
+                    record["r_multiple"] = 0.0
+                    
+                if record["r_multiple"] < 0 or not mfe or mfe == 0.0:
+                    record["captured_mfe"] = 0.0
+                else:
+                    record["captured_mfe"] = record["r_multiple"] / mfe
+
+        # Map mae_adverse to mae and mfe_favorable to mfe for display compatibility
+        record["mae"] = record["mae_adverse"]
+        record["mfe"] = record["mfe_favorable"]
+        
+        # Format entry and exit times to calculate duration
+        if record["entry_time"] and record["exit_time"]:
+            try:
+                if isinstance(record["entry_time"], str):
+                    ent_dt = datetime.datetime.fromisoformat(record["entry_time"])
+                else:
+                    ent_dt = record["entry_time"]
+                if isinstance(record["exit_time"], str):
+                    ext_dt = datetime.datetime.fromisoformat(record["exit_time"])
+                else:
+                    ext_dt = record["exit_time"]
+                delta = ext_dt - ent_dt
+                tot_sec = int(delta.total_seconds())
+                hours = tot_sec // 3600
+                minutes = (tot_sec % 3600) // 60
+                record["trade_duration"] = f"{hours}h {minutes}m"
+            except Exception:
+                record["trade_duration"] = "N/A"
+        else:
+            record["trade_duration"] = "N/A"
+
+        # Format Top Section (Unified Analysis Dashboard)
+        struct_text = Text()
+        struct_text.append("Asset: ", style="dim")
+        struct_text.append(f"{record['asset']}", style="bold white")
+        struct_text.append(" | ID: ", style="dim")
+        struct_text.append(f"{record['id'][:8]}", style="bold cyan")
+        created_str = to_local_display(record['created_at']) if isinstance(record['created_at'], datetime.datetime) else str(record['created_at'])
+        struct_text.append(" | ", style="dim")
+        struct_text.append(Text.from_markup(f"[dim cyan]{created_str}[/dim cyan]\n"))
+        
+        struct_text.append("Market Bias: ", style="dim")
+        bias_style = "bold green" if record['market_bias'] == "Bullish" else "bold red" if record['market_bias'] == "Bearish" else "bold yellow"
+        struct_text.append(f"{record['market_bias']}\n\n", style=bias_style)
+        
+        # Display probabilities
+        struct_text.append("Directional Probabilities:\n", style="dim")
+        struct_text.append("  Long Prob:      ", style="dim")
+        struct_text.append(f"{record['long_prob'] * 100:.1f}%\n", style="green")
+        struct_text.append("  Short Prob:     ", style="dim")
+        struct_text.append(f"{record['short_prob'] * 100:.1f}%\n", style="red")
+        struct_text.append("  No-Trade Prob:  ", style="dim")
+        struct_text.append(f"{record['no_trade_prob'] * 100:.1f}%\n\n", style="yellow")
+        
+        for label, name in [("P0 (Macro)", "P0"), ("P2 (Struc)", "P2"), ("P3 (Trend)", "P3"), ("P4 (Hier )", "P4"), ("P1 (Timef)", "P1")]:
+            l = layers_dict.get(name)
+            struct_text.append(f"{label}: ", style="bold cyan" if name in ["P0", "P2", "P3"] else "bold magenta")
+            if l:
+                d = l["direction"]
+                s = l["strength"]
+                t = l["thesis"]
+                d_style = "bold green" if d == "Long" else "bold red" if d == "Short" else "bold yellow"
+                struct_text.append(f"{d.upper()}", style=d_style)
+                struct_text.append(" | ", style="dim")
+                s_style = "bold" if s == "Strong" else ""
+                struct_text.append(f"{s.upper()}\n", style=s_style)
+                if t:
+                    indented_thesis = format_indented_block(t, indent_spaces=11, first_line_flush=True, wrap_width=80)
+                    struct_text.append("   Thesis: ", style="dim italic")
+                    struct_text.append(f"{indented_thesis}\n", style="dim italic")
+            else:
+                struct_text.append("N/A\n", style="dim")
+                
+        if record['edge_description']:
+            indented_desc = format_indented_block(record['edge_description'], indent_spaces=11, first_line_flush=False, wrap_width=80)
+            struct_text.append(f"\nEdge Description:\n{indented_desc}\n", style="italic white")
+
+        dashboard = Panel(
+            struct_text,
+            title=f"[white]Unified Analysis Dashboard: {record['asset']} - {to_local_display(record['created_at']) if isinstance(record['created_at'], datetime.datetime) else record['created_at']}[/white]",
+            border_style="bold blue",
+            box=box.DOUBLE
+        )
+
+        # Efficiency Audit View
+        eff_text = Text()
+        if record["bias_a"] is None:
+            eff_text.append("\n  [ Pending Audit ]\n\n", style="bold yellow")
+        else:
+            eff_text.append("Bias A (Initial): ", style="dim")
+            eff_text.append(f"{record['bias_a']}\n", style="bold white")
+            eff_text.append("Real Bias B:      ", style="dim")
+            eff_text.append(Text.from_markup(f"{format_row_value(record['real_bias_b'], is_bias=True)}\n"))
+            eff_text.append("Resolution Type:  ", style="dim")
+            eff_text.append(Text.from_markup(f"{format_row_value(record['resolution_type'], is_bias=True)}\n"))
+            eff_text.append("Structural Res:   ", style="dim")
+            eff_text.append(f"{record['structural_resolution']}\n", style="bold white")
+            eff_text.append("Failure Reason:   ", style="dim")
+            eff_text.append(f"{record['failure_reason']}\n", style="bold white")
+            eff_text.append("Compliance:       ", style="dim")
+            eff_text.append(f"{record['specific_bias_compliance']}\n", style="bold white")
+            eff_text.append("Regime Rate:      ", style="dim")
+            eff_text.append(f"{record['false_regime_rate']}\n", style="bold white")
+            if record['e_lesson']:
+                indented_lesson = format_indented_block(record['e_lesson'], indent_spaces=11, first_line_flush=False, wrap_width=80)
+                eff_text.append(f"\nLesson Learned:\n{indented_lesson}\n", style="italic white")
+                
+        eff_panel = Panel(
+            eff_text,
+            title="[bold cyan]Step 2/3: Efficiency Audit View[/bold cyan]",
+            border_style="cyan",
+            box=box.ROUNDED
+        )
+
+        # Tactical Audit View
+        tact_text = Text()
+        if record["compliance"] is None:
+            tact_text.append("\n  [ Pending Audit ]\n\n", style="bold yellow")
+        else:
+            tact_text.append("Compliance:       ", style="dim")
+            tact_text.append(Text.from_markup(f"{format_row_value(record['compliance'], is_compliance=True)}\n"))
+            tact_text.append("Trade Status:     ", style="dim")
+            tact_text.append(Text.from_markup(f"{format_row_value(record['trade_status'], is_status=True)}\n"))
+            
+            entry_str = to_local_display(record['entry_time']) if isinstance(record['entry_time'], datetime.datetime) else str(record['entry_time'])
+            exit_str = to_local_display(record['exit_time']) if isinstance(record['exit_time'], datetime.datetime) else str(record['exit_time'])
+            tact_text.append("Entry Time:       ", style="dim")
+            tact_text.append(Text.from_markup(f"[dim cyan]{entry_str}[/dim cyan]\n"))
+            tact_text.append("Exit Time:        ", style="dim")
+            tact_text.append(Text.from_markup(f"[dim cyan]{exit_str}[/dim cyan]\n"))
+            tact_text.append("Duration:         ", style="dim")
+            tact_text.append(f"{record['trade_duration']}\n", style="bold white")
+            tact_text.append("Session:          ", style="dim")
+            tact_text.append(f"{record['session']}\n\n", style="bold white")
+            
+            tact_text.append("Financial & Execution Metrics:\n", style="bold white")
+            tact_text.append(f"  Size:           {record['size']}\n", style="dim")
+            tact_text.append(f"  Entry Price:    {record['entry_price']}\n", style="dim")
+            tact_text.append(f"  Closing Price:  {record['closing_price']}\n", style="dim")
+            tact_text.append(f"  Stop Loss:      {record['stop_loss']}\n", style="dim")
+            tact_text.append(f"  Take Profit:    {record['take_profit']}\n", style="dim")
+            tact_text.append(f"  MAE / MFE:      {record['mae']} / {record['mfe']}\n", style="dim")
+            
+            pnl_style = "bold green" if record['pnl'] and record['pnl'] >= 0 else "bold red"
+            tact_text.append("  PnL:            ", style="dim")
+            tact_text.append(Text.from_markup(f"[{pnl_style}]{record['pnl']}[/{pnl_style}]\n"))
+            tact_text.append("  PnL & Cost:     ", style="dim")
+            tact_text.append(Text.from_markup(f"[{pnl_style}]{record['pnl_and_cost']}[/{pnl_style}]\n\n"))
+            
+            tact_text.append("Psychological & Cognitive Profile:\n", style="bold white")
+            tact_text.append(f"  Anxiety Level:  {record['anxiety_level']} / 5\n", style="dim")
+            tact_text.append(f"  Impatience:     {record['impatience_level']} / 5\n", style="dim")
+            tact_text.append(f"  Clarity Level:  {record['mental_clarity_level']} / 5\n", style="dim")
+            tact_text.append(f"  Primary Emotion: {record['primary_emotion']}\n", style="dim")
+            
+            tact_text.append("  Emotions:       ", style="dim")
+            tact_text.append(Text.from_markup(f"{format_json_field(record['emotions'])}\n"))
+            tact_text.append("  Behav. Errors:  ", style="dim")
+            tact_text.append(Text.from_markup(f"{format_json_field(record['behavioral_errors'])}\n"))
+            tact_text.append("  Cognitive Pat:  ", style="dim")
+            tact_text.append(Text.from_markup(f"{format_json_field(record['cognitive_patterns'])}\n"))
+            
+            if record['t_lesson']:
+                indented_lesson = format_indented_block(record['t_lesson'], indent_spaces=11, first_line_flush=False, wrap_width=80)
+                tact_text.append(f"\nLesson Learned:\n{indented_lesson}\n", style="italic white")
+                
+        tact_panel = Panel(
+            tact_text,
+            title="[bold magenta]Step 3/3: Tactical Audit View[/bold magenta]",
+            border_style="magenta",
+            box=box.ROUNDED
+        )
+
+        try:
+            console.clear(home=True)
+        except TypeError:
+            console.clear()
+            
+        console.print(dashboard)
+        console.print(eff_panel)
+        console.print(tact_panel)
+        console.print("\n[dim]Press Enter to return to Index...[/dim]")
+        input()
+
     while True:
         try:
             console.clear(home=True)
         except TypeError:
             console.clear()
             
-        console.rule("[bold cyan]Recent Analyses Index (Last 5)[/bold cyan]")
+        console.rule("[bold cyan]Recent Analyses Index (Last 10)[/bold cyan]")
         console.print()
         
-        with Session(engine_default) as db_session:
-            stmt = select(UnifiedDepartment).order_by(desc(UnifiedDepartment.created_at)).limit(5)
-            records = db_session.scalars(stmt).all()
+        with Session(get_active_engine()) as db_session:
+            raw_conn = db_session.connection().connection
             
-            if not records:
+            # Fetch rolling 10 entries via LEFT JOINs
+            cursor = raw_conn.execute(rolling_query)
+            rows = cursor.fetchall()
+            
+            if not rows:
                 console.print("[yellow]No analyses found in the database. Please perform a new analysis first![/yellow]\n")
                 input("Press Enter to return to main menu...")
                 break
                 
-            table = Table(box=box.ROUNDED, border_style="magenta", expand=True)
-            table.add_column("#", justify="center", style="dim")
-            table.add_column("Short ID", justify="center", style="cyan")
-            table.add_column("Asset", justify="center", style="bold white")
-            table.add_column("Market Bias", justify="center")
-            table.add_column("Calc Edge", justify="right")
-            table.add_column("Created At", justify="center", style="dim")
-            
-            for idx, r in enumerate(records):
-                bias_style = "bold green" if r.market_bias == "Bullish" else "bold red" if r.market_bias == "Bearish" else "bold yellow"
-                bias_text = f"[{bias_style}]{r.market_bias}[/{bias_style}]"
-                
-                edge_style = "bold green" if r.calc_edge >= 0.26 else "bold red" if r.calc_edge <= -0.26 else "bold yellow"
-                edge_text = f"[{edge_style}]{r.calc_edge:.4f}[/{edge_style}]"
-                
-                table.add_row(
-                    str(idx + 1),
-                    r.id[:8],
-                    r.asset,
-                    bias_text,
-                    edge_text,
-                    r.created_at.strftime("%Y-%m-%d %H:%M")
-                )
-                
+            table = render_ledger_table(rows)
             console.print(table)
             console.print()
             
-            choices = [
-                Choice(r.id, name=f"[{idx+1}] {r.created_at.strftime('%m/%d %H:%M')} | {r.asset} (Bias: {r.market_bias}, Edge: {r.calc_edge:.4f})")
-                for idx, r in enumerate(records)
-            ]
+            choices = []
+            for idx, r in enumerate(rows):
+                created_str = r[4].strftime('%m/%d %H:%M') if isinstance(r[4], datetime.datetime) else str(r[4])
+                choices.append(Choice(r[0], name=f"[{idx+1}] {created_str} | {r[1]} (Bias: {r[2]}, Edge: {r[3]:.4f})"))
+                
+            choices.append(Choice("see_calendar", name="[📅] See Calendar"))
             choices.append(Choice("back", name="[<] Back to Main Menu"))
             
             selected_id = inquirer.select(
@@ -767,125 +1235,114 @@ def flow_review_analysis():
             if selected_id == "back":
                 break
                 
-            # Render Detail View
-            stmt_sel = select(UnifiedDepartment).where(UnifiedDepartment.id == selected_id)
-            record = db_session.scalars(stmt_sel).first()
-            if not record:
-                console.print("[bold red]Analysis record not found![/bold red]")
-                input("Press Enter to continue...")
-                continue
+            if selected_id == "see_calendar":
+                # Get distinct years and months via direct raw SQL query
+                calendar_query = """
+                SELECT DISTINCT strftime('%Y', created_at) as year, strftime('%m', created_at) as month 
+                FROM unified_department 
+                ORDER BY year DESC, month DESC;
+                """
+                cursor = raw_conn.execute(calendar_query)
+                calendar_rows = cursor.fetchall()
                 
-            layers = record.analysis_layers
-            p0 = next((l for l in layers if l.department == 'EFFICIENCY' and l.layer_name == 'P0'), None)
-            p2 = next((l for l in layers if l.department == 'EFFICIENCY' and l.layer_name == 'P2'), None)
-            p3 = next((l for l in layers if l.department == 'EFFICIENCY' and l.layer_name == 'P3'), None)
-            
-            p4 = next((l for l in layers if l.department == 'TACTICAL' and l.layer_name == 'P4'), None)
-            p1 = next((l for l in layers if l.department == 'TACTICAL' and l.layer_name == 'P1'), None)
-            
-            # Structural Vector panel
-            struct_text = Text()
-            struct_text.append("Market Bias: ", style="dim")
-            bias_style = "bold green" if record.market_bias == "Bullish" else "bold red" if record.market_bias == "Bearish" else "bold yellow"
-            struct_text.append(f"{record.market_bias}\n\n", style=bias_style)
-            
-            for label, p_layer in [("P0", p0), ("P2", p2), ("P3", p3)]:
-                struct_text.append(f"{label}: ", style="bold cyan")
-                if p_layer:
-                    d_style = "green" if p_layer.direction == "Long" else "red" if p_layer.direction == "Short" else "yellow"
-                    struct_text.append(f"{p_layer.direction.upper()}", style=d_style)
-                    struct_text.append(" | ", style="dim")
-                    s_style = "bold" if p_layer.strength == "Strong" else ""
-                    struct_text.append(f"{p_layer.strength.upper()}\n", style=s_style)
-                    if p_layer.thesis:
-                        indented_thesis = format_indented_block(p_layer.thesis, indent_spaces=11, wrap_width=38)
-                        struct_text.append(f"   Thesis: {indented_thesis}\n", style="dim italic")
-                else:
-                    struct_text.append("N/A\n", style="dim")
+                month_names = {
+                    "01": "January", "02": "February", "03": "March", "04": "April", "05": "May", "06": "June",
+                    "07": "July", "08": "August", "09": "September", "10": "October", "11": "November", "12": "December"
+                }
+                
+                cal_choices = []
+                for y, m in calendar_rows:
+                    if y and m:
+                        cal_choices.append(Choice(f"{y}-{m}", name=f"📅 {month_names.get(m, m)} {y}"))
+                cal_choices.append(Choice("back_to_index", name="[<] Back to Index"))
+                
+                selected_month = inquirer.select(
+                    message="Select Calendar Month >",
+                    choices=cal_choices,
+                    pointer=">",
+                    qmark=""
+                ).execute()
+                
+                if selected_month == "back_to_index":
+                    continue
                     
-            # Tactical Vector panel
-            tact_text = Text()
-            tact_text.append("Hierarchy: ", style="dim")
-            tact_text.append(f"{record.p4_hierarchy}\n", style="bold white")
-            tact_text.append("Timeframe: ", style="dim")
-            tact_text.append(f"{record.p1_timeframe}\n", style="bold white")
-            tact_text.append("Fractal Type: ", style="dim")
-            tact_text.append(f"{record.p1_type}\n", style="bold white")
-            tact_text.append("Nodes L1/L2: ", style="dim")
-            tact_text.append(f"{record.nodes_l1} / {record.nodes_l2}\n\n", style="bold white")
-            
-            for label, p_layer in [("P4", p4), ("P1", p1)]:
-                tact_text.append(f"{label}: ", style="bold magenta")
-                if p_layer:
-                    d_style = "green" if p_layer.direction == "Long" else "red" if p_layer.direction == "Short" else "yellow"
-                    tact_text.append(f"{p_layer.direction.upper()}", style=d_style)
-                    tact_text.append(" | ", style="dim")
-                    s_style = "bold" if p_layer.strength == "Strong" else ""
-                    tact_text.append(f"{p_layer.strength.upper()}\n", style=s_style)
-                    if p_layer.thesis:
-                        indented_thesis = format_indented_block(p_layer.thesis, indent_spaces=11, wrap_width=38)
-                        tact_text.append(f"   Thesis: {indented_thesis}\n", style="dim italic")
-                else:
-                    tact_text.append("N/A\n", style="dim")
+                year_str, month_str = selected_month.split("-")
+                year = int(year_str)
+                month = int(month_str)
+                
+                # Python programmatic range calculation
+                last_day = calendar.monthrange(year, month)[1]
+                start_str = f"{year:04d}-{month:02d}-01 00:00:00"
+                end_str = f"{year:04d}-{month:02d}-{last_day:02d} 23:59:59.999999"
+                
+                # Executing month search with LEFT JOINs
+                month_query = """
+                SELECT u.id, u.asset, u.market_bias, u.calc_edge, u.created_at, 
+                       e.bias_a, e.real_bias_b, e.resolution_type, 
+                       t.compliance, u.trade_status
+                FROM unified_department u
+                LEFT JOIN efficiency_audit e ON u.id = e.id
+                LEFT JOIN tactical_audit t ON u.id = t.id
+                WHERE u.created_at BETWEEN ? AND ?
+                ORDER BY u.created_at DESC;
+                """
+                cursor = raw_conn.execute(month_query, (start_str, end_str))
+                month_rows = cursor.fetchall()
+                
+                if not month_rows:
+                    console.print(f"[yellow]No records found for {month_names.get(month_str)} {year}.[/yellow]")
+                    input("Press Enter to continue...")
+                    continue
                     
-            # Quantitative panel
-            quant_text = Text()
-            quant_text.append("I_CD (Edge): ", style="dim")
-            edge_style = "bold green" if record.calc_edge >= 0.26 else "bold red" if record.calc_edge <= -0.26 else "bold yellow"
-            quant_text.append(f"{record.calc_edge:.4f}\n\n", style=edge_style)
-            
-            quant_text.append("Long Prob: ", style="dim")
-            quant_text.append(f"{record.long_prob * 100:.1f}%\n", style="green")
-            quant_text.append("Short Prob: ", style="dim")
-            quant_text.append(f"{record.short_prob * 100:.1f}%\n", style="red")
-            quant_text.append("No-Trade Prob: ", style="dim")
-            quant_text.append(f"{record.no_trade_prob * 100:.1f}%\n\n", style="yellow")
-            
-            quant_text.append("Tactical Classification:\n", style="dim")
-            quant_text.append(f"  {record.tactical_classification}\n", style="bold cyan")
-            
-            # State & Meta panel
-            meta_text = Text()
-            meta_text.append("Full ID: ", style="dim")
-            meta_text.append(f"{record.id}\n", style="cyan")
-            meta_text.append("Short ID: ", style="dim")
-            meta_text.append(f"{record.id[:8]}\n", style="bold cyan")
-            meta_text.append("Created: ", style="dim")
-            meta_text.append(f"{record.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n", style="white")
-            meta_text.append("Updated: ", style="dim")
-            meta_text.append(f"{record.updated_at.strftime('%Y-%m-%d %H:%M:%S')}\n\n", style="white")
-            meta_text.append("Lifecycle State:\n", style="dim")
-            state_style = "bold green" if record.state in ["COMPLETED", "SYNCED"] else "bold yellow"
-            meta_text.append(f"  {record.state}\n", style=state_style)
-            if record.edge_description:
-                meta_text.append(f"\nEdge Description:\n", style="dim")
-                meta_text.append(f"  {record.edge_description}\n", style="italic white")
+                m_table = render_ledger_table(month_rows)
                 
-            p_struct = Panel(struct_text, title="[Structural Vector (Eff)]", border_style="cyan", box=box.ROUNDED)
-            p_tact = Panel(tact_text, title="[Tactical Vector (Exec)]", border_style="magenta", box=box.ROUNDED)
-            p_quant = Panel(quant_text, title="[Quantitative Profile]", border_style="green", box=box.ROUNDED)
-            p_meta = Panel(meta_text, title="[State & Meta]", border_style="yellow", box=box.ROUNDED)
-            
-            grid = Table.grid(expand=True)
-            grid.add_column(ratio=1)
-            grid.add_column(ratio=1)
-            grid.add_row(p_struct, p_tact)
-            grid.add_row(p_quant, p_meta)
-            
-            dashboard = Panel(
-                grid,
-                title=f"[white]Unified Analysis Dashboard: {record.asset} - {record.created_at.strftime('%m/%d %H:%M')}[/white]",
-                border_style="bold blue",
-                box=box.DOUBLE
-            )
-            
-            try:
-                console.clear(home=True)
-            except TypeError:
-                console.clear()
+                try:
+                    console.clear(home=True)
+                except TypeError:
+                    console.clear()
+                    
+                console.rule(f"[bold cyan]Analyses for {month_names.get(month_str)} {year}[/bold cyan]")
+                console.print()
+                console.print(m_table)
+                console.print()
                 
-            console.print(dashboard)
-            console.print("\n[dim]Press Enter to return to Recent Analyses Index...[/dim]")
+                short_id_input = get_mandatory_text("Enter Short ID to inspect (or press Enter to return)", multiline=False)
+                if not short_id_input:
+                    continue
+                    
+                # Collision query mitigation
+                collision_query = """
+                SELECT u.id, u.asset, u.created_at
+                FROM unified_department u
+                WHERE substr(u.id, 1, 8) = ?;
+                """
+                cursor = raw_conn.execute(collision_query, (short_id_input.lower(),))
+                collision_rows = cursor.fetchall()
+                
+                if not collision_rows:
+                    console.print("[bold red]No records found for that Short ID.[/bold red]")
+                    input("Press Enter to continue...")
+                    continue
+                    
+                if len(collision_rows) == 1:
+                    inspect_id = collision_rows[0][0]
+                else:
+                    col_choices = [
+                        Choice(row[0], name=f"{to_local_display(row[2]) if isinstance(row[2], datetime.datetime) else str(row[2])} | {row[1]} (Full ID: {row[0]})")
+                        for row in collision_rows
+                    ]
+                    inspect_id = inquirer.select(
+                        message="Short ID collision detected! Please select target trade session >",
+                        choices=col_choices,
+                        pointer=">",
+                        qmark=""
+                    ).execute()
+                    
+                show_unified_detail(inspect_id, raw_conn)
+                
+            else:
+                # selected_id is a specific trade ID
+                show_unified_detail(selected_id, raw_conn)
 def flow_new_analysis(backdated_timestamp=None):
     trade_id = str(uuid.uuid4())
     console.print(f"\n[muted]Initialized new unified trade context: {trade_id}[/muted]")
@@ -895,29 +1352,21 @@ def flow_new_analysis(backdated_timestamp=None):
         try:
             # --- STEP 1: Structure Parameters ---
             def prompt_asset():
-                available_assets = get_assets()
-                if available_assets:
-                    choices = [Choice(a, name=a) for a in available_assets]
-                    choices.append(Choice("CUSTOM", name="[Add Custom Asset]"))
-                    
-                    asset_choice = bind_pause(inquirer.select(
-                        message="Select Asset >",
-                        choices=choices,
-                        pointer=">",
-                        qmark="",
-                        keybindings={"skip": []}
-                    )).execute()
-                    
-                    if asset_choice == "CUSTOM":
-                        asset = get_mandatory_text("Enter Asset (e.g., BTC/USDT)")
-                        add_asset(asset, category="Crypto")
-                        return asset
-                    else:
-                        return asset_choice
-                else:
-                    asset = get_mandatory_text("Enter Asset (e.g., BTC/USDT)")
-                    add_asset(asset, category="Crypto")
-                    return asset
+                available_assets = get_assets(get_active_engine())
+                choices = [Choice(a, name=a) for a in available_assets]
+                choices.append(Choice("back_to_main", name="[<] Back to Main Menu"))
+                
+                asset_choice = bind_pause(inquirer.select(
+                    message="Select Asset >",
+                    choices=choices,
+                    pointer=">",
+                    qmark="",
+                    keybindings={"skip": []}
+                )).execute()
+                
+                if asset_choice == "back_to_main":
+                    raise ExitToMainMenuException("Go back requested")
+                return asset_choice
 
             asset = session.prompt("asset", prompt_asset)
             
@@ -965,7 +1414,88 @@ def flow_new_analysis(backdated_timestamp=None):
             p4_str = session.prompt("p4_str", get_enum_choice, "P4 Strength", Strength)
             p4_hier = session.prompt("p4_hier", get_enum_choice, "P4 Hierarchy", Hierarchy)
 
-            edge_desc = session.prompt("edge_desc", get_mandatory_text, "Efficiency Edge Description", multiline=True)
+            def prompt_edge_desc():
+                current_asset = session.state.get("asset")
+                previous_edge = "No previous asset history found."
+                from sqlalchemy.orm import Session
+                
+                with Session(get_active_engine()) as db_session:
+                    try:
+                        raw_conn = db_session.connection().connection
+                        try:
+                            cursor = raw_conn.execute(
+                                "SELECT edge_description FROM unified_department WHERE asset = ? ORDER BY created_at DESC LIMIT 1;",
+                                (current_asset,)
+                            )
+                        except Exception:
+                            cursor = raw_conn.execute(
+                                "SELECT edge_desc FROM unified_department WHERE asset = ? ORDER BY created_at DESC LIMIT 1;",
+                                (current_asset,)
+                            )
+                        row = cursor.fetchone()
+                        if row and row[0]:
+                            previous_edge = row[0]
+                    except Exception:
+                        previous_edge = "No previous asset history found."
+
+                # Invoke real-time math metrics subroutines using locked staging memory parameters
+                p0_dir = session.state.get("p0_dir")
+                p0_str = session.state.get("p0_str")
+                p1_dir = session.state.get("p1_dir")
+                p1_str = session.state.get("p1_str")
+                p2_dir = session.state.get("p2_dir")
+                p2_str = session.state.get("p2_str")
+                p3_dir = session.state.get("p3_dir")
+                p3_str = session.state.get("p3_str")
+                p4_dir = session.state.get("p4_dir")
+                p4_str = session.state.get("p4_str")
+
+                def get_dir_val(d): return 1 if d == Direction.LONG else -1 if d == Direction.SHORT else 0
+                def get_str_val(s): return 2 if s == Strength.STRONG else 1 if s == Strength.MID else 0
+
+                x0 = get_dir_val(p0_dir) * get_str_val(p0_str)
+                x1 = get_dir_val(p1_dir) * get_str_val(p1_str)
+                x2 = get_dir_val(p2_dir) * get_str_val(p2_str)
+                x3 = get_dir_val(p3_dir) * get_str_val(p3_str)
+                x4 = get_dir_val(p4_dir) * get_str_val(p4_str)
+
+                i_cd = (0.30 * x0 + 0.25 * x1 + 0.15 * x2 + 0.10 * x3 + 0.20 * x4) / 2.0
+                
+                market_bias = determine_market_bias(i_cd)
+                long_prob, short_prob, no_trade_prob = calculate_probabilities(i_cd)
+
+                # Render dashboard
+                bias_color = "success" if market_bias == "Bullish" else "danger" if market_bias == "Bearish" else "warning"
+                
+                indented_prev_edge = format_indented_block(previous_edge, indent_spaces=11, first_line_flush=False, wrap_width=60)
+
+                dashboard_text = Text()
+                dashboard_text.append("--- Previous Session Edge Description Reference ---\n", style="bold cyan")
+                dashboard_text.append(f"{indented_prev_edge}\n\n", style="italic white")
+                
+                dashboard_text.append("--- Real-Time Metrics & Probability Dashboard ---\n", style="bold cyan")
+                dashboard_text.append("Market Bias: ", style="dim")
+                dashboard_text.append(f"{market_bias}\n", style=bias_color)
+                dashboard_text.append("Directional Probabilities:\n", style="dim")
+                dashboard_text.append("  Long Prob:      ", style="dim")
+                dashboard_text.append(f"{long_prob * 100:.1f}%\n", style="success")
+                dashboard_text.append("  Short Prob:     ", style="dim")
+                dashboard_text.append(f"{short_prob * 100:.1f}%\n", style="danger")
+                dashboard_text.append("  No-Trade Prob:  ", style="dim")
+                dashboard_text.append(f"{no_trade_prob * 100:.1f}%\n", style="warning")
+
+                dashboard_panel = Panel(
+                    dashboard_text,
+                    title="[bold primary]Edge Description Context[/bold primary]",
+                    border_style="primary",
+                    box=box.ROUNDED
+                )
+                console.print(dashboard_panel)
+                console.print()
+
+                return get_mandatory_text("Efficiency Edge Description", multiline=True)
+
+            edge_desc = session.prompt("edge_desc", prompt_edge_desc)
             bias_a = session.prompt("bias_a", get_enum_choice, "Initial Structural Bias (Bias A)", StructuralBias)
             tact_class = session.prompt("tact_class", get_enum_choice, "Tactical Classification", TacticalClassification)
 
@@ -1167,10 +1697,10 @@ def flow_new_analysis(backdated_timestamp=None):
                 ).execute()
 
                 if action_choice == "save":
-                    from tools.database import engine_default, UnifiedDepartment, AnalysisLayer, EfficiencyAudit as ModelEfficiencyAudit
+                    from tools.database import UnifiedDepartment, AnalysisLayer, EfficiencyAudit as ModelEfficiencyAudit
                     from sqlalchemy.orm import Session
                     
-                    with Session(engine_default) as db_session:
+                    with Session(get_active_engine()) as db_session:
                         try:
                             new_record = UnifiedDepartment(
                                 id=trade_id,
@@ -1268,7 +1798,7 @@ def flow_new_analysis(backdated_timestamp=None):
                     
                     try:
                         if field_to_edit == "asset":
-                            available_assets = get_assets()
+                            available_assets = get_assets(get_active_engine())
                             choices = [Choice(a, name=a) for a in available_assets]
                             choices.append(Choice("CUSTOM", name="[Add Custom Asset]"))
                             asset_choice = inquirer.select(
@@ -1279,7 +1809,7 @@ def flow_new_analysis(backdated_timestamp=None):
                             ).execute()
                             if asset_choice == "CUSTOM":
                                 new_val = get_mandatory_text("Enter Asset (e.g., BTC/USDT)")
-                                add_asset(new_val, category="Crypto")
+                                add_asset(new_val, category="Crypto", engine=get_active_engine())
                             else:
                                 new_val = asset_choice
                         elif field_to_edit in ["p0_thesis", "p1_thesis", "p2_thesis", "p3_thesis", "p4_thesis"]:
@@ -1316,9 +1846,15 @@ def flow_new_analysis(backdated_timestamp=None):
             console.print("\n[warning]Analysis Cancelled / Paused.[/warning]")
             input("Press Enter to continue...")
             return
+        except GoBackException:
+            console.print("\n[warning]Operation cancelled.[/warning]")
+            input("Press Enter to continue...")
+            return
+        except ExitToMainMenuException:
+            return
 
 def flow_pending_audits():
-    records = get_records_by_state(LifecycleState.PENDING_AUDITS)
+    records = get_records_by_state(LifecycleState.PENDING_AUDITS, engine=get_active_engine())
     if not records:
         console.print("[warning]No pending audits.[/warning]")
         input("Press Enter to continue...")
@@ -1410,7 +1946,8 @@ def flow_pending_audits():
                 # Review Panel
                 rev_text = Text()
                 rev_text.append(f"Original Bias (Bias A): {bias_a.value}\n")
-                rev_text.append(f"Real Bias B: {real_bias_b.value}\n")
+                display_bias_b = real_bias_b.value if hasattr(real_bias_b, 'value') else real_bias_b
+                rev_text.append(f"Real Bias B: {display_bias_b}\n")
                 rev_text.append(f"Resolution Type: {res_type.value}\n")
                 rev_text.append(f"Structural Resolution: {struct_res.value}\n")
                 rev_text.append(f"Failure Reason: {fail_reason.value}\n")
@@ -1441,8 +1978,9 @@ def flow_pending_audits():
                 elif action_choice == "discard":
                     raise PauseAuditException("Discard requested")
                 elif action_choice == "edit":
+                    display_bias_b = real_bias_b.value if hasattr(real_bias_b, 'value') else real_bias_b
                     edit_choices = [
-                        Choice("real_bias_b", name=f"Real Bias B: {real_bias_b.value}"),
+                        Choice("real_bias_b", name=f"Real Bias B: {display_bias_b}"),
                         Choice("res_type", name=f"Resolution Type: {res_type.value}"),
                         Choice("struct_res", name=f"Structural Resolution: {struct_res.value}"),
                         Choice("fail_reason", name=f"Failure Reason: {fail_reason.value}"),
@@ -1484,15 +2022,24 @@ def flow_pending_audits():
                 if t_status == TradeStatus.NO_TAKEN:
                     while True:
                         t_comp = session.state.get("t_comp") or session.prompt("t_comp", get_enum_choice, "Compliance State", ComplianceState)
+                        htf_trend = session.state.get("htf_trend") or session.prompt("htf_trend", get_enum_choice, "HTF Trend Context", HTFTrendContext)
+                        ltf_trend = session.state.get("ltf_trend") or session.prompt("ltf_trend", get_enum_choice, "LTF Trend Context", TrendContext)
+                        lesson_tact = session.state.get("lesson_tact") if "lesson_tact" in session.state else session.prompt("lesson_tact", get_mandatory_text, "Tactical Lesson Learned", multiline=True)
+                        
                         audit_tactical = TacticalAudit(
                             tactical_id=trade_id,
-                            trade_status=t_status,
-                            compliance=t_comp
+                            compliance=t_comp,
+                            htf_trend_context=htf_trend,
+                            ltf_trend_context=ltf_trend,
+                            lesson_learned=lesson_tact
                         )
                         
                         rev_text = Text()
                         rev_text.append(f"Trade Status: {t_status.value}\n")
-                        rev_text.append(f"Compliance State: {t_comp.value}\n")
+                        rev_text.append(f"Compliance State: {t_comp.value if isinstance(t_comp, Enum) else t_comp}\n")
+                        rev_text.append(f"HTF Trend Context: {htf_trend.value if isinstance(htf_trend, Enum) else htf_trend}\n")
+                        rev_text.append(f"LTF Trend Context: {ltf_trend.value if isinstance(ltf_trend, Enum) else ltf_trend}\n")
+                        rev_text.append(f"Tactical Lesson Learned: {lesson_tact}\n")
                         
                         try:
                             console.clear(home=True)
@@ -1513,14 +2060,47 @@ def flow_pending_audits():
 
                         if action_choice == "save":
                             new_payload["trade_status"] = t_status.value
-                            new_payload["audit_tactical"] = audit_tactical.model_dump()
+                            at_dump = audit_tactical.model_dump()
+                            string_enum_keys = {
+                                "compliance", "tier_setup", "market_state", "session", "exit_type",
+                                "trade_status", "followed_plan", "primary_emotion", "setup_type",
+                                "htf_trend_context", "confirmation_status", "ltf_trend_context",
+                                "pre_trade_emotions", "mid_trade_emotions", "post_trade_emotions",
+                                "could_hit_tp", "lesson_learned", "trade_decision", "trade_duration"
+                            }
+                            for k, v in at_dump.items():
+                                if v is None and k in string_enum_keys:
+                                    at_dump[k] = "nan"
+                            new_payload["audit_tactical"] = at_dump
                             console.print("[green]Tactical Audit saved (No Trade Taken).[/green]")
                             session.clear_state()
                             break
                         elif action_choice == "discard":
                             raise PauseAuditException("Discard requested")
                         elif action_choice == "edit":
-                            session.state["t_comp"] = get_enum_choice("Edit Compliance State", ComplianceState)
+                            edit_choices = [
+                                Choice("t_comp", name=f"Compliance State: {t_comp.value if isinstance(t_comp, Enum) else t_comp}"),
+                                Choice("htf_trend", name=f"HTF Trend: {htf_trend.value if isinstance(htf_trend, Enum) else htf_trend}"),
+                                Choice("ltf_trend", name=f"LTF Trend: {ltf_trend.value if isinstance(ltf_trend, Enum) else ltf_trend}"),
+                                Choice("lesson_tact", name=f"Lesson: {lesson_tact[:30]}..."),
+                                Choice("back", name="[<] Back to Review")
+                            ]
+                            field_to_edit = inquirer.select(
+                                message="Select Field to Edit >",
+                                choices=edit_choices,
+                                pointer=">",
+                                qmark=""
+                            ).execute()
+                            if field_to_edit == "back":
+                                continue
+                            if field_to_edit == "t_comp":
+                                session.state["t_comp"] = get_enum_choice("Edit Compliance State", ComplianceState)
+                            elif field_to_edit == "htf_trend":
+                                session.state["htf_trend"] = get_enum_choice("Edit HTF Trend Context", HTFTrendContext)
+                            elif field_to_edit == "ltf_trend":
+                                session.state["ltf_trend"] = get_enum_choice("Edit LTF Trend Context", TrendContext)
+                            elif field_to_edit == "lesson_tact":
+                                session.state["lesson_tact"] = get_mandatory_text("Edit Tactical Lesson Learned", multiline=True)
                     break
                 else:
                     while True:
@@ -1744,7 +2324,7 @@ def flow_pending_audits():
         final_state = LifecycleState.PENDING_AUDITS
         console.print("[yellow]Record remains in PENDING_AUDITS until both components are complete.[/yellow]")
         
-    update_record_state(trade_id, final_state, append_payload=new_payload)
+    update_record_state(trade_id, final_state, append_payload=new_payload, engine=get_active_engine())
     input("Press Enter to continue...")
 
 def render_final_review_layout(record, workspace=None, pyd_ta=None):
@@ -1916,9 +2496,9 @@ def render_final_review_layout(record, workspace=None, pyd_ta=None):
     meta_text.append("Short ID: ", style="dim")
     meta_text.append(f"{record.id[:8]}\n", style="bold cyan")
     meta_text.append("Created: ", style="dim")
-    meta_text.append(f"{record.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n", style="white")
+    meta_text.append(f"{to_local_display(record.created_at, '%Y-%m-%d %H:%M:%S')}\n", style="white")
     meta_text.append("Updated: ", style="dim")
-    meta_text.append(f"{record.updated_at.strftime('%Y-%m-%d %H:%M:%S')}\n\n", style="white")
+    meta_text.append(f"{to_local_display(record.updated_at, '%Y-%m-%d %H:%M:%S')}\n\n", style="white")
     meta_text.append("Lifecycle State:\n", style="dim")
     state_style = "bold green" if record.state in ["COMPLETED", "SYNCED", "READY_FOR_NOTION"] else "bold yellow"
     meta_text.append(f"  {record.state}\n", style=state_style)
@@ -1946,11 +2526,40 @@ def render_final_review_layout(record, workspace=None, pyd_ta=None):
     )
     return dashboard
 
-def flow_executed_trades_repair():
-    from tools.database import engine_default, UnifiedDepartment, EfficiencyAudit as DbEfficiencyAudit, TacticalAudit as DbTacticalAudit
+def flow_add_whitelisted_asset():
+    console.print("\n[bold cyan]Add New Asset to Whitelist[/bold cyan]")
+    asset_name = get_mandatory_text("Enter Asset Tick Symbol (e.g., BTCUSDT.P)")
+    
+    from sqlalchemy.orm import Session
+    from sqlalchemy import select, text
+    from tools.database import AssetConfig
+    
+    engine = get_active_engine()
+    with Session(engine) as session:
+        existing = session.scalar(select(AssetConfig).where(AssetConfig.asset_name == asset_name))
+        if existing:
+            console.print(f"[bold red]Error: Asset '{asset_name}' already exists in the whitelist.[/bold red]")
+            return
+            
+        # Parameterized insert query
+        session.execute(
+            text("INSERT INTO asset_config (asset_name, category, code, display_name, active) VALUES (:name, :category, :code, :display_name, :active)"),
+            {
+                "name": asset_name,
+                "category": "Crypto",
+                "code": asset_name,
+                "display_name": asset_name,
+                "active": True
+            }
+        )
+        session.commit()
+        console.print(f"[green]Successfully added '{asset_name}' to the asset whitelist.[/green]")
+
+def flow_repair_analysis_audits():
+    from tools.database import UnifiedDepartment, EfficiencyAudit as DbEfficiencyAudit, TacticalAudit as DbTacticalAudit
     from sqlalchemy.orm import Session
     from sqlalchemy import select
-    from cli.schemas.audit_tactical import TacticalAudit as PydanticTacticalAudit
+    import json
     
     while True:
         try:
@@ -1958,21 +2567,38 @@ def flow_executed_trades_repair():
         except TypeError:
             console.clear()
             
-        console.rule("[bold cyan]Repair Executed Trades (READY_FOR_NOTION)[/bold cyan]")
+        console.rule("[bold cyan]Database Administrative Workspace: Repair Executed Analysis & Audits[/bold cyan]")
         console.print()
         
-        with Session(engine_default) as db_session:
-            stmt = select(UnifiedDepartment).where(UnifiedDepartment.state == LifecycleState.READY_FOR_NOTION.value)
+        with Session(get_active_engine()) as db_session:
+            stmt = select(UnifiedDepartment)
             records = db_session.scalars(stmt).all()
             
             if not records:
-                console.print("[yellow]No trades in READY_FOR_NOTION state found.[/yellow]\n")
+                console.print("[yellow]No trade sessions logged in the database.[/yellow]\n")
                 input("Press Enter to continue...")
                 return
                 
+            completed = [r for r in records if r.efficiency_audit is not None and r.tactical_audit is not None]
+            incomplete = [r for r in records if not (r.efficiency_audit is not None and r.tactical_audit is not None)]
+            
             choices = []
-            for r in records:
-                choices.append(Choice(r.id, name=f"[{r.id[:8]}] {r.asset} | {r.market_bias} | {r.tactical_classification}"))
+            if completed:
+                choices.append(Separator("-- Completed (Audits Finalized) --"))
+                for r in completed:
+                    ts_str = r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else "N/A"
+                    bias_val = r.market_bias or "Neutral"
+                    choice_name = f"[{ts_str}] - {r.id[:8]} | {r.asset} | {bias_val} | Finalized"
+                    choices.append(Choice(r.id, name=choice_name))
+            if incomplete:
+                choices.append(Separator("-- Incomplete (Audits Pending) --"))
+                for r in incomplete:
+                    ts_str = r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else "N/A"
+                    bias_val = r.market_bias or "Neutral"
+                    choice_name = f"[{ts_str}] - {r.id[:8]} | {r.asset} | {bias_val} | Pending"
+                    choices.append(Choice(r.id, name=choice_name))
+                    
+            choices.append(Separator(""))
             choices.append(Choice("back", name="[Back to Configuration]"))
             
             selected_id = inquirer.select(
@@ -1986,173 +2612,958 @@ def flow_executed_trades_repair():
                 return
                 
             record = db_session.get(UnifiedDepartment, selected_id)
-            if not record or not record.efficiency_audit or not record.tactical_audit:
-                console.print("[red]Error: Required audit records not found for this trade.[/red]")
+            if not record:
+                console.print("[red]Error: Record not found.[/red]")
                 input("Press Enter to continue...")
                 continue
                 
-            ea = record.efficiency_audit
-            ta = record.tactical_audit
+            # Fetch P-layers
+            layers = record.analysis_layers
+            p0 = next((l for l in layers if l.department == 'EFFICIENCY' and l.layer_name == 'P0'), None)
+            p2 = next((l for l in layers if l.department == 'EFFICIENCY' and l.layer_name == 'P2'), None)
+            p3 = next((l for l in layers if l.department == 'EFFICIENCY' and l.layer_name == 'P3'), None)
+            p4 = next((l for l in layers if l.department == 'TACTICAL' and l.layer_name == 'P4'), None)
+            p1 = next((l for l in layers if l.department == 'TACTICAL' and l.layer_name == 'P1'), None)
             
-            # Populate mutable workspace context
-            workspace = {
-                # Efficiency Audit Fields
-                "real_bias_b": ea.real_bias_b,
-                "resolution_type": ea.resolution_type,
-                "structural_resolution": ea.structural_resolution,
-                "failure_reason": ea.failure_reason,
-                "lesson_eff": ea.lesson_learned,
+            # Staging schema defaults map for on-the-fly initialization (Amendment 1)
+            ea_defaults = {
+                "bias_a": record.market_bias or "",
+                "resolution_type": None,
+                "real_bias_b": None,
+                "structural_resolution": None,
+                "failure_reason": None,
+                "specific_bias_compliance": None,
+                "false_regime_rate": None,
+                "lesson_eff": ""
+            }
+            if record.efficiency_audit:
+                ea = record.efficiency_audit
+                ea_defaults = {
+                    "bias_a": ea.bias_a or "",
+                    "resolution_type": ea.resolution_type,
+                    "real_bias_b": ea.real_bias_b,
+                    "structural_resolution": ea.structural_resolution,
+                    "failure_reason": ea.failure_reason,
+                    "specific_bias_compliance": ea.specific_bias_compliance,
+                    "false_regime_rate": ea.false_regime_rate,
+                    "lesson_eff": ea.lesson_learned or ""
+                }
                 
-                # Tactical Audit Fields
-                "compliance": ta.compliance,
-                "could_hit_tp": ta.could_hit_tp,
-                "entry_price": ta.entry_price or 0.0,
-                "closing_price": ta.closing_price or 0.0,
-                "size": ta.size or 0.0,
-                "stop_loss": ta.stop_loss or 0.0,
-                "take_profit": ta.take_profit or 0.0,
-                "mae": ta.mae_adverse or 0.0,
-                "mfe": ta.mfe_favorable or 0.0,
-                "lesson_tact": ta.lesson_learned
+            ta_defaults = {
+                "compliance": None,
+                "entry_time": None,
+                "exit_time": None,
+                "tier_setup": None,
+                "market_state": None,
+                "session": None,
+                "exit_type": None,
+                "trade_decision": None,
+                "followed_plan": None,
+                "primary_emotion": None,
+                "setup_type": None,
+                "htf_trend_context": None,
+                "ltf_trend_context": None,
+                "confirmation_status": None,
+                "anxiety_level": 0,
+                "impatience_level": 0,
+                "mental_clarity_level": 0,
+                "emotions": [],
+                "behavioral_errors": [],
+                "cognitive_patterns": [],
+                "risk_usd": 0.0,
+                "size": 0.0,
+                "r_r": 0.0,
+                "entry_price": 0.0,
+                "closing_price": 0.0,
+                "could_hit_tp": None,
+                "take_profit": 0.0,
+                "stop_loss": 0.0,
+                "pnl_and_cost": 0.0,
+                "mae": 0.0,
+                "mfe": 0.0,
+                "notional_size": 0.0,
+                "capital_at_risk": 0.0,
+                "lesson_tact": ""
+            }
+            if record.tactical_audit:
+                ta = record.tactical_audit
+                ta_defaults = {
+                    "compliance": ta.compliance,
+                    "entry_time": ta.entry_time,
+                    "exit_time": ta.exit_time,
+                    "tier_setup": ta.tier_setup,
+                    "market_state": ta.market_state,
+                    "session": ta.session,
+                    "exit_type": ta.exit_type,
+                    "trade_decision": ta.trade_decision,
+                    "followed_plan": ta.followed_plan,
+                    "primary_emotion": ta.primary_emotion,
+                    "setup_type": ta.setup_type,
+                    "htf_trend_context": ta.htf_trend_context,
+                    "ltf_trend_context": ta.ltf_trend_context,
+                    "confirmation_status": ta.confirmation_status,
+                    "anxiety_level": ta.anxiety_level or 0,
+                    "impatience_level": ta.impatience_level or 0,
+                    "mental_clarity_level": ta.mental_clarity_level or 0,
+                    "emotions": ta.emotions or [],
+                    "behavioral_errors": ta.behavioral_errors or [],
+                    "cognitive_patterns": ta.cognitive_patterns or [],
+                    "risk_usd": ta.risk_usd or 0.0,
+                    "size": ta.size or 0.0,
+                    "r_r": ta.r_r or 0.0,
+                    "entry_price": ta.entry_price or 0.0,
+                    "closing_price": ta.closing_price or 0.0,
+                    "could_hit_tp": ta.could_hit_tp,
+                    "take_profit": ta.take_profit or 0.0,
+                    "stop_loss": ta.stop_loss or 0.0,
+                    "pnl_and_cost": ta.pnl_and_cost or 0.0,
+                    "mae": ta.mae_adverse or 0.0,
+                    "mfe": ta.mfe_favorable or 0.0,
+                    "notional_size": ta.notional_size or 0.0,
+                    "capital_at_risk": ta.capital_at_risk or 0.0,
+                    "lesson_tact": ta.lesson_learned or ""
+                }
+                
+            # Build global workspace
+            workspace = {
+                "asset": record.asset,
+                "market_bias": record.market_bias,
+                "calc_edge": record.calc_edge,
+                "edge_description": record.edge_description or "",
+                "p4_hierarchy": record.p4_hierarchy,
+                "p1_timeframe": record.p1_timeframe,
+                "p1_type": record.p1_type,
+                "nodes_l1": record.nodes_l1,
+                "nodes_l2": record.nodes_l2,
+                "tactical_classification": record.tactical_classification,
+                "long_prob": record.long_prob,
+                "short_prob": record.short_prob,
+                "no_trade_prob": record.no_trade_prob,
+                "trade_status": record.trade_status or None,
+                
+                "p0_dir": p0.direction if p0 else "Neutral",
+                "p0_str": p0.strength if p0 else "Weak",
+                "p0_thesis": p0.thesis if p0 else "",
+                
+                "p2_dir": p2.direction if p2 else "Neutral",
+                "p2_str": p2.strength if p2 else "Weak",
+                "p2_thesis": p2.thesis if p2 else "",
+                
+                "p3_dir": p3.direction if p3 else "Neutral",
+                "p3_str": p3.strength if p3 else "Weak",
+                "p3_thesis": p3.thesis if p3 else "",
+                
+                "p4_dir": p4.direction if p4 else "Neutral",
+                "p4_str": p4.strength if p4 else "Weak",
+                "p4_thesis": p4.thesis if p4 else "",
+                
+                "p1_dir": p1.direction if p1 else "Neutral",
+                "p1_str": p1.strength if p1 else "Weak",
+                "p1_thesis": p1.thesis if p1 else "",
+                
+                **ea_defaults,
+                **ta_defaults
             }
             
-            # Repair Hook Loop
+            # Inspection Sub-Menu
             while True:
-                # Recalculate metrics for display
-                pyd_ta = PydanticTacticalAudit(
-                    tactical_id=selected_id,
-                    compliance=workspace["compliance"],
-                    entry_price=workspace["entry_price"],
-                    closing_price=workspace["closing_price"],
-                    size=workspace["size"],
-                    stop_loss=workspace["stop_loss"],
-                    take_profit=workspace["take_profit"],
-                    mae=workspace["mae"],
-                    mfe=workspace["mfe"],
-                    cost=0.0
-                )
-                
-                # Render comprehensive three-column dashboard layout
-                dashboard = render_final_review_layout(record, workspace=workspace, pyd_ta=pyd_ta)
-                
                 try:
                     console.clear(home=True)
                 except TypeError:
                     console.clear()
-                console.print(dashboard)
+                    
+                console.rule(f"[bold cyan]Inspect / Repair: [{record.id[:8]}] {workspace['asset']}[/bold cyan]")
+                console.print()
                 
-                action = inquirer.select(
-                    message="Repair Action >",
+                comp_choice = inquirer.select(
+                    message="Select Component to Inspect/Repair >",
                     choices=[
-                        Choice("save", name="[1] Confirm & Save Repair"),
-                        Choice("edit", name="[2] Edit an Audit Field"),
-                        Choice("discard", name="[3] Discard Changes")
+                        Choice("unified", name="[1] View & Edit Unified Analysis (P0 -> P4)"),
+                        Choice("efficiency", name="[2] View & Edit Efficiency Audit"),
+                        Choice("tactical", name="[3] View & Edit Tactical Audit"),
+                        Choice("back", name="[4] Back")
                     ],
                     pointer=">",
                     qmark=""
                 ).execute()
                 
-                if action == "save":
-                    try:
-                        # Update Efficiency fields
-                        ea.real_bias_b = workspace["real_bias_b"]
-                        ea.resolution_type = workspace["resolution_type"]
-                        ea.structural_resolution = workspace["structural_resolution"]
-                        ea.failure_reason = workspace["failure_reason"]
-                        ea.lesson_learned = workspace["lesson_eff"]
-                        ea.updated_at = datetime.datetime.now()
-                        
-                        # Update Tactical fields
-                        ta.compliance = workspace["compliance"]
-                        ta.could_hit_tp = workspace["could_hit_tp"]
-                        ta.entry_price = workspace["entry_price"]
-                        ta.closing_price = workspace["closing_price"]
-                        ta.size = workspace["size"]
-                        ta.stop_loss = workspace["stop_loss"]
-                        ta.take_profit = workspace["take_profit"]
-                        ta.mae_adverse = workspace["mae"]
-                        ta.mfe_favorable = workspace["mfe"]
-                        ta.lesson_learned = workspace["lesson_tact"]
-                        
-                        # Recalculated fields
-                        ta.notional_size = pyd_ta.notional_size
-                        ta.capital_at_risk = pyd_ta.capital_at_risk
-                        ta.risk_usd = pyd_ta.risk_usd
-                        ta.r_r = pyd_ta.r_r
-                        ta.pnl_and_cost = pyd_ta.pnl_and_cost
-                        ta.trade_decision = pyd_ta.trade_decision
-                        
-                        db_session.commit()
-                        console.print("[success]Repair successfully committed to the database.[/success]")
-                    except Exception as e:
-                        db_session.rollback()
-                        console.print(f"[bold red]Failed to save repair: {e}[/bold red]")
-                    input("Press Enter to continue...")
+                if comp_choice == "back":
                     break
                     
-                elif action == "discard":
-                    break
-                    
-                elif action == "edit":
-                    edit_choices = [
-                        # Efficiency Audit Fields
-                        Choice("real_bias_b", name=f"[Efficiency] Real Bias B: {workspace['real_bias_b']}"),
-                        Choice("resolution_type", name=f"[Efficiency] Resolution Type: {workspace['resolution_type']}"),
-                        Choice("structural_resolution", name=f"[Efficiency] Structural Resolution: {workspace['structural_resolution']}"),
-                        Choice("failure_reason", name=f"[Efficiency] Failure Reason: {workspace['failure_reason']}"),
-                        Choice("lesson_eff", name=f"[Efficiency] Lesson Learned: {workspace['lesson_eff'] or ''}"),
+                elif comp_choice == "unified":
+                    def recalculate_unified_metrics(w):
+                        # Multi-Layer Recalculation Pipeline (Defect 3)
+                        def get_dir_val(d): return 1 if d == "Long" else -1 if d == "Short" else 0
+                        def get_str_val(s): return 2 if s == "Strong" else 1 if s == "Mid" else 0
+
+                        x0 = get_dir_val(w["p0_dir"]) * get_str_val(w["p0_str"])
+                        x1 = get_dir_val(w["p1_dir"]) * get_str_val(w["p1_str"])
+                        x2 = get_dir_val(w["p2_dir"]) * get_str_val(w["p2_str"])
+                        x3 = get_dir_val(w["p3_dir"]) * get_str_val(w["p3_str"])
+                        x4 = get_dir_val(w["p4_dir"]) * get_str_val(w["p4_str"])
+
+                        val = (0.30 * x0 + 0.25 * x1 + 0.15 * x2 + 0.10 * x3 + 0.20 * x4) / 2.0
+                        w["calc_edge"] = val
+
+                        if abs(val) < 0.26:
+                            w["market_bias"] = "Choppy / Neutral"
+                        elif val >= 0.26:
+                            w["market_bias"] = "Bullish"
+                        else:
+                            w["market_bias"] = "Bearish"
+
+                        import math
+                        import os
+                        scaling_factor = float(os.getenv("TACTICAL_SCALING_FACTOR", 0.2125))
+                        no_trade_exponent = float(os.getenv("NO_TRADE_BASE_EXPONENT", 1.54))
                         
-                        # Tactical Audit Fields
-                        Choice("compliance", name=f"[Tactical] Compliance State: {workspace['compliance']}"),
-                        Choice("could_hit_tp", name=f"[Tactical] Could Hit TP: {workspace['could_hit_tp']}"),
-                        Choice("entry_price", name=f"[Tactical] Entry Price: {workspace['entry_price']}"),
-                        Choice("closing_price", name=f"[Tactical] Closing Price: {workspace['closing_price']}"),
-                        Choice("size", name=f"[Tactical] Size: {workspace['size']}"),
-                        Choice("stop_loss", name=f"[Tactical] Stop Loss: {workspace['stop_loss']}"),
-                        Choice("take_profit", name=f"[Tactical] Take Profit: {workspace['take_profit']}"),
-                        Choice("mae", name=f"[Tactical] MAE (Adverse): {workspace['mae']}"),
-                        Choice("mfe", name=f"[Tactical] MFE (Favorable): {workspace['mfe']}"),
-                        Choice("lesson_tact", name=f"[Tactical] Lesson Learned: {workspace['lesson_tact'] or ''}"),
+                        e_long = math.exp(val * scaling_factor)
+                        e_short = math.exp(-val * scaling_factor)
+                        e_no_trade = math.exp(no_trade_exponent)
+                        total = e_long + e_short + e_no_trade
                         
-                        Choice("back", name="[<] Back to Review")
-                    ]
-                    
-                    field = inquirer.select(
-                        message="Select Field to Edit >",
-                        choices=edit_choices,
-                        pointer=">",
-                        qmark=""
-                    ).execute()
-                    
-                    if field == "back":
-                        continue
+                        w["long_prob"] = round(e_long / total, 3)
+                        w["short_prob"] = round(e_short / total, 3)
+                        w["no_trade_prob"] = round(1.0 - w["long_prob"] - w["short_prob"], 3)
+
+                    while True:
+                        struct_text = Text()
+                        struct_text.append(f"Asset: {workspace['asset']}  |  Market Bias: ", style="dim")
+                        bias_style = "bold green" if workspace["market_bias"] == "Bullish" else "bold red" if workspace["market_bias"] == "Bearish" else "bold yellow"
+                        struct_text.append(f"{workspace['market_bias']}\n\n", style=bias_style)
                         
-                    if field == "real_bias_b":
-                        workspace["real_bias_b"] = get_enum_choice("Edit Real Bias B", StructuralBias).value
-                    elif field == "resolution_type":
-                        workspace["resolution_type"] = get_enum_choice("Edit Resolution Type", ResolutionType, exclude=[ResolutionType.OPEN]).value
-                    elif field == "structural_resolution":
-                        workspace["structural_resolution"] = get_enum_choice("Edit Structural Resolution", StructuralResolution).value
-                    elif field == "failure_reason":
-                        workspace["failure_reason"] = get_enum_choice("Edit Failure Reason", FailureReason).value
-                    elif field == "lesson_eff":
-                        workspace["lesson_eff"] = get_optional_text("Edit Efficiency Lesson Learned")
-                    elif field == "compliance":
-                        workspace["compliance"] = get_enum_choice("Edit Compliance State", ComplianceState).value
-                    elif field == "could_hit_tp":
-                        workspace["could_hit_tp"] = inquirer.select(
-                            message="Could hit TP? >",
-                            choices=[Choice("yes", name="yes"), Choice("no", name="no")],
+                        for label in ["P0", "P2", "P3"]:
+                            struct_text.append(f"{label}: ", style="bold cyan")
+                            d = workspace[f"{label.lower()}_dir"]
+                            s = workspace[f"{label.lower()}_str"]
+                            t = workspace[f"{label.lower()}_thesis"]
+                            d_style = "green" if d == "Long" else "red" if d == "Short" else "yellow"
+                            struct_text.append(f"{d.upper()}", style=d_style)
+                            struct_text.append(" | ", style="dim")
+                            s_style = "bold" if s == "Strong" else ""
+                            struct_text.append(f"{s.upper()}\n", style=s_style)
+                            if t:
+                                indented_thesis = format_indented_block(t, indent_spaces=11, wrap_width=38)
+                                struct_text.append(f"   Thesis: {indented_thesis}\n", style="dim italic")
+                                
+                        tact_text = Text()
+                        tact_text.append(f"Hierarchy: {workspace['p4_hierarchy']}  |  Timeframe: {workspace['p1_timeframe']}  |  Fractal: {workspace['p1_type']}\n", style="dim")
+                        tact_text.append(f"Nodes L1/L2: {workspace['nodes_l1']} / {workspace['nodes_l2']}\n\n", style="dim")
+                        
+                        for label in ["P4", "P1"]:
+                            tact_text.append(f"{label}: ", style="bold magenta")
+                            d = workspace[f"{label.lower()}_dir"]
+                            s = workspace[f"{label.lower()}_str"]
+                            t = workspace[f"{label.lower()}_thesis"]
+                            d_style = "green" if d == "Long" else "red" if d == "Short" else "yellow"
+                            tact_text.append(f"{d.upper()}", style=d_style)
+                            tact_text.append(" | ", style="dim")
+                            s_style = "bold" if s == "Strong" else ""
+                            tact_text.append(f"{s.upper()}\n", style=s_style)
+                            if t:
+                                indented_thesis = format_indented_block(t, indent_spaces=11, wrap_width=38)
+                                tact_text.append(f"   Thesis: {indented_thesis}\n", style="dim italic")
+                                
+                        quant_text = Text()
+                        quant_text.append(f"Calc Edge: {workspace['calc_edge']:.4f}\n", style="bold yellow")
+                        quant_text.append(f"Long Prob: {workspace['long_prob']*100:.1f}%  |  Short Prob: {workspace['short_prob']*100:.1f}%  |  No-Trade Prob: {workspace['no_trade_prob']*100:.1f}%\n", style="dim")
+                        quant_text.append(f"Tactical Classification: {workspace['tactical_classification']}\n", style="cyan")
+                        
+                        grid = Table.grid(expand=True)
+                        grid.add_column(ratio=50)
+                        grid.add_column(ratio=50)
+                        grid.add_row(
+                            Panel(struct_text, title="[bold cyan]Structural Vector Panel[/bold cyan]", border_style="cyan"),
+                            Panel(tact_text, title="[bold magenta]Tactical Vector Panel[/bold magenta]", border_style="magenta")
+                        )
+                        grid.add_row(
+                            Panel(quant_text, title="[bold yellow]Quantitative Metrics[/bold yellow]", border_style="yellow"),
+                            Panel(f"Description: {workspace['edge_description']}", title="[bold white]Edge Description[/bold white]", border_style="white")
+                        )
+                        
+                        dashboard = Panel(
+                            grid,
+                            title=f"[white]Unified Analysis Repair Screen: {record.id[:8]}[/white]",
+                            border_style="bold blue",
+                            box=box.DOUBLE
+                        )
+                        
+                        try:
+                            console.clear(home=True)
+                        except TypeError:
+                            console.clear()
+                        console.print(dashboard)
+                        
+                        action = inquirer.select(
+                            message="Action >",
+                            choices=[
+                                Choice("edit", name="[1] Edit a Field"),
+                                Choice("save", name="[2] Confirm & Save Repair"),
+                                Choice("back", name="[3] Discard")
+                            ],
                             pointer=">",
-                            qmark="",
-                            keybindings={"skip": []}
+                            qmark=""
                         ).execute()
-                    elif field in ["entry_price", "closing_price", "size", "stop_loss", "take_profit"]:
-                        workspace[field] = get_mandatory_float(f"Enter {field.replace('_', ' ').title()}")
-                    elif field in ["mae", "mfe"]:
-                        workspace[field] = get_mandatory_float(f"Enter {field.upper()} (0 <= val <= 10)", min_val=0, max_val=10)
-                    elif field == "lesson_tact":
-                        workspace["lesson_tact"] = get_mandatory_text("Edit Tactical Lesson Learned", multiline=True)
+                        
+                        if action == "back":
+                            break
+                        elif action == "edit":
+                            edit_choices = [
+                                Choice("asset", name=f"Asset: {workspace['asset']}"),
+                                Choice("edge_description", name=f"Edge Description: {workspace['edge_description']}"),
+                                Choice("p4_hierarchy", name=f"P4 Hierarchy: {workspace['p4_hierarchy']}"),
+                                Choice("p1_timeframe", name=f"P1 Timeframe: {workspace['p1_timeframe']}"),
+                                Choice("p1_type", name=f"P1 Fractal Type: {workspace['p1_type']}"),
+                                Choice("nodes_l1", name=f"Nodes L1: {workspace['nodes_l1']}"),
+                                Choice("nodes_l2", name=f"Nodes L2: {workspace['nodes_l2']}"),
+                                Choice("tactical_classification", name=f"Tactical Classification: {workspace['tactical_classification']}"),
+                                Choice("p0_dir", name=f"P0 Direction: {workspace['p0_dir']}"),
+                                Choice("p0_str", name=f"P0 Strength: {workspace['p0_str']}"),
+                                Choice("p0_thesis", name=f"P0 Thesis: {workspace['p0_thesis'][:25]}..."),
+                                Choice("p2_dir", name=f"P2 Direction: {workspace['p2_dir']}"),
+                                Choice("p2_str", name=f"P2 Strength: {workspace['p2_str']}"),
+                                Choice("p2_thesis", name=f"P2 Thesis: {workspace['p2_thesis'][:25]}..."),
+                                Choice("p3_dir", name=f"P3 Direction: {workspace['p3_dir']}"),
+                                Choice("p3_str", name=f"P3 Strength: {workspace['p3_str']}"),
+                                Choice("p3_thesis", name=f"P3 Thesis: {workspace['p3_thesis'][:25]}..."),
+                                Choice("p4_dir", name=f"P4 Direction: {workspace['p4_dir']}"),
+                                Choice("p4_str", name=f"P4 Strength: {workspace['p4_str']}"),
+                                Choice("p4_thesis", name=f"P4 Thesis: {workspace['p4_thesis'][:25]}..."),
+                                Choice("p1_dir", name=f"P1 Direction: {workspace['p1_dir']}"),
+                                Choice("p1_str", name=f"P1 Strength: {workspace['p1_str']}"),
+                                Choice("p1_thesis", name=f"P1 Thesis: {workspace['p1_thesis'][:25]}..."),
+                                Choice("back", name="[<] Back")
+                            ]
+                            
+                            field = inquirer.select(
+                                message="Select Field to Edit >",
+                                choices=edit_choices,
+                                pointer=">",
+                                qmark=""
+                            ).execute()
+                            
+                            if field == "back":
+                                continue
+                                
+                            if field == "asset":
+                                workspace["asset"] = get_mandatory_text("Enter Asset Name (e.g. BTC/USDT)")
+                            elif field == "edge_description":
+                                workspace["edge_description"] = get_mandatory_text("Enter Edge Description")
+                            elif field == "p4_hierarchy":
+                                workspace["p4_hierarchy"] = get_enum_choice("Edit P4 Hierarchy", Hierarchy).value
+                            elif field == "p1_timeframe":
+                                workspace["p1_timeframe"] = get_enum_choice("Edit P1 Timeframe", Timeframe).value
+                            elif field == "p1_type":
+                                workspace["p1_type"] = get_enum_choice("Edit P1 Fractal Type", FractalType).value
+                            elif field in ["nodes_l1", "nodes_l2"]:
+                                workspace[field] = get_mandatory_int(f"Enter {field.replace('_', ' ').upper()}", 0, 100)
+                            elif field == "tactical_classification":
+                                workspace["tactical_classification"] = get_enum_choice("Edit Tactical Classification", TacticalClassification).value
+                            elif field in ["p0_dir", "p2_dir", "p3_dir", "p4_dir", "p1_dir"]:
+                                workspace[field] = get_enum_choice(f"Edit {field.replace('_dir', '').upper()} Direction", Direction).value
+                                recalculate_unified_metrics(workspace)
+                            elif field in ["p0_str", "p2_str", "p3_str", "p4_str", "p1_str"]:
+                                workspace[field] = get_enum_choice(f"Edit {field.replace('_str', '').upper()} Strength", Strength).value
+                                recalculate_unified_metrics(workspace)
+                            elif field in ["p0_thesis", "p2_thesis", "p3_thesis", "p4_thesis", "p1_thesis"]:
+                                workspace[field] = get_mandatory_text(f"Edit {field.replace('_thesis', '').upper()} Thesis", multiline=True)
+                                
+                        elif action == "save":
+                            try:
+                                raw_conn = db_session.connection().connection
+                                raw_conn.execute("""
+                                    UPDATE unified_department SET 
+                                        asset = ?,
+                                        market_bias = ?,
+                                        calc_edge = ?,
+                                        edge_description = ?,
+                                        p4_hierarchy = ?,
+                                        p1_timeframe = ?,
+                                        p1_type = ?,
+                                        nodes_l1 = ?,
+                                        nodes_l2 = ?,
+                                        tactical_classification = ?,
+                                        long_prob = ?,
+                                        short_prob = ?,
+                                        no_trade_prob = ?
+                                    WHERE id = ?
+                                """, (
+                                    workspace["asset"],
+                                    workspace["market_bias"],
+                                    float(workspace["calc_edge"]),
+                                    workspace["edge_description"],
+                                    workspace["p4_hierarchy"],
+                                    workspace["p1_timeframe"],
+                                    workspace["p1_type"],
+                                    int(workspace["nodes_l1"]),
+                                    int(workspace["nodes_l2"]),
+                                    workspace["tactical_classification"],
+                                    float(workspace["long_prob"]),
+                                    float(workspace["short_prob"]),
+                                    float(workspace["no_trade_prob"]),
+                                    record.id
+                                ))
+                                
+                                # Update analysis_layer (singular table name on disk, Defect 4)
+                                for l_name in ["P0", "P2", "P3", "P4", "P1"]:
+                                    dept = "EFFICIENCY" if l_name in ["P0", "P2", "P3"] else "TACTICAL"
+                                    exists = raw_conn.execute(
+                                        "SELECT 1 FROM analysis_layer WHERE trade_id = ? AND department = ? AND layer_name = ?",
+                                        (record.id, dept, l_name)
+                                    ).fetchone()
+                                    
+                                    dir_val = workspace[f"{l_name.lower()}_dir"]
+                                    str_val = workspace[f"{l_name.lower()}_str"]
+                                    thesis_val = workspace[f"{l_name.lower()}_thesis"]
+                                    
+                                    score_val = 0
+                                    if dir_val != "Neutral":
+                                        d_weight = 1 if dir_val == "Long" else -1
+                                        s_weight = 2 if str_val == "Strong" else 1 if str_val == "Mid" else 0
+                                        score_val = d_weight * s_weight
+                                        
+                                    if exists:
+                                        raw_conn.execute("""
+                                            UPDATE analysis_layer SET 
+                                                direction = ?,
+                                                strength = ?,
+                                                thesis = ?,
+                                                score = ?
+                                            WHERE trade_id = ? AND department = ? AND layer_name = ?
+                                        """, (dir_val, str_val, thesis_val, score_val, record.id, dept, l_name))
+                                    else:
+                                        raw_conn.execute("""
+                                            INSERT INTO analysis_layer (trade_id, department, layer_name, direction, strength, thesis, score)
+                                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                                        """, (record.id, dept, l_name, dir_val, str_val, thesis_val, score_val))
+                                        
+                                db_session.commit()
+                                console.print("[green]Unified Analysis Repair saved successfully.[/green]")
+                            except Exception as e:
+                                db_session.rollback()
+                                console.print(f"[bold red]Failed to save Unified Analysis Repair: {e}[/bold red]")
+                            input("Press Enter to continue...")
+                            break
+                            
+                elif comp_choice == "efficiency":
+                    while True:
+                        rev_text = Text()
+                        rev_text.append(f"Bias A (Original): {workspace['bias_a']}\n", style="white")
+                        rev_text.append(f"Real Bias B: {workspace['real_bias_b']}\n", style="white")
+                        rev_text.append(f"Resolution Type: {workspace['resolution_type']}\n", style="white")
+                        rev_text.append(f"Structural Resolution: {workspace['structural_resolution']}\n", style="white")
+                        rev_text.append(f"Failure Reason: {workspace['failure_reason']}\n", style="white")
+                        rev_text.append(f"Specific Bias Compliance: {workspace['specific_bias_compliance']}\n", style="white")
+                        rev_text.append(f"False Regime Rate: {workspace['false_regime_rate']}\n", style="white")
+                        if workspace["lesson_eff"] and workspace["lesson_eff"] != "nan":
+                            indented_lesson = format_indented_block(workspace["lesson_eff"], indent_spaces=11, wrap_width=38)
+                            rev_text.append(f"Lesson Learned:\n  {indented_lesson}\n", style="dim italic")
+                            
+                        dashboard = Panel(
+                            rev_text,
+                            title=f"Efficiency Audit Repair: {record.id[:8]}",
+                            border_style="cyan"
+                        )
+                        
+                        try:
+                            console.clear(home=True)
+                        except TypeError:
+                            console.clear()
+                        console.print(dashboard)
+                        
+                        action = inquirer.select(
+                            message="Action >",
+                            choices=[
+                                Choice("edit", name="[1] Edit a Field"),
+                                Choice("save", name="[2] Confirm & Save Repair"),
+                                Choice("back", name="[3] Discard")
+                            ],
+                            pointer=">",
+                            qmark=""
+                        ).execute()
+                        
+                        if action == "back":
+                            break
+                        elif action == "edit":
+                            edit_choices = [
+                                Choice("bias_a", name=f"Bias A (Original): {workspace['bias_a']}"),
+                                Choice("real_bias_b", name=f"Real Bias B: {workspace['real_bias_b']}"),
+                                Choice("resolution_type", name=f"Resolution Type: {workspace['resolution_type']}"),
+                                Choice("structural_resolution", name=f"Structural Resolution: {workspace['structural_resolution']}"),
+                                Choice("failure_reason", name=f"Failure Reason: {workspace['failure_reason']}"),
+                                Choice("specific_bias_compliance", name=f"Specific Bias Compliance: {workspace['specific_bias_compliance']}"),
+                                Choice("false_regime_rate", name=f"False Regime Rate: {workspace['false_regime_rate']}"),
+                                Choice("lesson_eff", name=f"Lesson Learned: {workspace['lesson_eff'][:25]}..."),
+                                Choice("back", name="[<] Back")
+                            ]
+                            
+                            field = inquirer.select(
+                                message="Select Field to Edit >",
+                                choices=edit_choices,
+                                pointer=">",
+                                qmark=""
+                            ).execute()
+                            
+                            if field == "back":
+                                continue
+                                
+                            if field == "bias_a":
+                                workspace["bias_a"] = get_mandatory_text("Enter Bias A")
+                            elif field == "real_bias_b":
+                                workspace["real_bias_b"] = get_enum_choice("Edit Real Bias B", StructuralBias).value
+                            elif field == "resolution_type":
+                                workspace["resolution_type"] = get_enum_choice("Edit Resolution Type", ResolutionType, exclude=[ResolutionType.OPEN]).value
+                            elif field == "structural_resolution":
+                                workspace["structural_resolution"] = get_enum_choice("Edit Structural Resolution", StructuralResolution).value
+                            elif field == "failure_reason":
+                                workspace["failure_reason"] = get_enum_choice("Edit Failure Reason", FailureReason).value
+                            elif field == "specific_bias_compliance":
+                                workspace["specific_bias_compliance"] = inquirer.select(
+                                    message="Select Specific Bias Compliance >",
+                                    choices=[Choice("Valid", name="Valid"), Choice("Invalid", name="Invalid")],
+                                    pointer=">",
+                                    qmark=""
+                                ).execute()
+                            elif field == "false_regime_rate":
+                                workspace["false_regime_rate"] = inquirer.select(
+                                    message="Select False Regime Rate >",
+                                    choices=[Choice("True Positive", name="True Positive"), Choice("False Positive", name="False Positive"), Choice("True Negative", name="True Negative"), Choice("False Negative", name="False Negative")],
+                                    pointer=">",
+                                    qmark=""
+                                ).execute()
+                            elif field == "lesson_eff":
+                                workspace["lesson_eff"] = get_optional_text("Edit Efficiency Lesson Learned")
+                                
+                        elif action == "save":
+                            try:
+                                raw_conn = db_session.connection().connection
+                                exists = raw_conn.execute("SELECT 1 FROM efficiency_audit WHERE id = ?", (record.id,)).fetchone()
+                                
+                                now_ts = datetime.datetime.now()
+                                if exists:
+                                    raw_conn.execute("""
+                                        UPDATE efficiency_audit SET 
+                                            bias_a = ?,
+                                            resolution_type = ?,
+                                            real_bias_b = ?,
+                                            structural_resolution = ?,
+                                            failure_reason = ?,
+                                            specific_bias_compliance = ?,
+                                            false_regime_rate = ?,
+                                            lesson_learned = ?,
+                                            updated_at = ?
+                                        WHERE id = ?
+                                    """, (
+                                        workspace["bias_a"],
+                                        workspace["resolution_type"],
+                                        workspace["real_bias_b"],
+                                        workspace["structural_resolution"],
+                                        workspace["failure_reason"],
+                                        workspace["specific_bias_compliance"],
+                                        workspace["false_regime_rate"],
+                                        workspace["lesson_eff"],
+                                        now_ts,
+                                        record.id
+                                    ))
+                                else:
+                                    raw_conn.execute("""
+                                        INSERT INTO efficiency_audit (id, bias_a, resolution_type, real_bias_b, structural_resolution, failure_reason, specific_bias_compliance, false_regime_rate, lesson_learned, created_at, updated_at)
+                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    """, (
+                                        record.id,
+                                        workspace["bias_a"],
+                                        workspace["resolution_type"],
+                                        workspace["real_bias_b"],
+                                        workspace["structural_resolution"],
+                                        workspace["failure_reason"],
+                                        workspace["specific_bias_compliance"],
+                                        workspace["false_regime_rate"],
+                                        workspace["lesson_eff"],
+                                        now_ts,
+                                        now_ts
+                                    ))
+                                db_session.commit()
+                                console.print("[green]Efficiency Audit Repair saved successfully.[/green]")
+                            except Exception as e:
+                                db_session.rollback()
+                                console.print(f"[bold red]Failed to save Efficiency Audit Repair: {e}[/bold red]")
+                            input("Press Enter to continue...")
+                            break
+                            
+                elif comp_choice == "tactical":
+                    def calculate_algebraic_metrics(direction: str, ep: float, sl: float, cp: float, tp: float, size: float, mae: float, mfe: float):
+                        # Pass 2: Calculated Math using the resolved locked direction as an input parameter
+                        notional_size = ep * size
+                        notional_size_usd = ep * size
+                        sl_dist = abs(ep - sl)
+                        tp_dist = abs(ep - tp)
+                        
+                        dist_to_sl = (sl_dist / ep) if ep != 0.0 else 0.0
+                        dist_to_tp = (tp_dist / ep) if ep != 0.0 else 0.0
+                        
+                        if direction == "Long":
+                            capital_at_risk = size * (ep - sl)
+                            risk_usd = size * sl_dist
+                            pnl = (cp - ep) * size
+                            r_r = (tp - ep) / sl_dist if sl_dist != 0.0 else 0.0
+                            r_multiple = (cp - ep) / sl_dist if sl_dist != 0.0 else 0.0
+                        else:
+                            capital_at_risk = size * (sl - ep)
+                            risk_usd = size * sl_dist
+                            pnl = (ep - cp) * size
+                            r_r = (ep - tp) / sl_dist if sl_dist != 0.0 else 0.0
+                            r_multiple = (ep - cp) / sl_dist if sl_dist != 0.0 else 0.0
+                            
+                        if r_multiple < 0.0 or not mfe or mfe == 0.0:
+                            captured_mfe = 0.0
+                        else:
+                            captured_mfe = r_multiple / mfe
+                            
+                        return {
+                            "notional_size": notional_size,
+                            "notional_size_usd": notional_size_usd,
+                            "dist_to_sl": dist_to_sl,
+                            "dist_to_tp": dist_to_tp,
+                            "capital_at_risk": capital_at_risk,
+                            "risk_usd": risk_usd,
+                            "pnl": pnl,
+                            "pnl_and_cost": pnl,
+                            "r_r": r_r,
+                            "r_multiple": r_multiple,
+                            "captured_mfe": captured_mfe
+                        }
+
+                    def recalculate_tactical_math(w, p0_dir, p2_dir, p4_dir):
+                        # Strict Two-Pass Sequenced Recalculation Engine (Amendment 2)
+                        # Pass 1: Direction Resolution
+                        ep = float(w["entry_price"]) if w.get("entry_price") else 0.0
+                        sl = float(w["stop_loss"]) if w.get("stop_loss") else 0.0
+                        size = float(w["size"]) if w.get("size") else 0.0
+                        cp = float(w["closing_price"]) if w.get("closing_price") else 0.0
+                        tp = float(w["take_profit"]) if w.get("take_profit") else 0.0
+                        mae = float(w["mae"]) if w.get("mae") else 0.0
+                        mfe = float(w["mfe"]) if w.get("mfe") else 0.0
+                        
+                        direction = "Long"
+                        if ep != 0.0 and sl != 0.0 and ep != sl:
+                            direction = "Long" if ep > sl else "Short"
+                        else:
+                            active_dirs = [p0_dir, p2_dir, p4_dir]
+                            long_count = sum(1 for d in active_dirs if d == "Long")
+                            short_count = sum(1 for d in active_dirs if d == "Short")
+                            if long_count > short_count:
+                                direction = "Long"
+                            elif short_count > long_count:
+                                direction = "Short"
+                                
+                        w["trade_decision"] = direction
+                        
+                        # Pass 2: Calculated Math passing the resolved direction as an input parameter
+                        metrics = calculate_algebraic_metrics(direction, ep, sl, cp, tp, size, mae, mfe)
+                        w.update(metrics)
+                        
+                    # Run initial recalculation pass
+                    recalculate_tactical_math(workspace, workspace["p0_dir"], workspace["p2_dir"], workspace["p4_dir"])
+                    
+                    while True:
+                        rev_text = Text()
+                        # --- Core Inputs ---
+                        rev_text.append("--- Core Inputs ---\n", style="bold green")
+                        rev_text.append(f"Trade Status: {workspace['trade_status']}\n", style="white")
+                        rev_text.append(f"Compliance: {workspace['compliance']}\n", style="white")
+                        rev_text.append(f"Entry Price: {workspace['entry_price']}\n", style="white")
+                        rev_text.append(f"Closing Price: {workspace['closing_price']}\n", style="white")
+                        rev_text.append(f"Size: {workspace['size']}\n", style="white")
+                        rev_text.append(f"Stop Loss: {workspace['stop_loss']}\n", style="white")
+                        rev_text.append(f"Take Profit: {workspace['take_profit']}\n", style="white")
+                        rev_text.append(f"MAE Adverse: {workspace['mae']}\n", style="white")
+                        rev_text.append(f"MFE Favorable: {workspace['mfe']}\n", style="white")
+                        rev_text.append(f"Could Hit TP: {workspace['could_hit_tp']}\n", style="white")
+                        
+                        # --- Distance Calculations ---
+                        rev_text.append("\n--- Distance Calculations ---\n", style="bold cyan")
+                        rev_text.append(f"Dist to SL: {workspace.get('dist_to_sl', 0.0):.4f}\n", style="white")
+                        rev_text.append(f"Dist to TP: {workspace.get('dist_to_tp', 0.0):.4f}\n", style="white")
+                        
+                        # --- Calculated Algebraic Metrics ---
+                        rev_text.append("\n--- Calculated Algebraic Metrics ---\n", style="bold yellow")
+                        rev_text.append(f"Resolved Direction: {workspace['trade_decision']}\n", style="bold cyan")
+                        rev_text.append(f"Notional Size: {workspace.get('notional_size', 0.0):.2f}\n", style="white")
+                        rev_text.append(f"Notional Size USD: {workspace.get('notional_size_usd', 0.0):.2f}\n", style="white")
+                        rev_text.append(f"Capital At Risk: {workspace.get('capital_at_risk', 0.0):.2f}\n", style="white")
+                        rev_text.append(f"Risk USD: {workspace.get('risk_usd', 0.0):.2f}\n", style="white")
+                        rev_text.append(f"PnL: {workspace.get('pnl', 0.0):.2f}\n", style="white")
+                        rev_text.append(f"PnL and Cost: {workspace.get('pnl_and_cost', 0.0):.2f}\n", style="white")
+                        rev_text.append(f"R:R: {workspace.get('r_r', 0.0):.2f}\n", style="white")
+                        rev_text.append(f"R Multiple: {workspace.get('r_multiple', 0.0):.2f}\n", style="white")
+                        rev_text.append(f"Captured MFE: {workspace.get('captured_mfe', 0.0):.2f}\n", style="white")
+                        
+                        # --- Execution Framework Context ---
+                        rev_text.append("\n--- Execution Framework Context ---\n", style="bold magenta")
+                        rev_text.append(f"Tier Setup: {workspace.get('tier_setup')}\n", style="white")
+                        rev_text.append(f"Setup Type: {workspace.get('setup_type')}\n", style="white")
+                        rev_text.append(f"Market State: {workspace.get('market_state')}\n", style="white")
+                        rev_text.append(f"HTF Trend Context: {workspace.get('htf_trend_context')}\n", style="white")
+                        rev_text.append(f"LTF Trend Context: {workspace.get('ltf_trend_context')}\n", style="white")
+                        rev_text.append(f"Confirmation Status: {workspace.get('confirmation_status')}\n", style="white")
+                        rev_text.append(f"Followed Plan: {workspace.get('followed_plan')}\n", style="white")
+                        
+                        # --- Psychological & Cognitive Logging ---
+                        rev_text.append("\n--- Psychological & Cognitive Logging ---\n", style="bold blue")
+                        rev_text.append(f"Primary Emotion: {workspace.get('primary_emotion')}\n", style="white")
+                        
+                        emotions_list = workspace.get("emotions") or []
+                        emotions_str = ", ".join(emotions_list) if isinstance(emotions_list, list) else str(emotions_list)
+                        
+                        be_list = workspace.get("behavioral_errors") or []
+                        be_str = ", ".join(be_list) if isinstance(be_list, list) else str(be_list)
+                        
+                        cp_list = workspace.get("cognitive_patterns") or []
+                        cp_str = ", ".join(cp_list) if isinstance(cp_list, list) else str(cp_list)
+                        
+                        wrapped_emotions = format_indented_block(emotions_str, indent_spaces=19, wrap_width=38)
+                        wrapped_be = format_indented_block(be_str, indent_spaces=19, wrap_width=38)
+                        wrapped_cp = format_indented_block(cp_str, indent_spaces=19, wrap_width=38)
+                        
+                        rev_text.append(f"Emotions (List/All):\n  {wrapped_emotions}\n", style="white")
+                        rev_text.append(f"Behavioral Errors:\n  {wrapped_be}\n", style="white")
+                        rev_text.append(f"Cognitive Patterns:\n  {wrapped_cp}\n", style="white")
+                        
+                        # --- Internal State Thresholds ---
+                        rev_text.append("\n--- Internal State Thresholds ---\n", style="bold orange1")
+                        rev_text.append(f"Anxiety Level: {workspace.get('anxiety_level')}\n", style="white")
+                        rev_text.append(f"Impatience Level: {workspace.get('impatience_level')}\n", style="white")
+                        rev_text.append(f"Mental Clarity Level: {workspace.get('mental_clarity_level')}\n", style="white")
+                        
+                        # --- Qualitative Notes ---
+                        rev_text.append("\n--- Qualitative Notes ---\n", style="bold cyan")
+                        if workspace["lesson_tact"] and workspace["lesson_tact"] != "nan":
+                            indented_lesson = format_indented_block(workspace["lesson_tact"], indent_spaces=11, wrap_width=38)
+                            rev_text.append(f"Lesson Learned:\n  {indented_lesson}\n", style="dim italic")
+                        else:
+                            rev_text.append("Lesson Learned: N/A\n", style="dim italic")      
+                        dashboard = Panel(
+                            rev_text,
+                            title=f"Tactical Audit Repair: {record.id[:8]}",
+                            border_style="magenta"
+                        )
+                        
+                        try:
+                            console.clear(home=True)
+                        except TypeError:
+                            console.clear()
+                        console.print(dashboard)
+                        
+                        action = inquirer.select(
+                            message="Action >",
+                            choices=[
+                                Choice("edit", name="[1] Edit a Field"),
+                                Choice("save", name="[2] Confirm & Save Repair"),
+                                Choice("back", name="[3] Discard")
+                            ],
+                            pointer=">",
+                            qmark=""
+                        ).execute()
+                        
+                        if action == "back":
+                            break
+                        elif action == "edit":
+                            edit_choices = [
+                                Choice("trade_status", name=f"Trade Status: {workspace['trade_status']}"),
+                                Choice("compliance", name=f"Compliance: {workspace['compliance']}"),
+                                Choice("entry_price", name=f"Entry Price: {workspace['entry_price']}"),
+                                Choice("closing_price", name=f"Closing Price: {workspace['closing_price']}"),
+                                Choice("size", name=f"Size: {workspace['size']}"),
+                                Choice("stop_loss", name=f"Stop Loss: {workspace['stop_loss']}"),
+                                Choice("take_profit", name=f"Take Profit: {workspace['take_profit']}"),
+                                Choice("mae", name=f"MAE: {workspace['mae']}"),
+                                Choice("mfe", name=f"MFE: {workspace['mfe']}"),
+                                Choice("could_hit_tp", name=f"Could Hit TP: {workspace['could_hit_tp']}"),
+                                Choice("tier_setup", name=f"Tier Setup: {workspace['tier_setup']}"),
+                                Choice("market_state", name=f"Market State: {workspace['market_state']}"),
+                                Choice("followed_plan", name=f"Followed Plan: {workspace['followed_plan']}"),
+                                Choice("primary_emotion", name=f"Primary Emotion: {workspace['primary_emotion']}"),
+                                Choice("setup_type", name=f"Setup Type: {workspace['setup_type']}"),
+                                Choice("htf_trend_context", name=f"HTF Trend: {workspace['htf_trend_context']}"),
+                                Choice("ltf_trend_context", name=f"LTF Trend: {workspace['ltf_trend_context']}"),
+                                Choice("confirmation_status", name=f"Confirmation Status: {workspace['confirmation_status']}"),
+                                Choice("lesson_tact", name=f"Lesson Learned: {workspace['lesson_tact'][:25]}..."),
+                                Choice("anxiety_level", name=f"Anxiety Level: {workspace['anxiety_level']}"),
+                                Choice("impatience_level", name=f"Impatience Level: {workspace['impatience_level']}"),
+                                Choice("mental_clarity_level", name=f"Mental Clarity Level: {workspace['mental_clarity_level']}"),
+                                Choice("back", name="[<] Back")
+                            ]
+                            
+                            field = inquirer.select(
+                                message="Select Field to Edit >",
+                                choices=edit_choices,
+                                pointer=">",
+                                qmark=""
+                            ).execute()
+                            
+                            if field == "back":
+                                continue
+                                
+                            if field == "trade_status":
+                                workspace["trade_status"] = get_enum_choice("Edit Trade Status", TradeStatus).value
+                            elif field == "compliance":
+                                workspace["compliance"] = get_enum_choice("Edit Compliance State", ComplianceState).value
+                            elif field in ["entry_price", "closing_price", "size", "stop_loss", "take_profit"]:
+                                workspace[field] = get_mandatory_float(f"Enter {field.replace('_', ' ').title()}")
+                                recalculate_tactical_math(workspace, workspace["p0_dir"], workspace["p2_dir"], workspace["p4_dir"])
+                            elif field in ["mae", "mfe"]:
+                                workspace[field] = get_mandatory_float(f"Enter {field.upper()} (0 <= val <= 10)", min_val=0, max_val=10)
+                                recalculate_tactical_math(workspace, workspace["p0_dir"], workspace["p2_dir"], workspace["p4_dir"])
+                            elif field == "could_hit_tp":
+                                workspace["could_hit_tp"] = inquirer.select(
+                                    message="Could hit TP? >",
+                                    choices=[Choice("yes", name="yes"), Choice("no", name="no")],
+                                    pointer=">",
+                                    qmark="",
+                                    keybindings={"skip": []}
+                                ).execute()
+                            elif field == "tier_setup":
+                                workspace["tier_setup"] = get_enum_choice("Edit Tier Setup", TierSetup).value
+                            elif field == "market_state":
+                                workspace["market_state"] = get_enum_choice("Edit Market State", MarketState).value
+                            elif field == "followed_plan":
+                                workspace["followed_plan"] = get_enum_choice("Edit Followed Plan", FollowedPlan).value
+                            elif field == "primary_emotion":
+                                workspace["primary_emotion"] = get_enum_choice("Edit Primary Emotion", PrimaryEmotion).value
+                            elif field == "setup_type":
+                                workspace["setup_type"] = get_enum_choice("Edit Setup Type", SetupType).value
+                            elif field == "htf_trend_context":
+                                workspace["htf_trend_context"] = get_enum_choice("Edit HTF Trend Context", HTFTrendContext).value
+                            elif field == "ltf_trend_context":
+                                workspace["ltf_trend_context"] = get_enum_choice("Edit LTF Trend Context", TrendContext).value
+                            elif field == "confirmation_status":
+                                workspace["confirmation_status"] = get_enum_choice("Edit Confirmation Status", ConfirmationStatus).value
+                            elif field == "lesson_tact":
+                                workspace["lesson_tact"] = get_mandatory_text("Edit Tactical Lesson Learned", multiline=True)
+                            elif field in ["anxiety_level", "impatience_level", "mental_clarity_level"]:
+                                workspace[field] = get_mandatory_int(f"Enter {field.replace('_', ' ').title()} (1 to 5)", 1, 5)
+                                
+                        elif action == "save":
+                            try:
+                                raw_conn = db_session.connection().connection
+                                exists = raw_conn.execute("SELECT 1 FROM tactical_audit WHERE id = ?", (record.id,)).fetchone()
+                                
+                                raw_conn.execute("UPDATE unified_department SET trade_status = ? WHERE id = ?", (workspace["trade_status"], record.id))
+                                
+                                if exists:
+                                    raw_conn.execute("""
+                                        UPDATE tactical_audit SET 
+                                            compliance = ?,
+                                            entry_price = ?,
+                                            closing_price = ?,
+                                            size = ?,
+                                            stop_loss = ?,
+                                            take_profit = ?,
+                                            mae_adverse = ?,
+                                            mfe_favorable = ?,
+                                            could_hit_tp = ?,
+                                            lesson_learned = ?,
+                                            tier_setup = ?,
+                                            market_state = ?,
+                                            followed_plan = ?,
+                                            primary_emotion = ?,
+                                            setup_type = ?,
+                                            htf_trend_context = ?,
+                                            ltf_trend_context = ?,
+                                            confirmation_status = ?,
+                                            anxiety_level = ?,
+                                            impatience_level = ?,
+                                            mental_clarity_level = ?,
+                                            risk_usd = ?,
+                                            r_r = ?,
+                                            pnl_and_cost = ?,
+                                            notional_size = ?,
+                                            capital_at_risk = ?,
+                                            trade_decision = ?,
+                                            emotions = ?,
+                                            behavioral_errors = ?,
+                                            cognitive_patterns = ?
+                                        WHERE id = ?
+                                    """, (
+                                        workspace["compliance"] or "nan",
+                                        float(workspace["entry_price"]),
+                                        float(workspace["closing_price"]),
+                                        float(workspace["size"]),
+                                        float(workspace["stop_loss"]),
+                                        float(workspace["take_profit"]),
+                                        float(workspace["mae"]),
+                                        float(workspace["mfe"]),
+                                        workspace["could_hit_tp"],
+                                        workspace["lesson_tact"],
+                                        workspace["tier_setup"],
+                                        workspace["market_state"],
+                                        workspace["followed_plan"],
+                                        workspace["primary_emotion"],
+                                        workspace["setup_type"],
+                                        workspace["htf_trend_context"],
+                                        workspace["ltf_trend_context"],
+                                        workspace["confirmation_status"],
+                                        int(workspace["anxiety_level"]),
+                                        int(workspace["impatience_level"]),
+                                        int(workspace["mental_clarity_level"]),
+                                        float(workspace["risk_usd"]),
+                                        float(workspace["r_r"]),
+                                        float(workspace["pnl_and_cost"]),
+                                        float(workspace["notional_size"]),
+                                        float(workspace["capital_at_risk"]),
+                                        workspace["trade_decision"],
+                                        json.dumps(workspace["emotions"]) if workspace["emotions"] else None,
+                                        json.dumps(workspace["behavioral_errors"]) if workspace["behavioral_errors"] else None,
+                                        json.dumps(workspace["cognitive_patterns"]) if workspace["cognitive_patterns"] else None,
+                                        record.id
+                                    ))
+                                else:
+                                    raw_conn.execute("""
+                                        INSERT INTO tactical_audit (
+                                            id, compliance, entry_price, closing_price, size, stop_loss, take_profit, mae_adverse, mfe_favorable, could_hit_tp, lesson_learned,
+                                            tier_setup, market_state, followed_plan, primary_emotion, setup_type, htf_trend_context, ltf_trend_context, confirmation_status, anxiety_level, impatience_level, mental_clarity_level,
+                                            risk_usd, r_r, pnl_and_cost, notional_size, capital_at_risk, trade_decision, emotions, behavioral_errors, cognitive_patterns
+                                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    """, (
+                                        record.id,
+                                        workspace["compliance"] or "nan",
+                                        float(workspace["entry_price"]),
+                                        float(workspace["closing_price"]),
+                                        float(workspace["size"]),
+                                        float(workspace["stop_loss"]),
+                                        float(workspace["take_profit"]),
+                                        float(workspace["mae"]),
+                                        float(workspace["mfe"]),
+                                        workspace["could_hit_tp"],
+                                        workspace["lesson_tact"],
+                                        workspace["tier_setup"],
+                                        workspace["market_state"],
+                                        workspace["followed_plan"],
+                                        workspace["primary_emotion"],
+                                        workspace["setup_type"],
+                                        workspace["htf_trend_context"],
+                                        workspace["ltf_trend_context"],
+                                        workspace["confirmation_status"],
+                                        int(workspace["anxiety_level"]),
+                                        int(workspace["impatience_level"]),
+                                        int(workspace["mental_clarity_level"]),
+                                        float(workspace["risk_usd"]),
+                                        float(workspace["r_r"]),
+                                        float(workspace["pnl_and_cost"]),
+                                        float(workspace["notional_size"]),
+                                        float(workspace["capital_at_risk"]),
+                                        workspace["trade_decision"],
+                                        json.dumps(workspace["emotions"]) if workspace["emotions"] else None,
+                                        json.dumps(workspace["behavioral_errors"]) if workspace["behavioral_errors"] else None,
+                                        json.dumps(workspace["cognitive_patterns"]) if workspace["cognitive_patterns"] else None
+                                    ))
+                                db_session.commit()
+                                console.print("[green]Tactical Audit Repair saved successfully.[/green]")
+                            except Exception as e:
+                                db_session.rollback()
+                                console.print(f"[bold red]Failed to save Tactical Audit Repair: {e}[/bold red]")
+                            input("Press Enter to continue...")
+                            break
 
 if __name__ == "__main__":
     cli()

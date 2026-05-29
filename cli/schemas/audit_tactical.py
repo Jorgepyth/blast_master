@@ -295,8 +295,30 @@ class TacticalAudit(BaseModel):
                 else:
                     self.captured_mfe = self.r_multiple / mfe
 
+        # Standardize entry_time to naive UTC
+        if self.entry_time:
+            dt = self.entry_time
+            if dt.tzinfo is None:
+                # Naive represents Guatemala local offset (UTC-6)
+                guatemala_tz = timezone(timedelta(hours=-6))
+                dt_aware = dt.replace(tzinfo=guatemala_tz)
+            else:
+                dt_aware = dt
+            self.entry_time = dt_aware.astimezone(timezone.utc).replace(tzinfo=None)
+
+        # Standardize exit_time to naive UTC
+        if self.exit_time:
+            dt = self.exit_time
+            if dt.tzinfo is None:
+                # Naive represents Guatemala local offset (UTC-6)
+                guatemala_tz = timezone(timedelta(hours=-6))
+                dt_aware = dt.replace(tzinfo=guatemala_tz)
+            else:
+                dt_aware = dt
+            self.exit_time = dt_aware.astimezone(timezone.utc).replace(tzinfo=None)
+
         if self.entry_time and self.exit_time:
-            # trade_duration = "Xh Ym"
+            # Both are now standardized to naive UTC
             delta = self.exit_time - self.entry_time
             total_seconds = int(delta.total_seconds())
             hours = total_seconds // 3600
@@ -305,16 +327,10 @@ class TacticalAudit(BaseModel):
 
         if self.entry_time:
             # session = Evaluated on entry_time local Guatemala timezone (UTC-6)
-            # Ensure entry_time is timezone aware, assuming input is local if naive
-            dt = self.entry_time
-            if dt.tzinfo is None:
-                guatemala_tz = timezone(timedelta(hours=-6))
-                dt = dt.replace(tzinfo=guatemala_tz)
-            else:
-                dt = dt.astimezone(timezone(timedelta(hours=-6)))
-                
-            hr = dt.hour
-            # session = "London/NY Overlap" if 7 <= hr < 10 else "New York" if 10 <= hr < 15 else "London" if 2 <= hr < 7 else "Asia/Off"
+            dt_utc = self.entry_time.replace(tzinfo=timezone.utc)
+            local_dt = dt_utc.astimezone(timezone(timedelta(hours=-6)))
+            hr = local_dt.hour
+            
             if 7 <= hr < 10:
                 self.session = Session.LONDON_NY_OVERLAP.value
             elif 10 <= hr < 15:

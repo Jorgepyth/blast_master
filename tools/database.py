@@ -62,8 +62,8 @@ class UnifiedDepartment(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     state: Mapped[str] = mapped_column(String, default=LifecycleState.ANALYSIS.value)
     asset: Mapped[str] = mapped_column(String)
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.now)
-    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.now, onupdate=datetime.datetime.now)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
     
     # Unified Fields
     market_bias: Mapped[str] = mapped_column(String)
@@ -102,8 +102,8 @@ class EfficiencyAudit(Base):
     resolution_time: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
     
     lesson_learned: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.now)
-    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.now, onupdate=datetime.datetime.now)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
     unified_department: Mapped["UnifiedDepartment"] = relationship(back_populates="efficiency_audit")
 
@@ -125,6 +125,7 @@ class TacticalAudit(Base):
     primary_emotion: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     setup_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     htf_trend_context: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    ltf_trend_context: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     confirmation_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     # Numeric scales
@@ -164,22 +165,24 @@ def init_db(db_url: str = "sqlite:///.data/journal.db"):
     global engine_default
     if db_url.startswith("sqlite:///.data"):
         os.makedirs(os.path.dirname(db_url.split("sqlite:///")[1]), exist_ok=True)
-    engine_default = create_engine(db_url)
-    Base.metadata.create_all(engine_default)
+    engine = create_engine(db_url)
+    Base.metadata.create_all(engine)
     
     # Safe migration for legacy state
     from sqlalchemy import text, inspect
-    with engine_default.begin() as conn:
+    with engine.begin() as conn:
         try:
             conn.execute(text("UPDATE unified_department SET state = 'PENDING_AUDITS' WHERE state = 'PENDING_TACTICAL_AUDIT'"))
         except Exception:
             pass
         # Migrate TacticalAudit table
-        inspector = inspect(engine_default)
+        inspector = inspect(engine)
         if "tactical_audit" in inspector.get_table_names():
             columns = [col['name'] for col in inspector.get_columns('tactical_audit')]
             if 'could_hit_tp' not in columns:
                 conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN could_hit_tp VARCHAR"))
+            if 'ltf_trend_context' not in columns:
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN ltf_trend_context VARCHAR"))
             if 'notional_size' not in columns:
                 conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN notional_size REAL DEFAULT 0.0"))
             if 'capital_at_risk' not in columns:
@@ -193,16 +196,19 @@ def init_db(db_url: str = "sqlite:///.data/journal.db"):
             if 'tactical_page_id' not in columns:
                 conn.execute(text("ALTER TABLE unified_department ADD COLUMN tactical_page_id VARCHAR"))
                 
-    return engine_default
+    if db_url == "sqlite:///.data/journal.db":
+        engine_default = engine
+    return engine
 
-def copy_assets_to_current_db():
+def copy_assets_to_current_db(engine=None):
     main_db_url = "sqlite:///.data/journal.db"
     main_engine = create_engine(main_db_url)
     
     with Session(main_engine) as main_session:
         assets = main_session.scalars(select(AssetConfig)).all()
         
-    with Session(engine_default) as current_session:
+    eng = engine or engine_default
+    with Session(eng) as current_session:
         for asset in assets:
             exists = current_session.execute(select(AssetConfig).where(AssetConfig.asset_name == asset.asset_name)).first()
             if not exists:
@@ -265,7 +271,24 @@ def update_record_state(record_id: str, new_state: LifecycleState, append_payloa
             if 'audit_efficiency' in append_payload:
                 ae_dict = append_payload['audit_efficiency']
                 valid_keys = {c.key for c in EfficiencyAudit.__table__.columns}
-                filtered_ae = {k: v for k, v in ae_dict.items() if k in valid_keys}
+                filtered_ae = {}
+                import math
+                for k, v in ae_dict.items():
+                    if k in valid_keys:
+                        col = EfficiencyAudit.__table__.columns.get(k)
+                        is_nan = False
+                        if isinstance(v, str) and v.lower() == "nan":
+                            is_nan = True
+                        elif isinstance(v, float) and math.isnan(v):
+                            is_nan = True
+                        
+                        if is_nan:
+                            if col is not None and isinstance(col.type, String):
+                                filtered_ae[k] = "nan"
+                            else:
+                                filtered_ae[k] = None
+                        else:
+                            filtered_ae[k] = v
                 
                 if record.efficiency_audit:
                     for k, v in filtered_ae.items():
@@ -294,7 +317,24 @@ def update_record_state(record_id: str, new_state: LifecycleState, append_payloa
                     at_dict['mfe_favorable'] = at_dict['mfe']
                     
                 valid_keys = {c.key for c in TacticalAudit.__table__.columns}
-                filtered_at = {k: v for k, v in at_dict.items() if k in valid_keys}
+                filtered_at = {}
+                import math
+                for k, v in at_dict.items():
+                    if k in valid_keys:
+                        col = TacticalAudit.__table__.columns.get(k)
+                        is_nan = False
+                        if isinstance(v, str) and v.lower() == "nan":
+                            is_nan = True
+                        elif isinstance(v, float) and math.isnan(v):
+                            is_nan = True
+                        
+                        if is_nan:
+                            if col is not None and isinstance(col.type, String):
+                                filtered_at[k] = "nan"
+                            else:
+                                filtered_at[k] = None
+                        else:
+                            filtered_at[k] = v
                 
                 if record.tactical_audit:
                     for k, v in filtered_at.items():
