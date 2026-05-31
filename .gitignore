@@ -28,3 +28,7 @@ checkpoint_*.ipynb
 # --- IDEs (VS Code / PyCharm) ---
 .vscode/
 prompt_de_analisis.txt
+
+# Excluir todos los archivos de assets generados por el usuario
+.assets/staging/*
+.assets/permanent/*

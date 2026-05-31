@@ -205,6 +205,7 @@ class TacticalAudit(BaseModel):
 
     # Text blocks
     lesson_learned: Optional[str] = None
+    visual_lesson_path: Optional[str] = None
 
     # Automated fields
     trade_decision: Optional[str] = None

@@ -5,6 +5,8 @@ import subprocess
 import os
 import signal
 
+from typing import Optional
+
 try:
     signal.signal(signal.SIGTSTP, signal.SIG_IGN)
 except Exception:
@@ -461,6 +463,90 @@ def format_indented_block(text_value, indent_spaces=11, first_line_flush=True, w
     else:
         return prefix + lines[0] + "".join(f"\n{prefix}{line}" for line in lines[1:])
 
+def handle_visual_lesson_assignment(trade_id: str, asset: str, current_path: Optional[str] = "nan", suffix: str = "_VL") -> Optional[str]:
+    import os
+    import shutil
+    import datetime
+    from InquirerPy.base.control import Choice
+    
+    staging_dir = ".assets/staging"
+    clean_asset = asset.replace("/", "_").replace(".", "_")
+    permanent_dir = f".assets/permanent/{clean_asset}"
+    
+    os.makedirs(staging_dir, exist_ok=True)
+    os.makedirs(permanent_dir, exist_ok=True)
+    
+    valid_extensions = ('.png', '.jpg', '.jpeg')
+    files = [f for f in os.listdir(staging_dir) if f.lower().endswith(valid_extensions)]
+    
+    choices = []
+    if current_path and current_path != "nan":
+        choices.append(Choice("keep", name=f"[ Keep Current File: {current_path} ]"))
+        
+    for f in files:
+        choices.append(Choice(f, name=f))
+        
+    choices.append(Choice("skip", name="[ Skip Visual Lesson Assignment ]"))
+    
+    if not files and (not current_path or current_path == "nan"):
+        return "nan"
+    
+    label_map = {
+        "_NF": "Normal Fractal",
+        "_IF": "Inverted Fractal",
+        "_VL": "Visual Lesson"
+    }
+    prompt_label = label_map.get(suffix, "Visual Asset")
+
+    prompt = inquirer.select(
+        message=f"Select {prompt_label} image from staging folder >",
+        choices=choices,
+        pointer=">",
+        qmark="",
+        keybindings={"skip": []}
+    )
+    
+    @prompt.register_kb("c-f")
+    def _open_windows_viewer(event):
+        import platform
+        import os
+        import subprocess
+        abs_staging = os.path.abspath(staging_dir)
+        if os.path.exists(abs_staging):
+            try:
+                if platform.system() == "Windows":
+                    os.startfile(abs_staging)
+                elif platform.system() == "Darwin":
+                    subprocess.Popen(["open", abs_staging])
+                else:
+                    try:
+                        subprocess.Popen(["xdg-open", abs_staging], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except FileNotFoundError:
+                        try:
+                            subprocess.Popen(["gio", "open", abs_staging], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        except FileNotFoundError:
+                            pass
+            except Exception:
+                pass
+
+    selected = bind_pause(prompt).execute()
+    
+    if selected == "keep":
+        return current_path
+        
+    if selected == "skip":
+        return "nan"
+        
+    ext = os.path.splitext(selected)[1]
+    date_prefix = datetime.date.today().strftime("%Y%m%d")
+    new_filename = f"{date_prefix}_{trade_id[:8]}{suffix}{ext}"
+    
+    src_path = os.path.join(staging_dir, selected)
+    dst_path = os.path.join(permanent_dir, new_filename)
+    
+    shutil.move(src_path, dst_path)
+    return dst_path
+
 def determine_market_bias(i_cd: float) -> str:
     if abs(i_cd) < 0.26:
         return "Choppy / Neutral"
@@ -527,21 +613,30 @@ def get_mandatory_float(prompt_text, min_val=None, max_val=None):
     )).execute()
     return float(val)
 
-def get_mandatory_datetime(prompt_text):
+def get_mandatory_datetime(prompt_text, allow_cancel=False):
     def validate_datetime(result):
         if not result: return False
+        if allow_cancel and result.lower() == 'c': return True
         try:
             datetime.datetime.strptime(result, "%Y-%m-%d %H:%M")
             return True
         except ValueError:
             return False
 
+    msg = f"{prompt_text} (YYYY-MM-DD HH:MM)"
+    if allow_cancel:
+        msg += " (or 'c' to cancel)"
+    msg += " >"
+
     val = bind_pause(inquirer.text(
-        message=f"{prompt_text} (YYYY-MM-DD HH:MM) >",
+        message=msg,
         validate=validate_datetime,
-        invalid_message="Must be in format YYYY-MM-DD HH:MM",
+        invalid_message="Must be in format YYYY-MM-DD HH:MM or 'c'",
         keybindings={"skip": []}
     )).execute()
+    
+    if allow_cancel and val.lower() == 'c':
+        raise GoBackException("Cancelled by user")
     return datetime.datetime.strptime(val, "%Y-%m-%d %H:%M")
 
 def flow_test_drive():
@@ -691,8 +786,7 @@ def start():
                                 message="Configuration >",
                                 choices=[
                                     Choice("add_asset", name="[1] Add New Asset"),
-                                    Choice("add_backdated_analysis", name="[2] Add Backdated Analysis"),
-                                    Choice("repair_analysis_audits", name="[3] Repair executed analysis & audits"),
+                                    Choice("analysis_modification", name="[2] Analysis Modification"),
                                     Choice("back", name="[4] Back to Main Menu"),
                                     Choice("add_new_whitelisted_asset", name="[5] Add New Asset to Whitelist")
                                 ],
@@ -701,7 +795,9 @@ def start():
                             ).execute()
                             
                             if config_choice == "add_asset":
-                                new_asset = get_mandatory_text("Enter Asset Name (e.g., BTC/USDT)")
+                                new_asset = get_mandatory_text("Enter Asset Name (e.g., BTC/USDT) (or 'c' to cancel)")
+                                if new_asset.lower() == 'c':
+                                    continue
                                 category = get_optional_text("Enter category (default: Crypto)")
                                 if not category:
                                     category = "Crypto"
@@ -711,19 +807,29 @@ def start():
                                 except Exception as e:
                                     console.print(f"[bold red]Failed to add asset: {e}[/bold red]")
                                 input("Press Enter to continue...")
-                            elif config_choice == "add_backdated_analysis":
-                                try:
-                                    backdated_ts = get_mandatory_datetime("Enter Target Timestamp")
-                                    flow_new_analysis(backdated_timestamp=backdated_ts)
-                                except GoBackException:
-                                    console.print("[warning]Operation cancelled.[/warning]")
-                                except PauseAuditException:
-                                    console.print("[warning]Operation paused/cancelled.[/warning]")
-                                except Exception as e:
-                                    console.print(f"[bold red]Error adding backdated analysis: {e}[/bold red]")
-                                input("Press Enter to continue...")
-                            elif config_choice == "repair_analysis_audits":
-                                flow_repair_analysis_audits()
+                            elif config_choice == "analysis_modification":
+                                mod_choice = inquirer.select(
+                                    message="Analysis Modification >",
+                                    choices=[
+                                        Choice("add_backdated", name="[1] Add Backdated Analysis"),
+                                        Choice("repair_analysis", name="[2] Repair executed analysis & audits"),
+                                        Choice("back", name="[3] Back to Configuration Menu")
+                                    ],
+                                    pointer=">",
+                                    qmark=""
+                                ).execute()
+                                
+                                if mod_choice == "add_backdated":
+                                    try:
+                                        backdated_ts = get_mandatory_datetime("Enter Target Timestamp", allow_cancel=True)
+                                        flow_new_analysis(backdated_timestamp=backdated_ts)
+                                    except (GoBackException, PauseAuditException):
+                                        continue
+                                    except Exception as e:
+                                        console.print(f"[bold red]Error adding backdated analysis: {e}[/bold red]")
+                                        input("Press Enter to continue...")
+                                elif mod_choice == "repair_analysis":
+                                    flow_repair_analysis_audits()
                             elif config_choice == "add_new_whitelisted_asset":
                                 try:
                                     flow_add_whitelisted_asset()
@@ -890,7 +996,7 @@ def flow_review_analysis():
                t.emotions, t.behavioral_errors, t.cognitive_patterns, t.size, t.entry_price,
                t.closing_price, t.could_hit_tp, t.take_profit, t.stop_loss, t.pnl_and_cost,
                t.mae_adverse, t.captured_mae, t.mfe_favorable, t.notional_size, t.capital_at_risk,
-               t.lesson_learned as t_lesson, t.session,
+               t.lesson_learned as t_lesson, t.session, t.visual_lesson_path,
                al.department, al.layer_name, al.direction, al.strength, al.thesis
         FROM unified_department u
         LEFT JOIN efficiency_audit e ON u.id = e.id
@@ -918,7 +1024,7 @@ def flow_review_analysis():
             "emotions", "behavioral_errors", "cognitive_patterns", "size", "entry_price",
             "closing_price", "could_hit_tp", "take_profit", "stop_loss", "pnl_and_cost",
             "mae_adverse", "captured_mae", "mfe_favorable", "notional_size", "capital_at_risk",
-            "t_lesson", "session"
+            "t_lesson", "session", "visual_lesson_path"
         ]
         
         record = {}
@@ -1074,9 +1180,26 @@ def flow_review_analysis():
                 s_style = "bold" if s == "Strong" else ""
                 struct_text.append(f"{s.upper()}\n", style=s_style)
                 if t:
-                    indented_thesis = format_indented_block(t, indent_spaces=11, first_line_flush=True, wrap_width=80)
-                    struct_text.append("   Thesis: ", style="dim italic")
-                    struct_text.append(f"{indented_thesis}\n", style="dim italic")
+                    if name == "P1":
+                        try:
+                            import json
+                            p1_data = json.loads(t) if t else {}
+                            if isinstance(p1_data, dict) and p1_data:
+                                struct_text.append("   Normal Fractal:   ", style="dim italic")
+                                struct_text.append(f"{p1_data.get('normal_fractal', 'None')}\n", style="dim cyan")
+                                struct_text.append("   Inverted Fractal: ", style="dim italic")
+                                struct_text.append(f"{p1_data.get('inverted_fractal', 'None')}\n", style="dim cyan")
+                            else:
+                                raise ValueError()
+                        except (Exception, ValueError):
+                            # Robust backward compatibility fallback rule for legacy pure text analysis entries
+                            indented_thesis = format_indented_block(t, indent_spaces=11, first_line_flush=True, wrap_width=80)
+                            struct_text.append("   Thesis: ", style="dim italic")
+                            struct_text.append(f"{indented_thesis}\n", style="dim italic")
+                    else:
+                        indented_thesis = format_indented_block(t, indent_spaces=11, first_line_flush=True, wrap_width=80)
+                        struct_text.append("   Thesis: ", style="dim italic")
+                        struct_text.append(f"{indented_thesis}\n", style="dim italic")
             else:
                 struct_text.append("N/A\n", style="dim")
                 
@@ -1173,6 +1296,12 @@ def flow_review_analysis():
                 indented_lesson = format_indented_block(record['t_lesson'], indent_spaces=11, first_line_flush=False, wrap_width=80)
                 tact_text.append(f"\nLesson Learned:\n{indented_lesson}\n", style="italic white")
                 
+            v_lesson = record.get("visual_lesson_path") or "None"
+            if v_lesson == "nan": v_lesson = "None"
+            tact_text.append(f"\n  Visual Lesson:    {v_lesson}\n", style="dim cyan")
+
+
+                
         tact_panel = Panel(
             tact_text,
             title="[bold magenta]Step 3/3: Tactical Audit View[/bold magenta]",
@@ -1188,8 +1317,58 @@ def flow_review_analysis():
         console.print(dashboard)
         console.print(eff_panel)
         console.print(tact_panel)
-        console.print("\n[dim]Press Enter to return to Index...[/dim]")
-        input()
+        back_prompt = inquirer.select(
+            message="Press Enter to return to index (or Ctrl+F to open all linked image assets) >",
+            choices=[Choice("back", name="[<] Return to Ledger Index")],
+            pointer=">",
+            qmark=""
+        )
+
+        @back_prompt.register_kb("c-f")
+        def _open_linked_trade_images(event):
+            import os
+            import platform
+            import subprocess
+            import json
+            
+            paths_to_open = []
+            
+            # Extract Visual Lesson target path reference safely
+            if record.get("visual_lesson_path") and record["visual_lesson_path"] not in ["nan", "None"]:
+                paths_to_open.append(record["visual_lesson_path"])
+                
+            # Extract P1 Fractal target path references safely
+            p1_layer = layers_dict.get("P1", {})
+            p1_thesis_str = p1_layer.get("thesis", "{}") if isinstance(p1_layer, dict) else getattr(p1_layer, "thesis", "{}")
+            try:
+                p1_data = json.loads(p1_thesis_str) if p1_thesis_str else {}
+                if isinstance(p1_data, dict):
+                    if p1_data.get("normal_fractal") and p1_data["normal_fractal"] not in ["nan", "None"]:
+                        paths_to_open.append(p1_data["normal_fractal"])
+                    if p1_data.get("inverted_fractal") and p1_data["inverted_fractal"] not in ["nan", "None"]:
+                        paths_to_open.append(p1_data["inverted_fractal"])
+            except Exception:
+                pass
+                
+            # Sequentially execute cross-platform process system calls inside shielded exception blocks
+            for path_item in paths_to_open:
+                if os.path.exists(path_item):
+                    abs_target_path = os.path.abspath(path_item)
+                    try:
+                        if platform.system() == "Windows":
+                            os.startfile(abs_target_path)
+                        elif platform.system() == "Darwin":
+                            subprocess.Popen(["open", abs_target_path])
+                        else:
+                            # Linux environment multi-command cascade fallback rule 
+                            try:
+                                subprocess.Popen(["xdg-open", abs_target_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            except FileNotFoundError:
+                                subprocess.Popen(["gio", "open", abs_target_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
+                        
+        back_prompt.execute()
 
     while True:
         try:
@@ -1400,8 +1579,14 @@ def flow_new_analysis(backdated_timestamp=None):
             p3_dir = session.prompt("p3_dir", get_enum_choice, "P3 Direction", Direction)
             p3_str = session.prompt("p3_str", get_enum_choice, "P3 Strength", Strength)
 
+            import json
+            p1_normal = session.prompt("p1_normal_fractal", handle_visual_lesson_assignment, trade_id, asset, "nan", "_NF")
+            p1_inverted = session.prompt("p1_inverted_fractal", handle_visual_lesson_assignment, trade_id, asset, "nan", "_IF")
+            p1_thesis_payload = json.dumps({"normal_fractal": p1_normal, "inverted_fractal": p1_inverted})
+            session.state["p1_thesis"] = p1_thesis_payload
+            p1_thesis = p1_thesis_payload
+
             # --- STEP 2: Tactical & Meta Parameters ---
-            p1_thesis = session.prompt("p1_thesis", get_mandatory_text, "P1 Thesis", multiline=True)
             p1_dir = session.prompt("p1_dir", get_enum_choice, "P1 Direction", Direction)
             p1_str = session.prompt("p1_str", get_enum_choice, "P1 Strength", Strength)
             p1_tf = session.prompt("p1_tf", get_enum_choice, "P1 Timeframe", Timeframe)
@@ -1623,8 +1808,23 @@ def flow_new_analysis(backdated_timestamp=None):
                         s_style = "bold" if s.value == "Strong" else ""
                         tact_text.append(f"{s.value.upper()}\n", style=s_style)
                         if t:
-                            indented_thesis = format_indented_block(t, indent_spaces=11, wrap_width=38)
-                            tact_text.append(f"   Thesis: {indented_thesis}\n", style="dim italic")
+                            if label == "P1":
+                                try:
+                                    import json
+                                    raw_thesis = t
+                                    fractal_data = json.loads(raw_thesis) if raw_thesis else {}
+                                    if not isinstance(fractal_data, dict):
+                                        raise ValueError()
+                                    
+                                    tact_text.append(f"   Normal Fractal:   {fractal_data.get('normal_fractal', 'nan')}\n", style="dim cyan")
+                                    tact_text.append(f"   Inverted Fractal: {fractal_data.get('inverted_fractal', 'nan')}\n", style="dim cyan")
+                                except (Exception, ValueError):
+                                    # Safe fallback for legacy flat text entries
+                                    indented_thesis = format_indented_block(t, indent_spaces=11, wrap_width=38)
+                                    tact_text.append(f"   Thesis: {indented_thesis}\n", style="dim italic")
+                            else:
+                                indented_thesis = format_indented_block(t, indent_spaces=11, wrap_width=38)
+                                tact_text.append(f"   Thesis: {indented_thesis}\n", style="dim italic")
                     else:
                         tact_text.append("N/A\n", style="dim")
                         
@@ -2021,17 +2221,19 @@ def flow_pending_audits():
                 
                 if t_status == TradeStatus.NO_TAKEN:
                     while True:
-                        t_comp = session.state.get("t_comp") or session.prompt("t_comp", get_enum_choice, "Compliance State", ComplianceState)
-                        htf_trend = session.state.get("htf_trend") or session.prompt("htf_trend", get_enum_choice, "HTF Trend Context", HTFTrendContext)
-                        ltf_trend = session.state.get("ltf_trend") or session.prompt("ltf_trend", get_enum_choice, "LTF Trend Context", TrendContext)
-                        lesson_tact = session.state.get("lesson_tact") if "lesson_tact" in session.state else session.prompt("lesson_tact", get_mandatory_text, "Tactical Lesson Learned", multiline=True)
+                        t_comp = session.prompt("t_comp", get_enum_choice, "Compliance State", ComplianceState)
+                        htf_trend = session.prompt("htf_trend", get_enum_choice, "HTF Trend Context", HTFTrendContext)
+                        ltf_trend = session.prompt("ltf_trend", get_enum_choice, "LTF Trend Context", TrendContext)
+                        lesson_tact = session.prompt("lesson_tact", get_mandatory_text, "Tactical Lesson Learned", multiline=True)
+                        visual_path = session.prompt("visual_lesson_path", handle_visual_lesson_assignment, trade_id, payload.get("asset", "Unknown"))
                         
                         audit_tactical = TacticalAudit(
                             tactical_id=trade_id,
                             compliance=t_comp,
                             htf_trend_context=htf_trend,
                             ltf_trend_context=ltf_trend,
-                            lesson_learned=lesson_tact
+                            lesson_learned=lesson_tact,
+                            visual_lesson_path=visual_path
                         )
                         
                         rev_text = Text()
@@ -2040,6 +2242,8 @@ def flow_pending_audits():
                         rev_text.append(f"HTF Trend Context: {htf_trend.value if isinstance(htf_trend, Enum) else htf_trend}\n")
                         rev_text.append(f"LTF Trend Context: {ltf_trend.value if isinstance(ltf_trend, Enum) else ltf_trend}\n")
                         rev_text.append(f"Tactical Lesson Learned: {lesson_tact}\n")
+                        if visual_path and visual_path != "nan":
+                            rev_text.append(f"Visual Lesson: {visual_path}\n")
                         
                         try:
                             console.clear(home=True)
@@ -2066,7 +2270,8 @@ def flow_pending_audits():
                                 "trade_status", "followed_plan", "primary_emotion", "setup_type",
                                 "htf_trend_context", "confirmation_status", "ltf_trend_context",
                                 "pre_trade_emotions", "mid_trade_emotions", "post_trade_emotions",
-                                "could_hit_tp", "lesson_learned", "trade_decision", "trade_duration"
+                                "could_hit_tp", "lesson_learned", "trade_decision", "trade_duration",
+                                "visual_lesson_path"
                             }
                             for k, v in at_dump.items():
                                 if v is None and k in string_enum_keys:
@@ -2083,6 +2288,7 @@ def flow_pending_audits():
                                 Choice("htf_trend", name=f"HTF Trend: {htf_trend.value if isinstance(htf_trend, Enum) else htf_trend}"),
                                 Choice("ltf_trend", name=f"LTF Trend: {ltf_trend.value if isinstance(ltf_trend, Enum) else ltf_trend}"),
                                 Choice("lesson_tact", name=f"Lesson: {lesson_tact[:30]}..."),
+                                Choice("visual_lesson_path", name=f"Visual Lesson Path: {session.state.get('visual_lesson_path', 'nan')}"),
                                 Choice("back", name="[<] Back to Review")
                             ]
                             field_to_edit = inquirer.select(
@@ -2101,29 +2307,32 @@ def flow_pending_audits():
                                 session.state["ltf_trend"] = get_enum_choice("Edit LTF Trend Context", TrendContext)
                             elif field_to_edit == "lesson_tact":
                                 session.state["lesson_tact"] = get_mandatory_text("Edit Tactical Lesson Learned", multiline=True)
+                            elif field_to_edit == "visual_lesson_path":
+                                visual_path = handle_visual_lesson_assignment(trade_id, payload.get("asset", "Unknown"), session.state.get("visual_lesson_path", "nan"))
+                                session.state["visual_lesson_path"] = visual_path
                     break
                 else:
                     while True:
-                        htf_trend = session.state.get("htf_trend") or session.prompt("htf_trend", get_enum_choice, "HTF Trend Context", HTFTrendContext)
-                        ltf_trend = session.state.get("ltf_trend") or session.prompt("ltf_trend", get_enum_choice, "LTF Trend Context", TrendContext)
-                        sl = session.state.get("sl") if "sl" in session.state else session.prompt("sl", get_mandatory_float, "Stop Loss")
-                        entry_p = session.state.get("entry_p") if "entry_p" in session.state else session.prompt("entry_p", get_mandatory_float, "Entry Price")
-                        conf_params = session.state.get("conf_params") or session.prompt("conf_params", get_multi_enum_choice, "Confirmation Params", ConfirmationParams)
-                        size = session.state.get("size") if "size" in session.state else session.prompt("size", get_mandatory_float, "Size")
-                        tp = session.state.get("tp") if "tp" in session.state else session.prompt("tp", get_mandatory_float, "Take Profit")
-                        entry_time = session.state.get("entry_time") or session.prompt("entry_time", get_mandatory_datetime, "Entry Time")
-                        emotions = session.state.get("emotions") or session.prompt("emotions", get_multi_enum_choice, "Emotions", Emotions)
-                        pre_trade_emotions = session.state.get("pre_trade_emotions") if "pre_trade_emotions" in session.state else session.prompt("pre_trade_emotions", get_mandatory_text, "Pre Trade Emotions")
-                        p_emotion = session.state.get("p_emotion") or session.prompt("p_emotion", get_enum_choice, "Primary Emotion", PrimaryEmotion)
-                        mental_clarity = session.state.get("mental_clarity") if "mental_clarity" in session.state else session.prompt("mental_clarity", get_mandatory_int, "Mental Clarity Level", 1, 5)
-                        impatience = session.state.get("impatience") if "impatience" in session.state else session.prompt("impatience", get_mandatory_int, "Impatience Level", 1, 5)
-                        anxiety = session.state.get("anxiety") if "anxiety" in session.state else session.prompt("anxiety", get_mandatory_int, "Anxiety Level", 1, 5)
-                        mid_trade_emotions = session.state.get("mid_trade_emotions") if "mid_trade_emotions" in session.state else session.prompt("mid_trade_emotions", get_mandatory_text, "Mid Trade Emotions")
-                        post_trade_emotions = session.state.get("post_trade_emotions") if "post_trade_emotions" in session.state else session.prompt("post_trade_emotions", get_mandatory_text, "Post Trade Emotions")
-                        exit_time = session.state.get("exit_time") or session.prompt("exit_time", get_mandatory_datetime, "Exit Time")
-                        exit_type = session.state.get("exit_type") or session.prompt("exit_type", get_enum_choice, "Exit Type", ExitType)
-                        conf_status = session.state.get("conf_status") or session.prompt("conf_status", get_enum_choice, "Confirmation Status", ConfirmationStatus)
-                        close_p = session.state.get("close_p") if "close_p" in session.state else session.prompt("close_p", get_mandatory_float, "Closing Price")
+                        htf_trend = session.prompt("htf_trend", get_enum_choice, "HTF Trend Context", HTFTrendContext)
+                        ltf_trend = session.prompt("ltf_trend", get_enum_choice, "LTF Trend Context", TrendContext)
+                        sl = session.prompt("sl", get_mandatory_float, "Stop Loss")
+                        entry_p = session.prompt("entry_p", get_mandatory_float, "Entry Price")
+                        conf_params = session.prompt("conf_params", get_multi_enum_choice, "Confirmation Params", ConfirmationParams)
+                        size = session.prompt("size", get_mandatory_float, "Size")
+                        tp = session.prompt("tp", get_mandatory_float, "Take Profit")
+                        entry_time = session.prompt("entry_time", get_mandatory_datetime, "Entry Time")
+                        emotions = session.prompt("emotions", get_multi_enum_choice, "Emotions", Emotions)
+                        pre_trade_emotions = session.prompt("pre_trade_emotions", get_mandatory_text, "Pre Trade Emotions")
+                        p_emotion = session.prompt("p_emotion", get_enum_choice, "Primary Emotion", PrimaryEmotion)
+                        mental_clarity = session.prompt("mental_clarity", get_mandatory_int, "Mental Clarity Level", 1, 5)
+                        impatience = session.prompt("impatience", get_mandatory_int, "Impatience Level", 1, 5)
+                        anxiety = session.prompt("anxiety", get_mandatory_int, "Anxiety Level", 1, 5)
+                        mid_trade_emotions = session.prompt("mid_trade_emotions", get_mandatory_text, "Mid Trade Emotions")
+                        post_trade_emotions = session.prompt("post_trade_emotions", get_mandatory_text, "Post Trade Emotions")
+                        exit_time = session.prompt("exit_time", get_mandatory_datetime, "Exit Time")
+                        exit_type = session.prompt("exit_type", get_enum_choice, "Exit Type", ExitType)
+                        conf_status = session.prompt("conf_status", get_enum_choice, "Confirmation Status", ConfirmationStatus)
+                        close_p = session.prompt("close_p", get_mandatory_float, "Closing Price")
                         
                         def ask_could_hit_tp():
                             return bind_pause(inquirer.select(
@@ -2134,17 +2343,18 @@ def flow_pending_audits():
                                 keybindings={"skip": []}
                             )).execute()
                             
-                        could_hit_tp = session.state.get("could_hit_tp") or session.prompt("could_hit_tp", ask_could_hit_tp)
-                        t_comp = session.state.get("t_comp") or session.prompt("t_comp", get_enum_choice, "Compliance State", ComplianceState)
-                        tier_setup = session.state.get("tier_setup") or session.prompt("tier_setup", get_enum_choice, "Tier Setup", TierSetup)
-                        market_state = session.state.get("market_state") or session.prompt("market_state", get_enum_choice, "Market State", MarketState)
-                        f_plan = session.state.get("f_plan") or session.prompt("f_plan", get_enum_choice, "Followed Plan", FollowedPlan)
-                        setup_t = session.state.get("setup_t") or session.prompt("setup_t", get_enum_choice, "Setup Type", SetupType)
-                        behav_errors = session.state.get("behav_errors") or session.prompt("behav_errors", get_multi_enum_choice, "Behavioral Errors", BehavioralErrors)
-                        cog_patterns = session.state.get("cog_patterns") or session.prompt("cog_patterns", get_multi_enum_choice, "Cognitive Patterns", CognitivePatterns)
-                        mae = session.state.get("mae") if "mae" in session.state else session.prompt("mae", get_mandatory_float, "MAE (0 <= MAE <= 10)", min_val=0, max_val=10)
-                        mfe = session.state.get("mfe") if "mfe" in session.state else session.prompt("mfe", get_mandatory_float, "MFE (0 <= MFE <= 10)", min_val=0, max_val=10)
-                        lesson_tact = session.state.get("lesson_tact") if "lesson_tact" in session.state else session.prompt("lesson_tact", get_mandatory_text, "Tactical Lesson Learned", multiline=True)
+                        could_hit_tp = session.prompt("could_hit_tp", ask_could_hit_tp)
+                        t_comp = session.prompt("t_comp", get_enum_choice, "Compliance State", ComplianceState)
+                        tier_setup = session.prompt("tier_setup", get_enum_choice, "Tier Setup", TierSetup)
+                        market_state = session.prompt("market_state", get_enum_choice, "Market State", MarketState)
+                        f_plan = session.prompt("f_plan", get_enum_choice, "Followed Plan", FollowedPlan)
+                        setup_t = session.prompt("setup_t", get_enum_choice, "Setup Type", SetupType)
+                        behav_errors = session.prompt("behav_errors", get_multi_enum_choice, "Behavioral Errors", BehavioralErrors)
+                        cog_patterns = session.prompt("cog_patterns", get_multi_enum_choice, "Cognitive Patterns", CognitivePatterns)
+                        mae = session.prompt("mae", get_mandatory_float, "MAE (0 <= MAE <= 10)", min_val=0, max_val=10)
+                        mfe = session.prompt("mfe", get_mandatory_float, "MFE (0 <= MFE <= 10)", min_val=0, max_val=10)
+                        lesson_tact = session.prompt("lesson_tact", get_mandatory_text, "Tactical Lesson Learned", multiline=True)
+                        visual_path = session.prompt("visual_lesson_path", handle_visual_lesson_assignment, trade_id, payload.get("asset", "Unknown"))
 
                         audit_tactical = TacticalAudit(
                             tactical_id=trade_id,
@@ -2180,7 +2390,8 @@ def flow_pending_audits():
                             cost=0.0,
                             mae=mae,
                             mfe=mfe,
-                            lesson_learned=lesson_tact
+                            lesson_learned=lesson_tact,
+                            visual_lesson_path=visual_path
                         )
 
                         # Post Review Panel
@@ -2208,6 +2419,10 @@ def flow_pending_audits():
                             rev_text.append(f"R Multiple: {audit_tactical.r_multiple:.2f}\n")
                         if audit_tactical.captured_mfe is not None:
                             rev_text.append(f"Captured MFE: {audit_tactical.captured_mfe:.2f}\n")
+                            
+                        v_path = session.state.get("visual_lesson_path", "nan")
+                        if v_path and v_path != "nan":
+                            rev_text.append(f"Visual Lesson Path: {v_path}\n", style="dim cyan")
                         
                         try:
                             console.clear(home=True)
@@ -2256,6 +2471,7 @@ def flow_pending_audits():
                                 Choice("mae", name=f"MAE: {mae}"),
                                 Choice("mfe", name=f"MFE: {mfe}"),
                                 Choice("lesson_tact", name=f"Lesson: {lesson_tact[:30]}..."),
+                                Choice("visual_lesson_path", name=f"Visual Lesson Path: {session.state.get('visual_lesson_path', 'nan')}"),
                                 Choice("back", name="[<] Back to Review")
                             ]
                             field_to_edit = inquirer.select(
@@ -2306,6 +2522,9 @@ def flow_pending_audits():
                                 session.state["mfe"] = get_mandatory_float("Edit MFE (0 <= MFE <= 10)", min_val=0, max_val=10)
                             elif field_to_edit == "lesson_tact":
                                 session.state["lesson_tact"] = get_mandatory_text("Edit Tactical Lesson Learned", multiline=True)
+                            elif field_to_edit == "visual_lesson_path":
+                                visual_path = handle_visual_lesson_assignment(trade_id, payload.get("asset", "Unknown"), session.state.get("visual_lesson_path", "nan"))
+                                session.state["visual_lesson_path"] = visual_path
                     break
             except RestartFlowException:
                 continue
@@ -2401,8 +2620,23 @@ def render_final_review_layout(record, workspace=None, pyd_ta=None):
             s_style = "bold" if p_layer.strength == "Strong" else ""
             tact_text.append(f"{p_layer.strength.upper()}\n", style=s_style)
             if p_layer.thesis:
-                indented_thesis = format_indented_block(p_layer.thesis, indent_spaces=11, wrap_width=38)
-                tact_text.append(f"   Thesis: {indented_thesis}\n", style="dim italic")
+                if label == "P1":
+                    try:
+                        import json
+                        raw_thesis = p_layer.thesis if hasattr(p_layer, 'thesis') else p_layer
+                        fractal_data = json.loads(raw_thesis) if raw_thesis else {}
+                        if not isinstance(fractal_data, dict):
+                            raise ValueError()
+                        
+                        tact_text.append(f"   Normal Fractal:   {fractal_data.get('normal_fractal', 'nan')}\n", style="dim cyan")
+                        tact_text.append(f"   Inverted Fractal: {fractal_data.get('inverted_fractal', 'nan')}\n", style="dim cyan")
+                    except (Exception, ValueError):
+                        # Safe fallback for legacy flat text entries
+                        indented_thesis = format_indented_block(p_layer.thesis if hasattr(p_layer, 'thesis') else p_layer, indent_spaces=11, wrap_width=38)
+                        tact_text.append(f"   Thesis: {indented_thesis}\n", style="dim italic")
+                else:
+                    indented_thesis = format_indented_block(p_layer.thesis, indent_spaces=11, wrap_width=38)
+                    tact_text.append(f"   Thesis: {indented_thesis}\n", style="dim italic")
         else:
             tact_text.append("N/A\n", style="dim")
             
@@ -2420,6 +2654,7 @@ def render_final_review_layout(record, workspace=None, pyd_ta=None):
         mae = workspace.get("mae") if (workspace and "mae" in workspace) else ta.mae_adverse
         mfe = workspace.get("mfe") if (workspace and "mfe" in workspace) else ta.mfe_favorable
         lesson_tact = workspace.get("lesson_tact") if (workspace and "lesson_tact" in workspace) else ta.lesson_learned
+        vis_path = workspace.get("visual_lesson_path") if (workspace and "visual_lesson_path" in workspace) else ta.visual_lesson_path
         
         tact_text.append("Compliance: ", style="dim")
         tact_text.append(f"{t_comp}\n", style="white")
@@ -2442,6 +2677,9 @@ def render_final_review_layout(record, workspace=None, pyd_ta=None):
         if lesson_tact:
             indented_lesson = format_indented_block(lesson_tact, indent_spaces=11, wrap_width=38)
             tact_text.append(f"Lesson Learned:\n  {indented_lesson}\n", style="dim italic")
+            
+        if vis_path and vis_path != "nan":
+            tact_text.append(f"Visual Lesson: {vis_path}\n", style="dim cyan")
             
     # 3. Quantitative Profile Panel (automated exposure metrics)
     quant_text = Text()
@@ -2579,27 +2817,44 @@ def flow_repair_analysis_audits():
                 input("Press Enter to continue...")
                 return
                 
-            completed = [r for r in records if r.efficiency_audit is not None and r.tactical_audit is not None]
-            incomplete = [r for r in records if not (r.efficiency_audit is not None and r.tactical_audit is not None)]
+            from rich.table import Table
+            from rich import box
+            table = Table(title="Database Ledger", box=box.ROUNDED, border_style="magenta")
+            table.add_column("#", justify="right", style="cyan")
+            table.add_column("Short ID", style="dim")
+            table.add_column("Asset", style="bold white")
+            table.add_column("Market Bias")
+            table.add_column("Calc Edge")
+            table.add_column("Created At", style="dim")
+            table.add_column("Audit Status")
             
             choices = []
-            if completed:
-                choices.append(Separator("-- Completed (Audits Finalized) --"))
-                for r in completed:
-                    ts_str = r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else "N/A"
-                    bias_val = r.market_bias or "Neutral"
-                    choice_name = f"[{ts_str}] - {r.id[:8]} | {r.asset} | {bias_val} | Finalized"
-                    choices.append(Choice(r.id, name=choice_name))
-            if incomplete:
-                choices.append(Separator("-- Incomplete (Audits Pending) --"))
-                for r in incomplete:
-                    ts_str = r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else "N/A"
-                    bias_val = r.market_bias or "Neutral"
-                    choice_name = f"[{ts_str}] - {r.id[:8]} | {r.asset} | {bias_val} | Pending"
-                    choices.append(Choice(r.id, name=choice_name))
-                    
-            choices.append(Separator(""))
-            choices.append(Choice("back", name="[Back to Configuration]"))
+            
+            for idx, r in enumerate(records):
+                ts_str = r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else "N/A"
+                bias_val = r.market_bias or "Neutral"
+                edge_val = f"{r.calc_edge:.3f}" if r.calc_edge is not None else "N/A"
+                
+                is_completed = r.efficiency_audit is not None and r.tactical_audit is not None
+                status_str = "[bold green]Finalized[/bold green]" if is_completed else "[bold yellow]Pending[/bold yellow]"
+                
+                table.add_row(
+                    str(idx + 1),
+                    r.id[:8],
+                    r.asset,
+                    bias_val,
+                    edge_val,
+                    ts_str,
+                    status_str
+                )
+                
+                choice_name = f"[{idx + 1}] Inspect Record {r.id[:8]} | {r.asset}"
+                choices.append(Choice(r.id, name=choice_name))
+                
+            console.print(table)
+            console.print()
+            
+            choices.append(Choice("back", name="[Back to Analysis Modification Menu]"))
             
             selected_id = inquirer.select(
                 message="Select Trade to Inspect and Repair >",
@@ -2683,7 +2938,8 @@ def flow_repair_analysis_audits():
                 "mfe": 0.0,
                 "notional_size": 0.0,
                 "capital_at_risk": 0.0,
-                "lesson_tact": ""
+                "lesson_tact": "",
+                "visual_lesson_path": "nan"
             }
             if record.tactical_audit:
                 ta = record.tactical_audit
@@ -2721,7 +2977,8 @@ def flow_repair_analysis_audits():
                     "mfe": ta.mfe_favorable or 0.0,
                     "notional_size": ta.notional_size or 0.0,
                     "capital_at_risk": ta.capital_at_risk or 0.0,
-                    "lesson_tact": ta.lesson_learned or ""
+                    "lesson_tact": ta.lesson_learned or "",
+                    "visual_lesson_path": ta.visual_lesson_path or "nan"
                 }
                 
             # Build global workspace
@@ -2781,7 +3038,8 @@ def flow_repair_analysis_audits():
                         Choice("unified", name="[1] View & Edit Unified Analysis (P0 -> P4)"),
                         Choice("efficiency", name="[2] View & Edit Efficiency Audit"),
                         Choice("tactical", name="[3] View & Edit Tactical Audit"),
-                        Choice("back", name="[4] Back")
+                        Choice("back", name="[4] Back"),
+                        Choice("delete_record", name="[DELETE] Permanently Purge Trade Record From Database")
                     ],
                     pointer=">",
                     qmark=""
@@ -2789,6 +3047,63 @@ def flow_repair_analysis_audits():
                 
                 if comp_choice == "back":
                     break
+                    
+                elif comp_choice == "delete_record":
+                    from rich.panel import Panel
+                    from rich.text import Text
+                    import os
+                    import json
+                    
+                    warn_text = Text()
+                    warn_text.append("CRITICAL WARNING: DESTRUCTIVE ACTION\n\n", style="bold red")
+                    warn_text.append(f"You are about to permanently purge Trade ID: {record.id}\n", style="white")
+                    warn_text.append("This will cascade-delete:\n", style="dim")
+                    warn_text.append(" - Unified Department Parent Entity Row Data\n", style="dim")
+                    warn_text.append(" - Efficiency and Tactical Audit Metadata Framework Metrics\n", style="dim")
+                    warn_text.append(" - All 5 Analysis Layers (P0, P1, P2, P3, P4) and structural payloads\n\n", style="dim")
+                    warn_text.append("WARNING: This will cause desynchronization if the record has already been exported to Notion.", style="bold yellow")
+                    
+                    console.print(Panel(warn_text, title="[DANGER - PURGE SYSTEM]", border_style="bold red"))
+                    console.print()
+                    
+                    confirm_purge = inquirer.text(
+                        message='Type "yes" to confirm deletion or press Enter to cancel >',
+                        qmark="!"
+                    ).execute()
+                    
+                    if confirm_purge == "yes":
+                        try:
+                            raw_conn = db_session.connection().connection
+                            
+                            # Force SQLite runtime foreign key checking enforcement
+                            raw_conn.execute("PRAGMA foreign_keys = ON;")
+                            
+                            # Execute parent deletion to trigger database level engine cascades
+                            raw_conn.execute("DELETE FROM unified_department WHERE id = ?;", (record.id,))
+                            
+                            # Evict from localized session JSON caches to maintain application state integrity
+                            if os.path.exists(".data/paused_audits.json"):
+                                try:
+                                    with open(".data/paused_audits.json", "r") as f:
+                                        cache = json.load(f)
+                                    if record.id in cache:
+                                        del cache[record.id]
+                                        with open(".data/paused_audits.json", "w") as f:
+                                            json.dump(cache, f)
+                                except Exception:
+                                    pass
+                                    
+                            db_session.commit()
+                            console.print("[success]Trade record and associated sub-components successfully purged from database and cache layers.[/success]")
+                            input("Press Enter to return to record index...")
+                            break # Exits the record inspection loop to refresh the general ledger
+                        except Exception as e:
+                            db_session.rollback()
+                            console.print(f"[bold red]Critical Deletion Transaction Failure: {e}[/bold red]")
+                            input("Press Enter to continue...")
+                    else:
+                        console.print("[warning]Deletion cancelled.[/warning]")
+                        input("Press Enter to continue...")
                     
                 elif comp_choice == "unified":
                     def recalculate_unified_metrics(w):
@@ -2908,6 +3223,18 @@ def flow_repair_analysis_audits():
                         if action == "back":
                             break
                         elif action == "edit":
+                            try:
+                                import json
+                                import os
+                                p1_data = json.loads(workspace.get("p1_thesis", "{}"))
+                                if not isinstance(p1_data, dict):
+                                    p1_data = {}
+                            except Exception:
+                                p1_data = {}
+                            
+                            nf_name = os.path.basename(p1_data.get("normal_fractal", "nan"))
+                            if_name = os.path.basename(p1_data.get("inverted_fractal", "nan"))
+                            
                             edit_choices = [
                                 Choice("asset", name=f"Asset: {workspace['asset']}"),
                                 Choice("edge_description", name=f"Edge Description: {workspace['edge_description']}"),
@@ -2931,7 +3258,7 @@ def flow_repair_analysis_audits():
                                 Choice("p4_thesis", name=f"P4 Thesis: {workspace['p4_thesis'][:25]}..."),
                                 Choice("p1_dir", name=f"P1 Direction: {workspace['p1_dir']}"),
                                 Choice("p1_str", name=f"P1 Strength: {workspace['p1_str']}"),
-                                Choice("p1_thesis", name=f"P1 Thesis: {workspace['p1_thesis'][:25]}..."),
+                                Choice("p1_thesis", name=f"P1 Fractals -> Normal: {nf_name} | Inverted: {if_name}"),
                                 Choice("back", name="[<] Back")
                             ]
                             
@@ -2965,8 +3292,24 @@ def flow_repair_analysis_audits():
                             elif field in ["p0_str", "p2_str", "p3_str", "p4_str", "p1_str"]:
                                 workspace[field] = get_enum_choice(f"Edit {field.replace('_str', '').upper()} Strength", Strength).value
                                 recalculate_unified_metrics(workspace)
-                            elif field in ["p0_thesis", "p2_thesis", "p3_thesis", "p4_thesis", "p1_thesis"]:
+                            elif field in ["p0_thesis", "p2_thesis", "p3_thesis", "p4_thesis"]:
                                 workspace[field] = get_mandatory_text(f"Edit {field.replace('_thesis', '').upper()} Thesis", multiline=True)
+                            elif field == "p1_thesis":
+                                import json
+                                try:
+                                    existing_data = json.loads(workspace.get("p1_thesis", "{}"))
+                                    if not isinstance(existing_data, dict):
+                                        existing_data = {}
+                                except Exception:
+                                    existing_data = {}
+                                    
+                                console.print("[cyan]Updating P1 Normal Fractal Image...[/cyan]")
+                                new_normal = handle_visual_lesson_assignment(selected_id, workspace.get("asset", "Unknown"), existing_data.get("normal_fractal", "nan"), "_NF")
+                                
+                                console.print("[cyan]Updating P1 Inverted Fractal Image...[/cyan]")
+                                new_inverted = handle_visual_lesson_assignment(selected_id, workspace.get("asset", "Unknown"), existing_data.get("inverted_fractal", "nan"), "_IF")
+                                
+                                workspace["p1_thesis"] = json.dumps({"normal_fractal": new_normal, "inverted_fractal": new_inverted})
                                 
                         elif action == "save":
                             try:
@@ -3388,6 +3731,7 @@ def flow_repair_analysis_audits():
                                 Choice("ltf_trend_context", name=f"LTF Trend: {workspace['ltf_trend_context']}"),
                                 Choice("confirmation_status", name=f"Confirmation Status: {workspace['confirmation_status']}"),
                                 Choice("lesson_tact", name=f"Lesson Learned: {workspace['lesson_tact'][:25]}..."),
+                                Choice("visual_lesson_path", name=f"Visual Lesson: {workspace.get('visual_lesson_path', 'nan')}"),
                                 Choice("anxiety_level", name=f"Anxiety Level: {workspace['anxiety_level']}"),
                                 Choice("impatience_level", name=f"Impatience Level: {workspace['impatience_level']}"),
                                 Choice("mental_clarity_level", name=f"Mental Clarity Level: {workspace['mental_clarity_level']}"),
@@ -3440,6 +3784,8 @@ def flow_repair_analysis_audits():
                                 workspace["confirmation_status"] = get_enum_choice("Edit Confirmation Status", ConfirmationStatus).value
                             elif field == "lesson_tact":
                                 workspace["lesson_tact"] = get_mandatory_text("Edit Tactical Lesson Learned", multiline=True)
+                            elif field == "visual_lesson_path":
+                                workspace["visual_lesson_path"] = handle_visual_lesson_assignment(selected_id, workspace.get("asset", "Unknown"), workspace.get("visual_lesson_path", "nan"))
                             elif field in ["anxiety_level", "impatience_level", "mental_clarity_level"]:
                                 workspace[field] = get_mandatory_int(f"Enter {field.replace('_', ' ').title()} (1 to 5)", 1, 5)
                                 
@@ -3482,7 +3828,8 @@ def flow_repair_analysis_audits():
                                             trade_decision = ?,
                                             emotions = ?,
                                             behavioral_errors = ?,
-                                            cognitive_patterns = ?
+                                            cognitive_patterns = ?,
+                                            visual_lesson_path = ?
                                         WHERE id = ?
                                     """, (
                                         workspace["compliance"] or "nan",
@@ -3515,6 +3862,7 @@ def flow_repair_analysis_audits():
                                         json.dumps(workspace["emotions"]) if workspace["emotions"] else None,
                                         json.dumps(workspace["behavioral_errors"]) if workspace["behavioral_errors"] else None,
                                         json.dumps(workspace["cognitive_patterns"]) if workspace["cognitive_patterns"] else None,
+                                        workspace["visual_lesson_path"] if workspace["visual_lesson_path"] != "nan" else None,
                                         record.id
                                     ))
                                 else:
@@ -3522,8 +3870,8 @@ def flow_repair_analysis_audits():
                                         INSERT INTO tactical_audit (
                                             id, compliance, entry_price, closing_price, size, stop_loss, take_profit, mae_adverse, mfe_favorable, could_hit_tp, lesson_learned,
                                             tier_setup, market_state, followed_plan, primary_emotion, setup_type, htf_trend_context, ltf_trend_context, confirmation_status, anxiety_level, impatience_level, mental_clarity_level,
-                                            risk_usd, r_r, pnl_and_cost, notional_size, capital_at_risk, trade_decision, emotions, behavioral_errors, cognitive_patterns
-                                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                            risk_usd, r_r, pnl_and_cost, notional_size, capital_at_risk, trade_decision, emotions, behavioral_errors, cognitive_patterns, visual_lesson_path
+                                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                     """, (
                                         record.id,
                                         workspace["compliance"] or "nan",
@@ -3555,7 +3903,8 @@ def flow_repair_analysis_audits():
                                         workspace["trade_decision"],
                                         json.dumps(workspace["emotions"]) if workspace["emotions"] else None,
                                         json.dumps(workspace["behavioral_errors"]) if workspace["behavioral_errors"] else None,
-                                        json.dumps(workspace["cognitive_patterns"]) if workspace["cognitive_patterns"] else None
+                                        json.dumps(workspace["cognitive_patterns"]) if workspace["cognitive_patterns"] else None,
+                                        workspace["visual_lesson_path"] if workspace["visual_lesson_path"] != "nan" else None
                                     ))
                                 db_session.commit()
                                 console.print("[green]Tactical Audit Repair saved successfully.[/green]")

@@ -196,7 +196,7 @@ def get_welcome_options(state: CLIState):
     options = [
         ("1", "New Unified Analysis", "primary", "core"),
         ("2", "Execute Audits", "primary", "core"),
-        ("3", "Review History (Last 5)", "primary", "core"),
+        ("3", "Review History (Last 10)", "primary", "core"),
         ("4", "Force Notion Sync", "primary", "system"),
         ("5", "Configuration", "primary", "system"),
     ]

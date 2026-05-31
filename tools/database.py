@@ -156,6 +156,7 @@ class TacticalAudit(Base):
     
     # Text blocks
     lesson_learned: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    visual_lesson_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     unified_department: Mapped["UnifiedDepartment"] = relationship(back_populates="tactical_audit")
 
@@ -187,6 +188,8 @@ def init_db(db_url: str = "sqlite:///.data/journal.db"):
                 conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN notional_size REAL DEFAULT 0.0"))
             if 'capital_at_risk' not in columns:
                 conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN capital_at_risk REAL DEFAULT 0.0"))
+            if 'visual_lesson_path' not in columns:
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN visual_lesson_path TEXT"))
 
         # Migrate UnifiedDepartment table
         if "unified_department" in inspector.get_table_names():
