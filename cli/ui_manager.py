@@ -169,7 +169,7 @@ def build_persistent_layout(state: CLIState = None, footer_type="menu", active_s
         daemon_stat = sync_status
 
     if active_sess:
-        session_str = f"[bold warning]TEST FLIGHT: {active_sess['name']}[/bold warning]"
+        session_str = f"[bold warning]FLIGHT SESSION: {active_sess['name']}[/bold warning]"
     else:
         session_str = f"[bold primary]B.L.A.S.T. ENGINE v1.1[/bold primary]"
         
@@ -201,10 +201,10 @@ def get_welcome_options(state: CLIState):
         ("5", "Configuration", "primary", "system"),
     ]
     if state.active_session:
-        options.append(("t", f"Test Drive ({state.active_session['name']})", "warning", "test_drive"))
-        options.append(("e", f"Exit Test Flight - {state.active_session['name']}", "warning", "exit_session"))
+        options.append(("t", f"Flight Sessions ({state.active_session['name']})", "warning", "test_drive"))
+        options.append(("e", f"Restore Main Flight Account Connection", "warning", "exit_session"))
     else:
-        options.append(("t", "Test Drive (Q3-BTC-SCALPING)", "primary", "system"))
+        options.append(("t", "Flight Sessions Workspace", "primary", "system"))
     options.append(("x", "Exit", "danger", "exit"))
     return options
 
@@ -264,8 +264,8 @@ def build_welcome_body(state: CLIState) -> Panel:
     state_table.add_column("Metric", style="cyan")
     state_table.add_column("Value", style="bold white")
     
-    db_name = f"{state.active_session['id'][:8]}.db" if state.active_session else "journal.db"
-    state_table.add_row("Active DB", f"{db_name} ({'Test Drive' if state.active_session else 'Production'})")
+    db_name = f"{state.active_session.get('db_name', state.active_session['id']+'.db')}" if state.active_session else "flight_account_001_xauusd.db"
+    state_table.add_row("Active DB", f"{db_name} ({'Flight Session' if state.active_session else 'Main Account'})")
     state_table.add_row("Total records", f"{state.total_records:,}")
     state_table.add_row("Pending Audits", f"{len(state.pending_records)} [bold warning]")
     

@@ -162,7 +162,7 @@ class TacticalAudit(Base):
 
 engine_default = None
 
-def init_db(db_url: str = "sqlite:///.data/journal.db"):
+def init_db(db_url: str = "sqlite:///.data/flight_account_001_xauusd.db"):
     global engine_default
     if db_url.startswith("sqlite:///.data"):
         os.makedirs(os.path.dirname(db_url.split("sqlite:///")[1]), exist_ok=True)
@@ -199,31 +199,35 @@ def init_db(db_url: str = "sqlite:///.data/journal.db"):
             if 'tactical_page_id' not in columns:
                 conn.execute(text("ALTER TABLE unified_department ADD COLUMN tactical_page_id VARCHAR"))
                 
-    if db_url == "sqlite:///.data/journal.db":
+    if db_url == "sqlite:///.data/flight_account_001_xauusd.db":
         engine_default = engine
     return engine
 
-def copy_assets_to_current_db(engine=None):
-    main_db_url = "sqlite:///.data/journal.db"
-    main_engine = create_engine(main_db_url)
+def copy_assets_to_current_db(target_engine):
+    from sqlalchemy.orm import Session
+    from sqlalchemy import create_engine, select
     
-    with Session(main_engine) as main_session:
+    # Bind explicitly to the migrated main account database
+    main_db_path = "sqlite:///.data/flight_account_001_xauusd.db"
+    source_engine = create_engine(main_db_path)
+    
+    with Session(source_engine) as main_session:
         assets = main_session.scalars(select(AssetConfig)).all()
-        
-    eng = engine or engine_default
-    with Session(eng) as current_session:
-        for asset in assets:
-            exists = current_session.execute(select(AssetConfig).where(AssetConfig.asset_name == asset.asset_name)).first()
-            if not exists:
-                new_asset = AssetConfig(
-                    asset_name=asset.asset_name, 
+        if not assets:
+            return
+            
+        with Session(target_engine) as target_session:
+            for asset in assets:
+                # Duplicate the configuration structure into the new flight account database mappings
+                # Ensure to clear instance state attributes to avoid SQLAlchemy identity mapper collisions
+                target_session.merge(AssetConfig(
+                    asset_name=asset.asset_name,
                     category=asset.category,
                     code=asset.code,
                     display_name=asset.display_name,
                     active=asset.active
-                )
-                current_session.add(new_asset)
-        current_session.commit()
+                ))
+            target_session.commit()
 
 def get_assets(engine=None) -> List[str]:
     eng = engine or engine_default

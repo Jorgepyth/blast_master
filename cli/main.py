@@ -211,13 +211,29 @@ def get_active_engine():
     if ACTIVE_SESSION is not None:
         return ACTIVE_ENGINE
     
-    from tools.database import engine_default
-    if engine_default is not None:
-        return engine_default
-    else:
-        # Fallback default directly to permanent production location
-        from tools.database import init_db
-        return init_db("sqlite:///.data/journal.db")
+    from tools.database import init_db
+    import os
+    
+    legacy_db_path = ".data/journal.db"
+    new_primary_db = "flight_account_001_xauusd.db"
+    new_primary_path = f".data/{new_primary_db}"
+    
+    if os.path.exists(legacy_db_path) and not os.path.exists(new_primary_path):
+        os.rename(legacy_db_path, new_primary_path)
+
+    sessions = FlightSessionManager.load_sessions()
+    if "001" not in sessions:
+        sessions["001"] = {
+            "name": "Main Flight Account",
+            "db_name": new_primary_db,
+            "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "last_played": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        }
+        FlightSessionManager.save_sessions(sessions)
+    
+    primary_db = sessions["001"].get("db_name", new_primary_db)
+    ACTIVE_ENGINE = init_db(f"sqlite:///.data/{primary_db}")
+    return ACTIVE_ENGINE
 
 def to_local_display(dt, fmt="%Y-%m-%d %H:%M"):
     if dt is None:
@@ -232,54 +248,57 @@ def to_local_display(dt, fmt="%Y-%m-%d %H:%M"):
         return dt_utc.astimezone(guatemala_offset).strftime(fmt)
 
 state = CLIState()
-TEST_SESSIONS_FILE = ".data/test_sessions.json"
+FLIGHT_SESSIONS_FILE = ".data/flight_sessions.json"
 
-class TestSessionManager:
+class FlightSessionManager:
     @staticmethod
     def load_sessions():
-        if not os.path.exists(TEST_SESSIONS_FILE):
+        if not os.path.exists(FLIGHT_SESSIONS_FILE):
             return {}
         try:
-            with open(TEST_SESSIONS_FILE, "r") as f:
+            with open(FLIGHT_SESSIONS_FILE, "r") as f:
                 return json.load(f)
         except Exception:
             return {}
 
     @staticmethod
     def save_sessions(sessions):
-        os.makedirs(os.path.dirname(TEST_SESSIONS_FILE), exist_ok=True)
-        with open(TEST_SESSIONS_FILE, "w") as f:
+        os.makedirs(os.path.dirname(FLIGHT_SESSIONS_FILE), exist_ok=True)
+        with open(FLIGHT_SESSIONS_FILE, "w") as f:
             json.dump(sessions, f, indent=4)
 
     @staticmethod
-    def create_session(name):
-        import uuid
-        session_id = str(uuid.uuid4())
-        sessions = TestSessionManager.load_sessions()
+    def create_session(account_index: str, name: str):
+        import re
+        sessions = FlightSessionManager.load_sessions()
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-        sessions[session_id] = {
+        sanitized_nickname = re.sub(r'[^a-zA-Z0-9]', '', name).lower()
+        db_name = f"flight_account_{account_index}_{sanitized_nickname}.db"
+        sessions[account_index] = {
             "name": name,
+            "db_name": db_name,
             "created_at": now,
             "last_played": now
         }
-        TestSessionManager.save_sessions(sessions)
-        return session_id, sessions[session_id]
+        FlightSessionManager.save_sessions(sessions)
+        return account_index, sessions[account_index]
 
     @staticmethod
     def update_last_played(session_id):
-        sessions = TestSessionManager.load_sessions()
+        sessions = FlightSessionManager.load_sessions()
         if session_id in sessions:
             sessions[session_id]["last_played"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-            TestSessionManager.save_sessions(sessions)
+            FlightSessionManager.save_sessions(sessions)
 
     @staticmethod
     def delete_session(session_id):
-        sessions = TestSessionManager.load_sessions()
+        sessions = FlightSessionManager.load_sessions()
         if session_id in sessions:
+            db_name = sessions[session_id].get("db_name", f"flight_account_{session_id}_{sessions[session_id].get('name', 'unknown').lower().replace(' ', '')}.db")
             del sessions[session_id]
-            TestSessionManager.save_sessions(sessions)
+            FlightSessionManager.save_sessions(sessions)
             # Optionally delete the db file
-            db_path = f".data/{session_id}.db"
+            db_path = f".data/{db_name}"
             if os.path.exists(db_path):
                 try: os.remove(db_path)
                 except Exception: pass
@@ -345,6 +364,9 @@ class ExitToMainMenuException(Exception):
     pass
 
 class RestartFlowException(Exception):
+    pass
+
+class ReloadChoicesException(Exception):
     pass
 
 def bind_pause(prompt):
@@ -471,81 +493,93 @@ def handle_visual_lesson_assignment(trade_id: str, asset: str, current_path: Opt
     
     staging_dir = ".assets/staging"
     clean_asset = asset.replace("/", "_").replace(".", "_")
-    permanent_dir = f".assets/permanent/{clean_asset}"
+    account_prefix = ACTIVE_SESSION["name"].replace(" ", "_").lower() if ACTIVE_SESSION else "xauusdt_trading_main"
+    permanent_dir = f".assets/permanent/{account_prefix}/{clean_asset}"
     
     os.makedirs(staging_dir, exist_ok=True)
     os.makedirs(permanent_dir, exist_ok=True)
     
-    valid_extensions = ('.png', '.jpg', '.jpeg')
-    files = [f for f in os.listdir(staging_dir) if f.lower().endswith(valid_extensions)]
-    
-    choices = []
-    if current_path and current_path != "nan":
-        choices.append(Choice("keep", name=f"[ Keep Current File: {current_path} ]"))
+    while True:
+        valid_extensions = ('.png', '.jpg', '.jpeg')
+        files = [f for f in os.listdir(staging_dir) if f.lower().endswith(valid_extensions)]
         
-    for f in files:
-        choices.append(Choice(f, name=f))
+        choices = []
+        if current_path and current_path != "nan":
+            choices.append(Choice("keep", name=f"[ Keep Current File: {current_path} ]"))
+            
+        for f in files:
+            choices.append(Choice(f, name=f))
+            
+        choices.append(Choice("skip", name="[ Skip Visual Lesson Assignment ]"))
         
-    choices.append(Choice("skip", name="[ Skip Visual Lesson Assignment ]"))
-    
-    if not files and (not current_path or current_path == "nan"):
-        return "nan"
-    
-    label_map = {
-        "_NF": "Normal Fractal",
-        "_IF": "Inverted Fractal",
-        "_VL": "Visual Lesson"
-    }
-    prompt_label = label_map.get(suffix, "Visual Asset")
+        label_map = {
+            "_NF": "Normal Fractal",
+            "_IF": "Inverted Fractal",
+            "_VL": "Visual Lesson"
+        }
+        prompt_label = label_map.get(suffix, "Visual Asset")
 
-    prompt = inquirer.select(
-        message=f"Select {prompt_label} image from staging folder >",
-        choices=choices,
-        pointer=">",
-        qmark="",
-        keybindings={"skip": []}
-    )
-    
-    @prompt.register_kb("c-f")
-    def _open_windows_viewer(event):
-        import platform
-        import os
-        import subprocess
-        abs_staging = os.path.abspath(staging_dir)
-        if os.path.exists(abs_staging):
-            try:
-                if platform.system() == "Windows":
-                    os.startfile(abs_staging)
-                elif platform.system() == "Darwin":
-                    subprocess.Popen(["open", abs_staging])
-                else:
-                    try:
-                        subprocess.Popen(["xdg-open", abs_staging], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    except FileNotFoundError:
+        prompt = inquirer.select(
+            message=f"Select {prompt_label} image from staging folder >",
+            choices=choices,
+            pointer=">",
+            qmark="",
+            keybindings={"skip": []}
+        )
+        
+        @prompt.register_kb("c-f")
+        def _open_windows_viewer(event):
+            import platform
+            import os
+            import subprocess
+            abs_staging = os.path.abspath(staging_dir)
+            if os.path.exists(abs_staging):
+                try:
+                    if platform.system() == "Windows":
+                        os.startfile(abs_staging)
+                    elif platform.system() == "Darwin":
+                        subprocess.Popen(["open", abs_staging])
+                    else:
                         try:
-                            subprocess.Popen(["gio", "open", abs_staging], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            subprocess.Popen(["xdg-open", abs_staging], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         except FileNotFoundError:
-                            pass
+                            try:
+                                subprocess.Popen(["gio", "open", abs_staging], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            except FileNotFoundError:
+                                pass
+                except Exception:
+                    pass
+
+        @prompt.register_kb("c-r")
+        @prompt.register_kb("f5")
+        def _reload_choices(event):
+            event.app.exit(exception=ReloadChoicesException("Reload requested"))
+
+        try:
+            selected = bind_pause(prompt).execute()
+        except ReloadChoicesException:
+            try:
+                from rich.console import Console
+                Console().clear(home=True)
             except Exception:
                 pass
-
-    selected = bind_pause(prompt).execute()
-    
-    if selected == "keep":
-        return current_path
+            continue
         
-    if selected == "skip":
-        return "nan"
+        if selected == "keep":
+            return current_path
+            
+        if selected == "skip":
+            return "nan"
+            
+        ext = os.path.splitext(selected)[1]
+        date_prefix = datetime.date.today().strftime("%Y%m%d")
+        new_filename = f"{date_prefix}_{trade_id[:8]}{suffix}{ext}"
         
-    ext = os.path.splitext(selected)[1]
-    date_prefix = datetime.date.today().strftime("%Y%m%d")
-    new_filename = f"{date_prefix}_{trade_id[:8]}{suffix}{ext}"
-    
-    src_path = os.path.join(staging_dir, selected)
-    dst_path = os.path.join(permanent_dir, new_filename)
-    
-    shutil.move(src_path, dst_path)
-    return dst_path
+        staging_path = os.path.join(staging_dir, selected)
+        perm_path = os.path.join(permanent_dir, new_filename)
+        
+        shutil.move(staging_path, perm_path)
+        return perm_path
 
 def determine_market_bias(i_cd: float) -> str:
     if abs(i_cd) < 0.26:
@@ -639,21 +673,21 @@ def get_mandatory_datetime(prompt_text, allow_cancel=False):
         raise GoBackException("Cancelled by user")
     return datetime.datetime.strptime(val, "%Y-%m-%d %H:%M")
 
-def flow_test_drive():
-    global ACTIVE_SESSION
+def flow_flight_sessions():
+    global ACTIVE_SESSION, ACTIVE_ENGINE
     while True:
         try:
             console.clear(home=True)
         except TypeError:
             console.clear()
             
-        sessions = TestSessionManager.load_sessions()
+        sessions = FlightSessionManager.load_sessions()
         
-        console.rule("[bold cyan]Test Drive Sessions[/bold cyan]")
+        console.rule("[bold cyan]Flight Sessions Workspace[/bold cyan]")
         console.print()
         
         choices = [
-            Choice("create", name="[+] Create New Session"),
+            Choice("create", name="[+] Provision New Flight Session"),
             Choice("delete", name="[-] Delete Session"),
             Choice("back", name="[<] Back to Main Menu"),
             Separator()
@@ -662,7 +696,7 @@ def flow_test_drive():
         for s_id, s_data in sessions.items():
             name = s_data.get("name", "Unknown")
             last_p = s_data.get("last_played", "Unknown")
-            choices.append(Choice(s_id, name=f"► {name} (Last Played: {last_p})"))
+            choices.append(Choice(s_id, name=f"► {s_id} - {name} (Last Played: {last_p})"))
             
         choice = inquirer.select(
             message="Select Action >",
@@ -674,15 +708,16 @@ def flow_test_drive():
         if choice == "back":
             return
         elif choice == "create":
-            name = get_mandatory_text("Enter session name")
-            session_id, _ = TestSessionManager.create_session(name)
-            ACTIVE_SESSION = {"id": session_id, "name": name}
+            account_idx = get_mandatory_text("Enter sequential account numeric index key (e.g. 002)")
+            name = get_mandatory_text("Enter flight session nickname")
+            session_id, session_data = FlightSessionManager.create_session(account_idx, name)
+            ACTIVE_SESSION = {"id": session_id, "name": name, "db_name": session_data["db_name"]}
             
             from tools.database import copy_assets_to_current_db, init_db
-            ACTIVE_ENGINE = init_db(f"sqlite:///.data/{session_id}.db")
+            ACTIVE_ENGINE = init_db(f"sqlite:///.data/{session_data['db_name']}")
             copy_assets_to_current_db(ACTIVE_ENGINE)
             
-            console.print(f"[green]Session '{name}' created and loaded![/green]")
+            console.print(f"[green]Flight Session '{name}' created and loaded![/green]")
             input("Press Enter to continue...")
             return
         elif choice == "delete":
@@ -691,7 +726,7 @@ def flow_test_drive():
                 input("Press Enter to continue...")
                 continue
                 
-            del_choices = [Choice("cancel", name="Cancel")] + [Choice(s_id, name=f"{s_data['name']}") for s_id, s_data in sessions.items()]
+            del_choices = [Choice("cancel", name="Cancel")] + [Choice(s_id, name=f"{s_id} - {s_data['name']}") for s_id, s_data in sessions.items()]
             del_choice = inquirer.select(
                 message="Select session to delete >",
                 choices=del_choices,
@@ -702,7 +737,7 @@ def flow_test_drive():
             if del_choice != "cancel":
                 confirm = inquirer.confirm(message="Are you sure you want to delete this session?").execute()
                 if confirm:
-                    TestSessionManager.delete_session(del_choice)
+                    FlightSessionManager.delete_session(del_choice)
                     if ACTIVE_SESSION and ACTIVE_SESSION["id"] == del_choice:
                         ACTIVE_SESSION = None
                         ACTIVE_ENGINE = None
@@ -710,18 +745,20 @@ def flow_test_drive():
                     input("Press Enter to continue...")
         else:
             s_id = choice
-            ACTIVE_SESSION = {"id": s_id, "name": sessions[s_id]["name"]}
-            TestSessionManager.update_last_played(s_id)
+            import re
+            fallback_db = f"flight_account_{s_id}_{re.sub(r'[^a-zA-Z0-9]', '', sessions[s_id]['name']).lower()}.db"
+            ACTIVE_SESSION = {"id": s_id, "name": sessions[s_id]["name"], "db_name": sessions[s_id].get("db_name", fallback_db)}
+            FlightSessionManager.update_last_played(s_id)
             from tools.database import init_db
-            ACTIVE_ENGINE = init_db(f"sqlite:///.data/{s_id}.db")
-            console.print(f"[green]Session '{ACTIVE_SESSION['name']}' loaded![/green]")
+            ACTIVE_ENGINE = init_db(f"sqlite:///.data/{ACTIVE_SESSION['db_name']}")
+            console.print(f"[green]Flight Session '{ACTIVE_SESSION['name']}' loaded![/green]")
             input("Press Enter to continue...")
             return
 
 @click.group()
 def cli():
     """B.L.A.S.T Interactive Engine"""
-    init_db()
+    get_active_engine()
 
 @cli.command()
 def start():
@@ -778,7 +815,10 @@ def start():
                             flow_review_analysis()
                         elif selected_choice == "4":
                             console.print("[cyan]Starting background Notion Sync daemon...[/cyan]")
-                            subprocess.Popen(["conda", "run", "-n", "blast_master", "env", "PYTHONPATH=.", "python", "tools/notion_sync.py"])
+                            active_db_file = ACTIVE_SESSION["db_name"] if ACTIVE_SESSION else "flight_account_001_xauusd.db"
+                            env_context = os.environ.copy()
+                            env_context["BLAST_ACTIVE_DB"] = active_db_file
+                            subprocess.Popen(["conda", "run", "-n", "blast_master", "env", "PYTHONPATH=.", "python", "tools/notion_sync.py"], env=env_context)
                             console.print("[green]Daemon started successfully![/green]")
                             input("Press Enter to continue...")
                         elif selected_choice == "5":
@@ -836,12 +876,12 @@ def start():
                                 except Exception as e:
                                     console.print(f"[bold red]Error adding whitelisted asset: {e}[/bold red]")
                         elif selected_choice == "t":
-                            flow_test_drive()
+                            flow_flight_sessions()
                         elif selected_choice == "e":
                             ACTIVE_SESSION = None
                             state.active_session = None
                             ACTIVE_ENGINE = None
-                            console.print("[yellow]Exiting Test Flight and restoring main database connection...[/yellow]")
+                            console.print("[yellow]Restoring Main Flight Account Connection...[/yellow]")
                             import time
                             time.sleep(1)
                         elif selected_choice == "x":
