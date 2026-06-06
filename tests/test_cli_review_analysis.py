@@ -79,10 +79,10 @@ def test_flow_review_analysis_with_records(mock_select, mock_engine_default, in_
     mock_prompt = MagicMock()
     mock_select.return_value = mock_prompt
     
-    # First call returns the trade ID to inspect, second call returns "back" to exit loop
-    mock_prompt.execute.side_effect = ["test-uuid-1", "back"]
+    # First call returns the trade ID to inspect, second call returns "back" to exit detail view, third call returns "back" to exit loop
+    mock_prompt.execute.side_effect = ["test-uuid-1", "back", "back"]
     
     with patch("builtins.input", return_value=""):
         flow_review_analysis()
         
-    assert mock_select.call_count == 2
+    assert mock_select.call_count == 3

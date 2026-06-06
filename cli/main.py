@@ -32,7 +32,10 @@ from cli.schemas.efficiency import EfficiencyAnalysis, Direction, Strength
 from cli.schemas.audit_efficiency import EfficiencyAudit, StructuralBias, ResolutionType, StructuralResolution, FailureReason
 from cli.schemas.tactical import TacticalAnalysis, Hierarchy, Timeframe, FractalType, TacticalClassification, TradeStatus
 from cli.schemas.audit_tactical import TacticalAudit, ComplianceState, TierSetup, MarketState, Session, ExitType, TradeDecision, FollowedPlan, PrimaryEmotion, SetupType, HTFTrendContext, TrendContext, ConfirmationStatus, ConfirmationParams, Emotions, BehavioralErrors, CognitivePatterns
-from tools.database import init_db, update_record_state, get_records_by_state, LifecycleState, add_asset, get_assets
+from tools.database import (
+    init_db, update_record_state, get_records_by_state,
+    LifecycleState, add_asset, get_assets, to_local_display
+)
 import json
 import os
 from enum import Enum
@@ -210,6 +213,10 @@ def get_active_engine():
     global ACTIVE_ENGINE
     if ACTIVE_SESSION is not None:
         return ACTIVE_ENGINE
+        
+    import tools.database
+    if tools.database.engine_default is not None:
+        return tools.database.engine_default
     
     from tools.database import init_db
     import os
@@ -235,17 +242,6 @@ def get_active_engine():
     ACTIVE_ENGINE = init_db(f"sqlite:///.data/{primary_db}")
     return ACTIVE_ENGINE
 
-def to_local_display(dt, fmt="%Y-%m-%d %H:%M"):
-    if dt is None:
-        return "N/A"
-    if dt.tzinfo is not None:
-        guatemala_offset = datetime.timezone(datetime.timedelta(hours=-6))
-        return dt.astimezone(guatemala_offset).strftime(fmt)
-    else:
-        # If naive, assume UTC coordinate and translate to local UTC-6
-        dt_utc = dt.replace(tzinfo=datetime.timezone.utc)
-        guatemala_offset = datetime.timezone(datetime.timedelta(hours=-6))
-        return dt_utc.astimezone(guatemala_offset).strftime(fmt)
 
 state = CLIState()
 FLIGHT_SESSIONS_FILE = ".data/flight_sessions.json"
@@ -671,7 +667,13 @@ def get_mandatory_datetime(prompt_text, allow_cancel=False):
     
     if allow_cancel and val.lower() == 'c':
         raise GoBackException("Cancelled by user")
-    return datetime.datetime.strptime(val, "%Y-%m-%d %H:%M")
+    dt = datetime.datetime.strptime(val, "%Y-%m-%d %H:%M")
+    
+    # Convert Guatemalan naive datetime to UTC naive datetime
+    guatemala_tz = datetime.timezone(datetime.timedelta(hours=-6))
+    dt_aware = dt.replace(tzinfo=guatemala_tz)
+    dt_utc_naive = dt_aware.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    return dt_utc_naive
 
 def flow_flight_sessions():
     global ACTIVE_SESSION, ACTIVE_ENGINE
@@ -735,13 +737,27 @@ def flow_flight_sessions():
             ).execute()
             
             if del_choice != "cancel":
-                confirm = inquirer.confirm(message="Are you sure you want to delete this session?").execute()
-                if confirm:
+                from rich.panel import Panel
+                warning_panel = Panel(
+                    "WARNING: You are about to permanently erase this Flight Session database file from disk.\n"
+                    "This action will completely destroy all unified analyses, efficiency audits, tactical\n"
+                    "logs, and historical metadata stored within this session ledger. This cannot be undone.",
+                    title="[bold red]CRITICAL WARNING[/bold red]",
+                    border_style="bold red",
+                    box=box.ROUNDED
+                )
+                console.print(warning_panel)
+                
+                confirm = inquirer.text(message="Type 'yes I am completely sure' to confirm session destruction:").execute()
+                if confirm == "yes I am completely sure":
                     FlightSessionManager.delete_session(del_choice)
                     if ACTIVE_SESSION and ACTIVE_SESSION["id"] == del_choice:
                         ACTIVE_SESSION = None
                         ACTIVE_ENGINE = None
                     console.print("[green]Session deleted.[/green]")
+                    input("Press Enter to continue...")
+                else:
+                    console.print("[yellow]Operation cancelled. Flight Session preserved.[/yellow]")
                     input("Press Enter to continue...")
         else:
             s_id = choice
@@ -825,29 +841,15 @@ def start():
                             config_choice = inquirer.select(
                                 message="Configuration >",
                                 choices=[
-                                    Choice("add_asset", name="[1] Add New Asset"),
-                                    Choice("analysis_modification", name="[2] Analysis Modification"),
-                                    Choice("back", name="[4] Back to Main Menu"),
-                                    Choice("add_new_whitelisted_asset", name="[5] Add New Asset to Whitelist")
+                                    Choice("analysis_modification", name="[1] Analysis Modification"),
+                                    Choice("assets_configuration", name="[2] Assets Configuration"),
+                                    Choice("back", name="[3] Back to Main Menu")
                                 ],
                                 pointer=">",
                                 qmark=""
                             ).execute()
                             
-                            if config_choice == "add_asset":
-                                new_asset = get_mandatory_text("Enter Asset Name (e.g., BTC/USDT) (or 'c' to cancel)")
-                                if new_asset.lower() == 'c':
-                                    continue
-                                category = get_optional_text("Enter category (default: Crypto)")
-                                if not category:
-                                    category = "Crypto"
-                                try:
-                                    add_asset(new_asset, category, engine=get_active_engine())
-                                    console.print(f"[green]Successfully added {new_asset} to database.[/green]")
-                                except Exception as e:
-                                    console.print(f"[bold red]Failed to add asset: {e}[/bold red]")
-                                input("Press Enter to continue...")
-                            elif config_choice == "analysis_modification":
+                            if config_choice == "analysis_modification":
                                 mod_choice = inquirer.select(
                                     message="Analysis Modification >",
                                     choices=[
@@ -870,11 +872,11 @@ def start():
                                         input("Press Enter to continue...")
                                 elif mod_choice == "repair_analysis":
                                     flow_repair_analysis_audits()
-                            elif config_choice == "add_new_whitelisted_asset":
+                            elif config_choice == "assets_configuration":
                                 try:
-                                    flow_add_whitelisted_asset()
+                                    flow_assets_configuration()
                                 except Exception as e:
-                                    console.print(f"[bold red]Error adding whitelisted asset: {e}[/bold red]")
+                                    console.print(f"[bold red]Error in assets configuration: {e}[/bold red]")
                         elif selected_choice == "t":
                             flow_flight_sessions()
                         elif selected_choice == "e":
@@ -1437,7 +1439,7 @@ def flow_review_analysis():
             
             choices = []
             for idx, r in enumerate(rows):
-                created_str = r[4].strftime('%m/%d %H:%M') if isinstance(r[4], datetime.datetime) else str(r[4])
+                created_str = to_local_display(r[4], '%m/%d %H:%M') if isinstance(r[4], datetime.datetime) else str(r[4])
                 choices.append(Choice(r[0], name=f"[{idx+1}] {created_str} | {r[1]} (Bias: {r[2]}, Edge: {r[3]:.4f})"))
                 
             choices.append(Choice("see_calendar", name="[📅] See Calendar"))
@@ -1525,7 +1527,13 @@ def flow_review_analysis():
                 console.print(m_table)
                 console.print()
                 
-                short_id_input = get_mandatory_text("Enter Short ID to inspect (or press Enter to return)", multiline=False)
+                short_id_input = bind_pause(inquirer.text(
+                    message="Enter Short ID to inspect (or press Enter to return) >",
+                    multiline=False,
+                    keybindings={"skip": []}
+                )).execute()
+                if short_id_input:
+                    short_id_input = short_id_input.strip()
                 if not short_id_input:
                     continue
                     
@@ -2804,6 +2812,75 @@ def render_final_review_layout(record, workspace=None, pyd_ta=None):
     )
     return dashboard
 
+def flow_assets_configuration():
+    from sqlalchemy.orm import Session
+    from sqlalchemy import select, text
+    from tools.database import AssetConfig
+    
+    while True:
+        try:
+            console.clear(home=True)
+        except TypeError:
+            console.clear()
+            
+        console.rule("[bold cyan]Assets Configuration[/bold cyan]")
+        console.print()
+        
+        choice = inquirer.select(
+            message="Assets Configuration >",
+            choices=[
+                Choice("add_asset", name="[1] Add New Asset"),
+                Choice("delete_asset", name="[2] Delete Asset"),
+                Choice("back", name="[3] Back")
+            ],
+            pointer=">",
+            qmark=""
+        ).execute()
+        
+        if choice == "back":
+            return
+        elif choice == "add_asset":
+            flow_add_whitelisted_asset()
+            input("Press Enter to continue...")
+        elif choice == "delete_asset":
+            engine = get_active_engine()
+            with Session(engine) as session:
+                assets = session.scalars(select(AssetConfig)).all()
+                if not assets:
+                    console.print("[red]No assets found in registry.[/red]")
+                    input("Press Enter to continue...")
+                    continue
+                
+                asset_choices = [Choice(a.asset_name, name=a.asset_name) for a in assets]
+                asset_choices.append(Choice("cancel", name="Cancel"))
+                
+                del_target = inquirer.select(
+                    message="Select asset to delete >",
+                    choices=asset_choices,
+                    pointer=">",
+                    qmark=""
+                ).execute()
+                
+                if del_target == "cancel":
+                    continue
+                
+                count1 = session.scalar(text("SELECT COUNT(*) FROM unified_department WHERE asset = :asset"), {"asset": del_target})
+                count2 = session.scalar(text("SELECT COUNT(t.id) FROM tactical_audit t JOIN unified_department u ON t.id = u.id WHERE u.asset = :asset"), {"asset": del_target})
+                
+                if count1 > 0 or count2 > 0:
+                    console.print("[bold red]Aborting: Cannot delete asset. There are active trades or analysis entries linked to this asset in the current Flight Session.[/bold red]")
+                    input("Press Enter to continue...")
+                    continue
+                    
+                confirm = inquirer.text(message=f"Type 'yes' to permanently delete {del_target}").execute()
+                if confirm == "yes":
+                    session.execute(text("DELETE FROM asset_config WHERE asset_name = :asset"), {"asset": del_target})
+                    session.commit()
+                    console.print(f"[green]Successfully deleted {del_target}.[/green]")
+                else:
+                    console.print("[yellow]Deletion cancelled.[/yellow]")
+                input("Press Enter to continue...")
+
 def flow_add_whitelisted_asset():
     console.print("\n[bold cyan]Add New Asset to Whitelist[/bold cyan]")
     asset_name = get_mandatory_text("Enter Asset Tick Symbol (e.g., BTCUSDT.P)")
@@ -2871,7 +2948,7 @@ def flow_repair_analysis_audits():
             choices = []
             
             for idx, r in enumerate(records):
-                ts_str = r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else "N/A"
+                ts_str = to_local_display(r.created_at)
                 bias_val = r.market_bias or "Neutral"
                 edge_val = f"{r.calc_edge:.3f}" if r.calc_edge is not None else "N/A"
                 
@@ -3089,8 +3166,6 @@ def flow_repair_analysis_audits():
                     break
                     
                 elif comp_choice == "delete_record":
-                    from rich.panel import Panel
-                    from rich.text import Text
                     import os
                     import json
                     

@@ -296,27 +296,7 @@ class TacticalAudit(BaseModel):
                 else:
                     self.captured_mfe = self.r_multiple / mfe
 
-        # Standardize entry_time to naive UTC
-        if self.entry_time:
-            dt = self.entry_time
-            if dt.tzinfo is None:
-                # Naive represents Guatemala local offset (UTC-6)
-                guatemala_tz = timezone(timedelta(hours=-6))
-                dt_aware = dt.replace(tzinfo=guatemala_tz)
-            else:
-                dt_aware = dt
-            self.entry_time = dt_aware.astimezone(timezone.utc).replace(tzinfo=None)
-
-        # Standardize exit_time to naive UTC
-        if self.exit_time:
-            dt = self.exit_time
-            if dt.tzinfo is None:
-                # Naive represents Guatemala local offset (UTC-6)
-                guatemala_tz = timezone(timedelta(hours=-6))
-                dt_aware = dt.replace(tzinfo=guatemala_tz)
-            else:
-                dt_aware = dt
-            self.exit_time = dt_aware.astimezone(timezone.utc).replace(tzinfo=None)
+        # entry_time and exit_time are expected to be naive UTC
 
         if self.entry_time and self.exit_time:
             # Both are now standardized to naive UTC

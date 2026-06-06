@@ -17,8 +17,21 @@ class LifecycleState(str, Enum):
     SYNCED = "SYNCED"
     FAILED = "FAILED"
 
+def to_local_display(dt, fmt="%Y-%m-%d %H:%M"):
+    if dt is None:
+        return "N/A"
+    if dt.tzinfo is not None:
+        guatemala_offset = datetime.timezone(datetime.timedelta(hours=-6))
+        return dt.astimezone(guatemala_offset).strftime(fmt)
+    else:
+        # If naive, assume UTC coordinate and translate to local UTC-6
+        dt_utc = dt.replace(tzinfo=datetime.timezone.utc)
+        guatemala_offset = datetime.timezone(datetime.timedelta(hours=-6))
+        return dt_utc.astimezone(guatemala_offset).strftime(fmt)
+
 class Base(DeclarativeBase):
     pass
+
 
 class AssetBalance(Base):
     __tablename__ = "asset_balance"

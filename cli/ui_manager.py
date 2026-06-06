@@ -17,7 +17,8 @@ from tools.database import (
     LifecycleState,
     get_assets,
     engine_default,
-    UnifiedDepartment
+    UnifiedDepartment,
+    to_local_display
 )
 
 CACHE_FILE = ".data/paused_audits.json"
@@ -339,7 +340,7 @@ def render_pending_audits_table(records) -> Panel:
         else: tac_status = "[danger][ ] Tac[/danger]"
         
         status_str = f"{eff_status} | {tac_status}"
-        date_str = r["created_at"].strftime("%Y-%m-%d %H:%M")
+        date_str = to_local_display(r["created_at"])
         table.add_row(short_id, asset, status_str, date_str)
         
     return Panel(table, title="[bold secondary]Pending Audits Queue[/bold secondary]", border_style="secondary", box=box.ROUNDED)
@@ -500,7 +501,7 @@ def render_wizard_layout(step_num, step_title, session, active_key, state: CLISt
         asset = scrub_text(prev["asset"])
         bias = scrub_text(prev["market_bias"])
         edge = prev["calc_edge"]
-        created = prev["created_at"].strftime("%m/%d %H:%M")
+        created = to_local_display(prev["created_at"], "%m/%d %H:%M")
         classification = scrub_text(prev["tactical_classification"])
         
         bias_style = "bold green" if bias == "Bullish" else "bold red" if bias == "Bearish" else "bold yellow"
