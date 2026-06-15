@@ -23,35 +23,47 @@ class NotionAPIError(Exception):
 class RateLimitError(Exception):
     pass
 
-def map_efficiency_payload(trade_id: str, asset: str, eff: dict, eff_audit: dict) -> dict:
+def map_efficiency_payload(trade_id: str, asset: str, eff: dict, eff_audit: dict, created_at) -> dict:
+    props = {
+        "Trade ID": {"title": [{"text": {"content": trade_id}}]},
+        "Asset": {"rich_text": [{"text": {"content": asset}}]},
+        "Market Bias": {"select": {"name": eff.get("Market_Bias", "N/A")}},
+        "Calc Edge": {"number": eff.get("Calc_edge", 0.0)},
+        "Bias A": {"select": {"name": eff_audit.get("bias_a", "N/A")}},
+        "Real Bias B": {"select": {"name": eff_audit.get("real_bias_b", "N/A")}},
+        "Resolution Type": {"select": {"name": eff_audit.get("resolution_type", "N/A")}},
+        "Structural Resolution": {"select": {"name": eff_audit.get("structural_resolution", "N/A")}},
+        "Failure Reason": {"select": {"name": eff_audit.get("failure_reason", "N/A")}},
+        "Specific Bias Compliance": {"select": {"name": eff_audit.get("specific_bias_compliance", "N/A")}},
+        "False Regime Rate": {"select": {"name": eff_audit.get("false_regime_rate", "N/A")}},
+    }
+    if hasattr(created_at, 'strftime'):
+        props["Created Date"] = {"date": {"start": created_at.strftime('%Y-%m-%dT%H:%M:%S-06:00')}}
+
     return {
         "parent": {"database_id": EFFICIENCY_DB_ID},
-        "properties": {
-            "Trade ID": {"title": [{"text": {"content": trade_id}}]},
-            "Asset": {"rich_text": [{"text": {"content": asset}}]},
-            "Market Bias": {"select": {"name": eff.get("Market_Bias", "N/A")}},
-            "Calc Edge": {"number": eff.get("Calc_edge", 0.0)},
-            "Bias A": {"select": {"name": eff_audit.get("bias_a", "N/A")}},
-            "Real Bias B": {"select": {"name": eff_audit.get("real_bias_b", "N/A")}},
-            "Resolution Type": {"select": {"name": eff_audit.get("resolution_type", "N/A")}},
-            "Structural Resolution": {"select": {"name": eff_audit.get("structural_resolution", "N/A")}},
-            "Failure Reason": {"select": {"name": eff_audit.get("failure_reason", "N/A")}},
-            "Specific Bias Compliance": {"select": {"name": eff_audit.get("specific_bias_compliance", "N/A")}},
-            "False Regime Rate": {"select": {"name": eff_audit.get("false_regime_rate", "N/A")}},
-        }
+        "properties": props
     }
 
-def map_tactical_payload(trade_id: str, tact: dict, tact_audit: dict, eff_page_id: str) -> dict:
+def map_tactical_payload(trade_id: str, tact: dict, tact_audit: dict, eff_page_id: str, created_at) -> dict:
+    props = {
+        "Trade ID": {"title": [{"text": {"content": trade_id}}]},
+        "Tactical Classification": {"select": {"name": tact.get("tactical_classification", "N/A")}},
+        "Calc Edge": {"number": tact.get("calc_edge", 0.0)},
+        "Trade Status": {"select": {"name": tact_audit.get("trade_status", "N/A")}},
+        "Compliance State": {"select": {"name": tact_audit.get("compliance", "N/A")}},
+        "Efficiency_Relation": {"relation": [{"id": eff_page_id}]}
+    }
+    if hasattr(created_at, 'strftime'):
+        props["Created Date"] = {"date": {"start": created_at.strftime('%Y-%m-%dT%H:%M:%S-06:00')}}
+    if tact_audit.get("entry_time") and hasattr(tact_audit["entry_time"], 'strftime'):
+        props["Entry Time"] = {"date": {"start": tact_audit["entry_time"].strftime('%Y-%m-%dT%H:%M:%S-06:00')}}
+    if tact_audit.get("exit_time") and hasattr(tact_audit["exit_time"], 'strftime'):
+        props["Exit Time"] = {"date": {"start": tact_audit["exit_time"].strftime('%Y-%m-%dT%H:%M:%S-06:00')}}
+
     return {
         "parent": {"database_id": TACTICAL_DB_ID},
-        "properties": {
-            "Trade ID": {"title": [{"text": {"content": trade_id}}]},
-            "Tactical Classification": {"select": {"name": tact.get("tactical_classification", "N/A")}},
-            "Calc Edge": {"number": tact.get("calc_edge", 0.0)},
-            "Trade Status": {"select": {"name": tact_audit.get("trade_status", "N/A")}},
-            "Compliance State": {"select": {"name": tact_audit.get("compliance", "N/A")}},
-            "Efficiency_Relation": {"relation": [{"id": eff_page_id}]}
-        }
+        "properties": props
     }
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(5), retry=retry_if_exception_type(RateLimitError))
@@ -102,7 +114,7 @@ def sync_records():
                 # skip the network call and reuse the identifier.
                 eff_page_id = db_record.efficiency_page_id
                 if not eff_page_id:
-                    eff_notion_payload = map_efficiency_payload(r["id"], asset, eff, eff_audit)
+                    eff_notion_payload = map_efficiency_payload(r["id"], asset, eff, eff_audit, r["created_at"])
                     eff_resp = post_to_notion(eff_notion_payload)
                     eff_page_id = eff_resp["id"]
                     db_record.efficiency_page_id = eff_page_id
@@ -114,7 +126,7 @@ def sync_records():
                 # Execute the Tactical database network call.
                 tact_page_id = db_record.tactical_page_id
                 if not tact_page_id:
-                    tact_notion_payload = map_tactical_payload(r["id"], tact, tact_audit, eff_page_id)
+                    tact_notion_payload = map_tactical_payload(r["id"], tact, tact_audit, eff_page_id, r["created_at"])
                     tact_resp = post_to_notion(tact_notion_payload)
                     tact_page_id = tact_resp["id"]
                     db_record.tactical_page_id = tact_page_id

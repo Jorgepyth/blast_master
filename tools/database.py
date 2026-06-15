@@ -20,14 +20,29 @@ class LifecycleState(str, Enum):
 def to_local_display(dt, fmt="%Y-%m-%d %H:%M"):
     if dt is None:
         return "N/A"
+    
+    if isinstance(dt, str):
+        dt_str = dt.split(".")[0]
+        parsed_dt = None
+        for parse_fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+            try:
+                parsed_dt = datetime.datetime.strptime(dt_str, parse_fmt)
+                break
+            except ValueError:
+                continue
+        if not parsed_dt:
+            try:
+                parsed_dt = datetime.datetime.fromisoformat(dt_str.replace(" ", "T"))
+            except ValueError:
+                return dt
+        dt = parsed_dt
+
     if dt.tzinfo is not None:
         guatemala_offset = datetime.timezone(datetime.timedelta(hours=-6))
         return dt.astimezone(guatemala_offset).strftime(fmt)
     else:
-        # If naive, assume UTC coordinate and translate to local UTC-6
-        dt_utc = dt.replace(tzinfo=datetime.timezone.utc)
-        guatemala_offset = datetime.timezone(datetime.timedelta(hours=-6))
-        return dt_utc.astimezone(guatemala_offset).strftime(fmt)
+        # If naive, assume it is already local UTC-6 and format directly
+        return dt.strftime(fmt)
 
 class Base(DeclarativeBase):
     pass
@@ -75,8 +90,8 @@ class UnifiedDepartment(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     state: Mapped[str] = mapped_column(String, default=LifecycleState.ANALYSIS.value)
     asset: Mapped[str] = mapped_column(String)
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
-    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-6))).replace(tzinfo=None))
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-6))).replace(tzinfo=None), onupdate=lambda: datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-6))).replace(tzinfo=None))
     
     # Unified Fields
     market_bias: Mapped[str] = mapped_column(String)
@@ -112,11 +127,12 @@ class EfficiencyAudit(Base):
     failure_reason: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     specific_bias_compliance: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     false_regime_rate: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    efficiency_timeframe: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     resolution_time: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
     
     lesson_learned: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
-    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-6))).replace(tzinfo=None))
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-6))).replace(tzinfo=None), onupdate=lambda: datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-6))).replace(tzinfo=None))
 
     unified_department: Mapped["UnifiedDepartment"] = relationship(back_populates="efficiency_audit")
 
@@ -139,6 +155,7 @@ class TacticalAudit(Base):
     setup_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     htf_trend_context: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     ltf_trend_context: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    confirmation_5m_15m: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     confirmation_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     # Numeric scales
@@ -170,6 +187,10 @@ class TacticalAudit(Base):
     # Text blocks
     lesson_learned: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     visual_lesson_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    pre_trade_emotions: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    mid_trade_emotions: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    post_trade_emotions: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    confirmation_params: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
 
     unified_department: Mapped["UnifiedDepartment"] = relationship(back_populates="tactical_audit")
 
@@ -203,6 +224,24 @@ def init_db(db_url: str = "sqlite:///.data/flight_account_001_xauusd.db"):
                 conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN capital_at_risk REAL DEFAULT 0.0"))
             if 'visual_lesson_path' not in columns:
                 conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN visual_lesson_path TEXT"))
+            if 'pre_trade_emotions' not in columns:
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN pre_trade_emotions VARCHAR"))
+            if 'mid_trade_emotions' not in columns:
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN mid_trade_emotions VARCHAR"))
+            if 'post_trade_emotions' not in columns:
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN post_trade_emotions VARCHAR"))
+            if 'confirmation_params' not in columns:
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN confirmation_params JSON"))
+            if 'confirmation_5m_15m' not in columns:
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN confirmation_5m_15m VARCHAR"))
+
+        # Migrate EfficiencyAudit table
+        if "efficiency_audit" in inspector.get_table_names():
+            columns = [col['name'] for col in inspector.get_columns('efficiency_audit')]
+            if 'false_regime_rate' not in columns:
+                pass
+            if 'efficiency_timeframe' not in columns:
+                conn.execute(text("ALTER TABLE efficiency_audit ADD COLUMN efficiency_timeframe VARCHAR"))
 
         # Migrate UnifiedDepartment table
         if "unified_department" in inspector.get_table_names():
@@ -313,7 +352,7 @@ def update_record_state(record_id: str, new_state: LifecycleState, append_payloa
                 if record.efficiency_audit:
                     for k, v in filtered_ae.items():
                         setattr(record.efficiency_audit, k, v)
-                    record.efficiency_audit.updated_at = datetime.datetime.now()
+                    record.efficiency_audit.updated_at = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-6))).replace(tzinfo=None)
                 else:
                     new_ae = EfficiencyAudit(id=record_id, **filtered_ae)
                     session.add(new_ae)
@@ -322,7 +361,7 @@ def update_record_state(record_id: str, new_state: LifecycleState, append_payloa
                 bias_a_val = append_payload['bias_a']
                 if record.efficiency_audit:
                     record.efficiency_audit.bias_a = bias_a_val
-                    record.efficiency_audit.updated_at = datetime.datetime.now()
+                    record.efficiency_audit.updated_at = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-6))).replace(tzinfo=None)
                 else:
                     new_ae = EfficiencyAudit(id=record_id, bias_a=bias_a_val)
                     session.add(new_ae)
@@ -363,7 +402,7 @@ def update_record_state(record_id: str, new_state: LifecycleState, append_payloa
                     new_at = TacticalAudit(id=record_id, **filtered_at)
                     session.add(new_at)
 
-            record.updated_at = datetime.datetime.now()
+            record.updated_at = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-6))).replace(tzinfo=None)
             session.commit()
             return True
         except Exception as e:
@@ -411,13 +450,54 @@ def get_records_by_state(state: LifecycleState | List[LifecycleState], engine=No
                     "structural_resolution": r.efficiency_audit.structural_resolution,
                     "failure_reason": r.efficiency_audit.failure_reason,
                     "specific_bias_compliance": r.efficiency_audit.specific_bias_compliance,
-                    "false_regime_rate": r.efficiency_audit.false_regime_rate
+                    "false_regime_rate": r.efficiency_audit.false_regime_rate,
+                    "efficiency_timeframe": r.efficiency_audit.efficiency_timeframe,
+                    "resolution_time": r.efficiency_audit.resolution_time,
+                    "lesson_learned": r.efficiency_audit.lesson_learned
                 }
             if r.tactical_audit:
                 payload["audit_tactical"] = {
                     "compliance": r.tactical_audit.compliance,
                     "trade_status": r.trade_status,
-                    "could_hit_tp": r.tactical_audit.could_hit_tp
+                    "could_hit_tp": r.tactical_audit.could_hit_tp,
+                    "entry_time": r.tactical_audit.entry_time,
+                    "exit_time": r.tactical_audit.exit_time,
+                    "tier_setup": r.tactical_audit.tier_setup,
+                    "market_state": r.tactical_audit.market_state,
+                    "session": r.tactical_audit.session,
+                    "exit_type": r.tactical_audit.exit_type,
+                    "trade_decision": r.tactical_audit.trade_decision,
+                    "followed_plan": r.tactical_audit.followed_plan,
+                    "primary_emotion": r.tactical_audit.primary_emotion,
+                    "setup_type": r.tactical_audit.setup_type,
+                    "htf_trend_context": r.tactical_audit.htf_trend_context,
+                    "ltf_trend_context": r.tactical_audit.ltf_trend_context,
+                    "confirmation_5m_15m": r.tactical_audit.confirmation_5m_15m,
+                    "confirmation_status": r.tactical_audit.confirmation_status,
+                    "anxiety_level": r.tactical_audit.anxiety_level,
+                    "impatience_level": r.tactical_audit.impatience_level,
+                    "mental_clarity_level": r.tactical_audit.mental_clarity_level,
+                    "emotions": r.tactical_audit.emotions or [],
+                    "behavioral_errors": r.tactical_audit.behavioral_errors or [],
+                    "cognitive_patterns": r.tactical_audit.cognitive_patterns or [],
+                    "risk_usd": r.tactical_audit.risk_usd,
+                    "size": r.tactical_audit.size,
+                    "r_r": r.tactical_audit.r_r,
+                    "entry_price": r.tactical_audit.entry_price,
+                    "closing_price": r.tactical_audit.closing_price,
+                    "take_profit": r.tactical_audit.take_profit,
+                    "stop_loss": r.tactical_audit.stop_loss,
+                    "pnl_and_cost": r.tactical_audit.pnl_and_cost,
+                    "mae": r.tactical_audit.mae_adverse,
+                    "mfe": r.tactical_audit.mfe_favorable,
+                    "notional_size": r.tactical_audit.notional_size,
+                    "capital_at_risk": r.tactical_audit.capital_at_risk,
+                    "lesson_tact": r.tactical_audit.lesson_learned,
+                    "visual_lesson_path": r.tactical_audit.visual_lesson_path,
+                    "pre_trade_emotions": r.tactical_audit.pre_trade_emotions,
+                    "mid_trade_emotions": r.tactical_audit.mid_trade_emotions,
+                    "post_trade_emotions": r.tactical_audit.post_trade_emotions,
+                    "confirmation_params": r.tactical_audit.confirmation_params or []
                 }
                 
             results.append({

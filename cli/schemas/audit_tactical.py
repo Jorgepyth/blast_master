@@ -177,6 +177,7 @@ class TacticalAudit(BaseModel):
 
     # New manual categorical/text fields
     ltf_trend_context: Optional[TrendContext] = None
+    confirmation_5m_15m: Optional[str] = None
     pre_trade_emotions: Optional[str] = None
     mid_trade_emotions: Optional[str] = None
     post_trade_emotions: Optional[str] = None
@@ -222,6 +223,7 @@ class TacticalAudit(BaseModel):
     trade_duration: Optional[str] = None
     session: Optional[str] = None
     captured_mfe: Optional[float] = None
+    captured_mae: Optional[float] = None
 
     @model_validator(mode='after')
     def calculate_automated_fields(self):
@@ -232,6 +234,7 @@ class TacticalAudit(BaseModel):
         size = self.size
         cost = self.cost or 0.0
         mfe = self.mfe
+        mae = self.mae
 
         if ep is not None and sl is not None and size is not None:
             # trade_decision = "Long" if entry_price > stop_loss else "Short"
@@ -296,6 +299,12 @@ class TacticalAudit(BaseModel):
                 else:
                     self.captured_mfe = self.r_multiple / mfe
 
+                # captured_mae
+                if self.r_multiple < 0 and mae and mae > 0.0:
+                    self.captured_mae = abs(self.r_multiple) / mae
+                else:
+                    self.captured_mae = 0.0
+
         # entry_time and exit_time are expected to be naive UTC
 
         if self.entry_time and self.exit_time:
@@ -307,16 +316,14 @@ class TacticalAudit(BaseModel):
             self.trade_duration = f"{hours}h {minutes}m"
 
         if self.entry_time:
-            # session = Evaluated on entry_time local Guatemala timezone (UTC-6)
-            dt_utc = self.entry_time.replace(tzinfo=timezone.utc)
-            local_dt = dt_utc.astimezone(timezone(timedelta(hours=-6)))
-            hr = local_dt.hour
+            utc_check_time = self.entry_time + timedelta(hours=6)
+            hr = utc_check_time.hour
             
-            if 7 <= hr < 10:
+            if 13 <= hr < 16:
                 self.session = Session.LONDON_NY_OVERLAP.value
-            elif 10 <= hr < 15:
+            elif 16 <= hr < 21:
                 self.session = Session.NEW_YORK.value
-            elif 2 <= hr < 7:
+            elif 8 <= hr < 13:
                 self.session = Session.LONDON.value
             else:
                 self.session = Session.ASIA_OFF.value

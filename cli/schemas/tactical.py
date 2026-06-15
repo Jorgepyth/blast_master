@@ -15,6 +15,7 @@ class Timeframe(str, Enum):
     M30 = "30M"
     H1 = "1H"
     H4 = "4H"
+    H12 = "12H"
     SKIP = "Skip"
 
 class FractalType(str, Enum):
