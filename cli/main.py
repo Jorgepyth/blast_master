@@ -915,7 +915,7 @@ def flow_review_analysis():
     rolling_query = """
     SELECT u.id, u.asset, u.market_bias, u.calc_edge, u.created_at, 
            e.bias_a, e.real_bias_b, e.resolution_type, 
-           t.compliance, u.trade_status
+           t.compliance, u.trade_status, u.is_backdated
     FROM unified_department u
     LEFT JOIN efficiency_audit e ON u.id = e.id
     LEFT JOIN tactical_audit t ON u.id = t.id
@@ -971,7 +971,7 @@ def flow_review_analysis():
         
         # Asignación de anchos fijos explícitos para columnas críticas izquierdas
         table.add_column("#", justify="center", width=4, no_wrap=True)
-        table.add_column("Short ID", justify="center", style="cyan", width=10, no_wrap=True)
+        table.add_column("Short ID", justify="center", style="cyan", width=14, no_wrap=True)
         table.add_column("Asset", justify="center", style="bold white", width=10, no_wrap=True)
         
         # Columnas de métricas y estados con anchos proporcionales mínimos
@@ -985,7 +985,7 @@ def flow_review_analysis():
         table.add_column("Trade Status", justify="center", width=14, no_wrap=True)
         
         for idx, row in enumerate(rows):
-            r_id, asset, market_bias, calc_edge, created_at, bias_a, real_bias_b, resolution_type, compliance, trade_status = row
+            r_id, asset, market_bias, calc_edge, created_at, bias_a, real_bias_b, resolution_type, compliance, trade_status, is_backdated = row
             
             market_bias = SHORTHANDS.get(market_bias, market_bias)
             bias_a = SHORTHANDS.get(bias_a, bias_a)
@@ -995,14 +995,15 @@ def flow_review_analysis():
             trade_status = SHORTHANDS.get(trade_status, trade_status)
             
             if isinstance(created_at, datetime.datetime):
-                created_display = to_local_display(created_at, '%m/%d %H:%M') # Formato compacto de fecha
+                created_display = to_local_display(created_at, '%m/%d %H:%M')
             else:
-                created_display = str(created_at)[5:16] # Recorte determinista de string de fecha
+                created_display = str(created_at)[5:16]
             created_str = f"[dim cyan]{created_display}[/dim cyan]"
             
+            badge = " [bold yellow](B)[/bold yellow]" if is_backdated else ""
             table.add_row(
                 str(idx + 1),
-                r_id[:8],
+                f"{r_id[:8]}{badge}",
                 asset,
                 format_row_value(market_bias, is_bias=True),
                 format_row_value(calc_edge, is_edge=True),
@@ -1034,18 +1035,16 @@ def flow_review_analysis():
         detail_query = """
         SELECT u.id, u.asset, u.market_bias, u.calc_edge, u.created_at, u.updated_at, u.edge_description, u.trade_status,
                u.p4_hierarchy, u.p1_timeframe, u.p1_type, u.nodes_l1, u.nodes_l2, u.tactical_classification,
-               u.long_prob, u.short_prob, u.no_trade_prob,
+               u.long_prob, u.short_prob, u.no_trade_prob, u.is_backdated,
                e.bias_a, e.resolution_type, e.real_bias_b, e.structural_resolution, e.failure_reason,
-               e.specific_bias_compliance, e.false_regime_rate, e.lesson_learned as e_lesson,
+               e.specific_bias_compliance, e.false_regime_rate, e.lesson_learned as e_lesson, e.efficiency_timeframe,
                t.compliance, t.entry_time, t.exit_time, t.tier_setup, t.market_state, t.exit_type,
                t.followed_plan, t.primary_emotion, t.setup_type, t.htf_trend_context, t.ltf_trend_context,
                t.confirmation_status, t.anxiety_level, t.impatience_level, t.mental_clarity_level,
                t.emotions, t.behavioral_errors, t.cognitive_patterns, t.size, t.entry_price,
                t.closing_price, t.could_hit_tp, t.take_profit, t.stop_loss, t.pnl_and_cost,
                t.mae_adverse, t.captured_mae, t.mfe_favorable, t.notional_size, t.capital_at_risk,
-               t.lesson_learned as t_lesson, t.session, t.visual_lesson_path,
-               t.pre_trade_emotions, t.mid_trade_emotions, t.post_trade_emotions, t.confirmation_5m_15m, t.confirmation_params,
-               e.efficiency_timeframe,
+               t.lesson_learned as t_lesson, t.session, t.visual_lesson_path, t.confirmation_5m_15m, t.confirmation_params,
                al.department, al.layer_name, al.direction, al.strength, al.thesis
         FROM unified_department u
         LEFT JOIN efficiency_audit e ON u.id = e.id
@@ -1064,18 +1063,16 @@ def flow_review_analysis():
         cols = [
             "id", "asset", "market_bias", "calc_edge", "created_at", "updated_at", "edge_description", "trade_status",
             "p4_hierarchy", "p1_timeframe", "p1_type", "nodes_l1", "nodes_l2", "tactical_classification",
-            "long_prob", "short_prob", "no_trade_prob",
+            "long_prob", "short_prob", "no_trade_prob", "is_backdated",
             "bias_a", "resolution_type", "real_bias_b", "structural_resolution", "failure_reason",
-            "specific_bias_compliance", "false_regime_rate", "e_lesson",
+            "specific_bias_compliance", "false_regime_rate", "e_lesson", "efficiency_timeframe",
             "compliance", "entry_time", "exit_time", "tier_setup", "market_state", "exit_type",
             "followed_plan", "primary_emotion", "setup_type", "htf_trend_context", "ltf_trend_context",
             "confirmation_status", "anxiety_level", "impatience_level", "mental_clarity_level",
             "emotions", "behavioral_errors", "cognitive_patterns", "size", "entry_price",
             "closing_price", "could_hit_tp", "take_profit", "stop_loss", "pnl_and_cost",
             "mae_adverse", "captured_mae", "mfe_favorable", "notional_size", "capital_at_risk",
-            "t_lesson", "session", "visual_lesson_path",
-            "pre_trade_emotions", "mid_trade_emotions", "post_trade_emotions", "confirmation_5m_15m", "confirmation_params",
-            "efficiency_timeframe"
+            "t_lesson", "session", "visual_lesson_path", "confirmation_5m_15m", "confirmation_params"
         ]
         
         record = {}
@@ -1207,6 +1204,10 @@ def flow_review_analysis():
         struct_text.append(f"{record['asset']}", style="bold white")
         struct_text.append(" | ID: ", style="dim")
         struct_text.append(f"{record['id'][:8]}", style="bold cyan")
+        if record.get('is_backdated'):
+            struct_text.append(" [BACKDATED]", style="bold yellow")
+        else:
+            struct_text.append(" [ORIGINAL]", style="bold green")
         created_str = to_local_display(record['created_at']) if isinstance(record['created_at'], datetime.datetime) else str(record['created_at'])
         struct_text.append(" | ", style="dim")
         struct_text.append(Text.from_markup(f"[dim cyan]{created_str}[/dim cyan]\n"))
@@ -1215,7 +1216,6 @@ def flow_review_analysis():
         bias_style = "bold green" if record['market_bias'] == "Bullish" else "bold red" if record['market_bias'] == "Bearish" else "bold yellow"
         struct_text.append(f"{record['market_bias']}\n\n", style=bias_style)
         
-        # Display probabilities
         struct_text.append("Directional Probabilities:\n", style="dim")
         struct_text.append("  Long Prob:      ", style="dim")
         struct_text.append(f"{record['long_prob'] * 100:.1f}%\n", style="green")
@@ -1237,18 +1237,17 @@ def flow_review_analysis():
                 s_style = "bold" if s == "Strong" else ""
                 struct_text.append(f"{s.upper()}\n", style=s_style)
                 
-                # Inyección homologada de parámetros intermedios estructurados
                 if name == "P4":
-                    struct_text.append("   Hierarchy:        ", style="dim italic")
+                    struct_text.append("   Hierarchy:            ", style="dim italic")
                     struct_text.append(f"{record['p4_hierarchy']}\n", style="white")
                 elif name == "P1":
-                    struct_text.append("   Timeframe:        ", style="dim italic")
+                    struct_text.append("   Timeframe:            ", style="dim italic")
                     struct_text.append(f"{record['p1_timeframe']}\n", style="white")
-                    struct_text.append("   Fractal Type:     ", style="dim italic")
+                    struct_text.append("   Fractal Type:         ", style="dim italic")
                     struct_text.append(f"{record['p1_type']}\n", style="white")
-                    struct_text.append("   Nodes L1 / L2:    ", style="dim italic")
+                    struct_text.append("   Nodes L1 / L2:        ", style="dim italic")
                     struct_text.append(f"{record['nodes_l1']} / {record['nodes_l2']}\n", style="white")
-                    struct_text.append("   Classification:   ", style="dim italic")
+                    struct_text.append("   Classification:       ", style="dim italic")
                     struct_text.append(f"{record['tactical_classification']}\n", style="cyan")
 
                 if t:
@@ -1389,49 +1388,46 @@ def flow_review_analysis():
             tact_text.append(f"  Captured MAE:   {fmt_f(record['captured_mae'])}\n", style="dim")
             tact_text.append(f"  Captured MFE:   {fmt_f(record['captured_mfe'])}\n\n", style="dim")
             
+            tact_text.append("Execution Framework Context:\n", style="bold white")
+            tact_text.append("  Followed Plan:        ", style="dim")
+            tact_text.append(f"{record['followed_plan']}\n", style="white")
+            tact_text.append("  5m/15m Conf:          ", style="dim")
+            tact_text.append(f"{record['confirmation_5m_15m']}\n", style="white")
+            
+            raw_conf = record.get("confirmation_params")
+            try:
+                conf_list = json.loads(raw_conf) if isinstance(raw_conf, str) else (raw_conf or [])
+                conf_str = ", ".join([str(x).replace("ConfirmationParams.", "") for x in conf_list if x]) if conf_list else "N/A"
+            except Exception: conf_str = "Pending / N/A"
+            tact_text.append(f"  Conf. Params:         {format_indented_block(conf_str, indent_spaces=24, first_line_flush=True, wrap_width=60)}\n\n", style="white")
+
             tact_text.append("Psychological & Cognitive Profile:\n", style="bold white")
-            tact_text.append(f"  Anxiety Level:  {record['anxiety_level']} / 5\n", style="dim")
-            tact_text.append(f"  Impatience:     {record['impatience_level']} / 5\n", style="dim")
-            tact_text.append(f"  Clarity Level:  {record['mental_clarity_level']} / 5\n", style="dim")
-            tact_text.append(f"  Primary Emotion: {record['primary_emotion']}\n", style="dim")
+            tact_text.append("  Anxiety Level:        ", style="dim")
+            tact_text.append(f"{record['anxiety_level']} / 5\n", style="white")
+            tact_text.append("  Impatience Level:     ", style="dim")
+            tact_text.append(f"{record['impatience_level']} / 5\n", style="white")
+            tact_text.append("  Mental Clarity Level: ", style="dim")
+            tact_text.append(f"{record['mental_clarity_level']} / 5\n", style="white")
+            tact_text.append("  Primary Emotion:      ", style="dim")
+            tact_text.append(f"{record['primary_emotion']}\n", style="white")
             
-            if record.get('pre_trade_emotions'):
-                indented_pre = format_indented_block(record['pre_trade_emotions'], indent_spaces=18, first_line_flush=True, wrap_width=60)
-                tact_text.append("  Pre-Trade Emo:  ", style="dim")
-                tact_text.append(f"{indented_pre}\n", style="white")
-            if record.get('mid_trade_emotions'):
-                indented_mid = format_indented_block(record['mid_trade_emotions'], indent_spaces=18, first_line_flush=True, wrap_width=60)
-                tact_text.append("  Mid-Trade Emo:  ", style="dim")
-                tact_text.append(f"{indented_mid}\n", style="white")
-            if record.get('post_trade_emotions'):
-                indented_post = format_indented_block(record['post_trade_emotions'], indent_spaces=18, first_line_flush=True, wrap_width=60)
-                tact_text.append("  Post-Trade Emo: ", style="dim")
-                tact_text.append(f"{indented_post}\n", style="white")
-            
-            def _safe_extract(raw_val, prefix=""):
-                v_list = []
-                if raw_val and raw_val != "nan":
-                    try:
-                        import json
-                        v_list = json.loads(raw_val) if isinstance(raw_val, str) else raw_val
-                        if not isinstance(v_list, list):
-                            v_list = [v_list]
-                    except Exception:
-                        v_list = []
-                
-                mapped = [str(x).replace(prefix, "") for x in v_list if x]
-                if mapped:
-                    return ", ".join(mapped)
-                return "Pending / N/A"
+            raw_emo = record.get("emotions")
+            raw_be = record.get("behavioral_errors")
+            raw_cp = record.get("cognitive_patterns")
+            try:
+                emo_list = json.loads(raw_emo) if isinstance(raw_emo, str) else (raw_emo or [])
+                emo_str = ", ".join([str(x).replace("Emotions.", "") for x in emo_list if x]) if emo_list else "N/A"
+            except Exception: emo_str = "N/A"
+            try:
+                be_list = json.loads(raw_be) if isinstance(raw_be, str) else (raw_be or [])
+                be_str = ", ".join([str(x).replace("BehavioralErrors.", "") for x in be_list if x]) if be_list else "N/A"
+            except Exception: be_str = "N/A"
+            try:
+                cp_list = json.loads(raw_cp) if isinstance(raw_cp, str) else (raw_cp or [])
+                cp_str = ", ".join([str(x).replace("CognitivePatterns.", "") for x in cp_list if x]) if cp_list else "N/A"
+            except Exception: cp_str = "N/A"
 
-            # Extracción y deserialización segura (Null-Safe) de parámetros de confirmación y otros campos JSON
-            conf_str = _safe_extract(record.get("confirmation_params"), "ConfirmationParams.")
-            emotions_str = _safe_extract(record.get("emotions"), "Emotions.")
-            be_str = _safe_extract(record.get("behavioral_errors"), "BehavioralErrors.")
-            cp_str = _safe_extract(record.get("cognitive_patterns"), "CognitivePatterns.")
-
-            tact_text.append(f"  Conf. Params:         {format_indented_block(conf_str, indent_spaces=24, first_line_flush=True, wrap_width=60)}\n", style="white")
-            tact_text.append(f"  Emotions:             {format_indented_block(emotions_str, indent_spaces=24, first_line_flush=True, wrap_width=60)}\n", style="white")
+            tact_text.append(f"  Emotions:             {format_indented_block(emo_str, indent_spaces=24, first_line_flush=True, wrap_width=60)}\n", style="white")
             tact_text.append(f"  Behav. Errors:        {format_indented_block(be_str, indent_spaces=24, first_line_flush=True, wrap_width=60)}\n", style="white")
             tact_text.append(f"  Cognitive Pat:        {format_indented_block(cp_str, indent_spaces=24, first_line_flush=True, wrap_width=60)}\n", style="white")
             
@@ -1601,7 +1597,7 @@ def flow_review_analysis():
                 month_query = """
                 SELECT u.id, u.asset, u.market_bias, u.calc_edge, u.created_at, 
                        e.bias_a, e.real_bias_b, e.resolution_type, 
-                       t.compliance, u.trade_status
+                       t.compliance, u.trade_status, u.is_backdated
                 FROM unified_department u
                 LEFT JOIN efficiency_audit e ON u.id = e.id
                 LEFT JOIN tactical_audit t ON u.id = t.id
@@ -2078,7 +2074,8 @@ def flow_new_analysis(backdated_timestamp=None):
                                 tactical_classification=tactical.tactical_classification.value,
                                 long_prob=tactical.long_prob,
                                 short_prob=tactical.short_prob,
-                                no_trade_prob=tactical.no_trade_prob
+                                no_trade_prob=tactical.no_trade_prob,
+                                is_backdated=backdated_timestamp is not None
                             )
                             if backdated_timestamp:
                                 new_record.created_at = backdated_timestamp
@@ -3242,7 +3239,7 @@ def flow_repair_analysis_audits():
             from rich import box
             table = Table(title="Database Ledger", box=box.ROUNDED, border_style="magenta", expand=False)
             table.add_column("#", justify="center", style="bold yellow", width=4)
-            table.add_column("Short ID", justify="center", style="cyan", no_wrap=True, width=10)
+            table.add_column("Short ID", justify="center", style="cyan", no_wrap=True, width=14)
             table.add_column("Asset", justify="center", style="bold white", no_wrap=True, width=12)
             table.add_column("Market Bias", justify="center", no_wrap=True, width=14)
             table.add_column("Calc Edge", justify="right", no_wrap=True, width=10)
@@ -3301,118 +3298,65 @@ def flow_repair_analysis_audits():
             p4 = next((l for l in layers if l.department == 'TACTICAL' and l.layer_name == 'P4'), None)
             p1 = next((l for l in layers if l.department == 'TACTICAL' and l.layer_name == 'P1'), None)
             
-            # Staging schema defaults map for on-the-fly initialization (Amendment 1)
+            # Initialize defaults extracting attributes directly from related ORM model instances
+            ea = getattr(record, "efficiency_audit", None)
+            ta = getattr(record, "tactical_audit", None)
+
             ea_defaults = {
-                "bias_a": record.market_bias or "",
-                "resolution_type": None,
-                "real_bias_b": None,
-                "structural_resolution": None,
-                "failure_reason": None,
-                "specific_bias_compliance": None,
-                "false_regime_rate": None,
-                "efficiency_timeframe": None,
-                "lesson_eff": ""
+                "bias_a": ea.bias_a if (ea and hasattr(ea, "bias_a") and ea.bias_a) else "Choppy / Neutral",
+                "resolution_type": ea.resolution_type if (ea and hasattr(ea, "resolution_type") and ea.resolution_type) else "Open",
+                "real_bias_b": ea.real_bias_b if (ea and hasattr(ea, "real_bias_b") and ea.real_bias_b) else "Choppy / Neutral",
+                "structural_resolution": ea.structural_resolution if (ea and hasattr(ea, "structural_resolution") and ea.structural_resolution) else "Choppy / Neutral",
+                "failure_reason": ea.failure_reason if (ea and hasattr(ea, "failure_reason") and ea.failure_reason) else "N/A",
+                "specific_bias_compliance": ea.specific_bias_compliance if (ea and hasattr(ea, "specific_bias_compliance") and ea.specific_bias_compliance) else "N/A",
+                "false_regime_rate": ea.false_regime_rate if (ea and hasattr(ea, "false_regime_rate") and ea.false_regime_rate) else "N/A",
+                "lesson_learned": ea.lesson_learned if (ea and hasattr(ea, "lesson_learned") and ea.lesson_learned) else "",
+                "lesson_eff": ea.lesson_learned if (ea and hasattr(ea, "lesson_learned") and ea.lesson_learned) else "",
+                "efficiency_timeframe": ea.efficiency_timeframe if (ea and hasattr(ea, "efficiency_timeframe") and ea.efficiency_timeframe) else "1H"
             }
-            if record.efficiency_audit:
-                ea = record.efficiency_audit
-                ea_defaults = {
-                    "bias_a": ea.bias_a or "",
-                    "resolution_type": ea.resolution_type,
-                    "real_bias_b": ea.real_bias_b,
-                    "structural_resolution": ea.structural_resolution,
-                    "failure_reason": ea.failure_reason,
-                    "specific_bias_compliance": ea.specific_bias_compliance,
-                    "false_regime_rate": ea.false_regime_rate,
-                    "efficiency_timeframe": ea.efficiency_timeframe,
-                    "lesson_eff": ea.lesson_learned or ""
-                }
-                
+            
             ta_defaults = {
-                "compliance": None,
-                "confirmation_5m_15m": "no",
-                "entry_time": None,
-                "exit_time": None,
-                "tier_setup": None,
-                "market_state": None,
-                "session": None,
-                "exit_type": None,
-                "trade_decision": None,
-                "followed_plan": None,
-                "primary_emotion": None,
-                "setup_type": None,
-                "htf_trend_context": None,
-                "ltf_trend_context": None,
-                "confirmation_status": None,
-                "anxiety_level": 0,
-                "impatience_level": 0,
-                "mental_clarity_level": 0,
-                "emotions": [],
-                "behavioral_errors": [],
-                "cognitive_patterns": [],
-                "risk_usd": 0.0,
-                "size": 0.0,
-                "r_r": 0.0,
-                "entry_price": 0.0,
-                "closing_price": 0.0,
-                "could_hit_tp": None,
-                "take_profit": 0.0,
-                "stop_loss": 0.0,
-                "pnl_and_cost": 0.0,
-                "mae": 0.0,
-                "mfe": 0.0,
-                "notional_size": 0.0,
-                "capital_at_risk": 0.0,
-                "lesson_tact": "",
-                "visual_lesson_path": "nan",
-                "pre_trade_emotions": "",
-                "mid_trade_emotions": "",
-                "post_trade_emotions": "",
-                "confirmation_params": []
+                "compliance": ta.compliance if (ta and hasattr(ta, "compliance") and ta.compliance) else "Invalid_edge",
+                "confirmation_5m_15m": ta.confirmation_5m_15m if (ta and hasattr(ta, "confirmation_5m_15m") and ta.confirmation_5m_15m) else "no",
+                "followed_plan": ta.followed_plan if (ta and hasattr(ta, "followed_plan") and ta.followed_plan) else "Skip",
+                "entry_time": ta.entry_time if (ta and hasattr(ta, "entry_time") and ta.entry_time) else None,
+                "exit_time": ta.exit_time if (ta and hasattr(ta, "exit_time") and ta.exit_time) else None,
+                "tier_setup": ta.tier_setup if (ta and hasattr(ta, "tier_setup") and ta.tier_setup) else None,
+                "market_state": ta.market_state if (ta and hasattr(ta, "market_state") and ta.market_state) else None,
+                "session": ta.session if (ta and hasattr(ta, "session") and ta.session) else None,
+                "exit_type": ta.exit_type if (ta and hasattr(ta, "exit_type") and ta.exit_type) else None,
+                "trade_decision": ta.trade_decision if (ta and hasattr(ta, "trade_decision") and ta.trade_decision) else None,
+                "primary_emotion": ta.primary_emotion if (ta and hasattr(ta, "primary_emotion") and ta.primary_emotion) else None,
+                "setup_type": ta.setup_type if (ta and hasattr(ta, "setup_type") and ta.setup_type) else None,
+                "htf_trend_context": ta.htf_trend_context if (ta and hasattr(ta, "htf_trend_context") and ta.htf_trend_context) else None,
+                "ltf_trend_context": ta.ltf_trend_context if (ta and hasattr(ta, "ltf_trend_context") and ta.ltf_trend_context) else None,
+                "confirmation_status": ta.confirmation_status if (ta and hasattr(ta, "confirmation_status") and ta.confirmation_status) else None,
+                "anxiety_level": ta.anxiety_level if (ta and hasattr(ta, "anxiety_level") and ta.anxiety_level) else 0,
+                "impatience_level": ta.impatience_level if (ta and hasattr(ta, "impatience_level") and ta.impatience_level) else 0,
+                "mental_clarity_level": ta.mental_clarity_level if (ta and hasattr(ta, "mental_clarity_level") and ta.mental_clarity_level) else 0,
+                "emotions": ta.emotions if (ta and hasattr(ta, "emotions") and ta.emotions) else [],
+                "behavioral_errors": ta.behavioral_errors if (ta and hasattr(ta, "behavioral_errors") and ta.behavioral_errors) else [],
+                "cognitive_patterns": ta.cognitive_patterns if (ta and hasattr(ta, "cognitive_patterns") and ta.cognitive_patterns) else [],
+                "risk_usd": ta.risk_usd if (ta and hasattr(ta, "risk_usd") and ta.risk_usd) else 0.0,
+                "size": ta.size if (ta and hasattr(ta, "size") and ta.size) else 0.0,
+                "r_r": ta.r_r if (ta and hasattr(ta, "r_r") and ta.r_r) else 0.0,
+                "entry_price": ta.entry_price if (ta and hasattr(ta, "entry_price") and ta.entry_price) else 0.0,
+                "closing_price": ta.closing_price if (ta and hasattr(ta, "closing_price") and ta.closing_price) else 0.0,
+                "could_hit_tp": ta.could_hit_tp if (ta and hasattr(ta, "could_hit_tp") and ta.could_hit_tp is not None) else None,
+                "take_profit": ta.take_profit if (ta and hasattr(ta, "take_profit") and ta.take_profit) else 0.0,
+                "stop_loss": ta.stop_loss if (ta and hasattr(ta, "stop_loss") and ta.stop_loss) else 0.0,
+                "pnl_and_cost": ta.pnl_and_cost if (ta and hasattr(ta, "pnl_and_cost") and ta.pnl_and_cost) else 0.0,
+                "mae": ta.mae_adverse if (ta and hasattr(ta, "mae_adverse") and ta.mae_adverse) else 0.0,
+                "mfe": ta.mfe_favorable if (ta and hasattr(ta, "mfe_favorable") and ta.mfe_favorable) else 0.0,
+                "notional_size": ta.notional_size if (ta and hasattr(ta, "notional_size") and ta.notional_size) else 0.0,
+                "capital_at_risk": ta.capital_at_risk if (ta and hasattr(ta, "capital_at_risk") and ta.capital_at_risk) else 0.0,
+                "lesson_tact": ta.lesson_learned if (ta and hasattr(ta, "lesson_learned") and ta.lesson_learned) else "",
+                "visual_lesson_path": ta.visual_lesson_path if (ta and hasattr(ta, "visual_lesson_path") and ta.visual_lesson_path) else "nan",
+                "pre_trade_emotions": ta.pre_trade_emotions if (ta and hasattr(ta, "pre_trade_emotions") and ta.pre_trade_emotions) else "",
+                "mid_trade_emotions": ta.mid_trade_emotions if (ta and hasattr(ta, "mid_trade_emotions") and ta.mid_trade_emotions) else "",
+                "post_trade_emotions": ta.post_trade_emotions if (ta and hasattr(ta, "post_trade_emotions") and ta.post_trade_emotions) else "",
+                "confirmation_params": ta.confirmation_params if (ta and hasattr(ta, "confirmation_params") and ta.confirmation_params) else []
             }
-            if record.tactical_audit:
-                ta = record.tactical_audit
-                ta_defaults = {
-                    "compliance": ta.compliance,
-                    "confirmation_5m_15m": ta.confirmation_5m_15m if hasattr(ta, "confirmation_5m_15m") else "no",
-                    "entry_time": ta.entry_time,
-                    "exit_time": ta.exit_time,
-                    "tier_setup": ta.tier_setup,
-                    "market_state": ta.market_state,
-                    "session": ta.session,
-                    "exit_type": ta.exit_type,
-                    "trade_decision": ta.trade_decision,
-                    "followed_plan": ta.followed_plan,
-                    "primary_emotion": ta.primary_emotion,
-                    "setup_type": ta.setup_type,
-                    "htf_trend_context": ta.htf_trend_context,
-                    "ltf_trend_context": ta.ltf_trend_context,
-                    "confirmation_status": ta.confirmation_status,
-                    "anxiety_level": ta.anxiety_level or 0,
-                    "impatience_level": ta.impatience_level or 0,
-                    "mental_clarity_level": ta.mental_clarity_level or 0,
-                    "emotions": ta.emotions or [],
-                    "behavioral_errors": ta.behavioral_errors or [],
-                    "cognitive_patterns": ta.cognitive_patterns or [],
-                    "risk_usd": ta.risk_usd or 0.0,
-                    "size": ta.size or 0.0,
-                    "r_r": ta.r_r or 0.0,
-                    "entry_price": ta.entry_price or 0.0,
-                    "closing_price": ta.closing_price or 0.0,
-                    "could_hit_tp": ta.could_hit_tp,
-                    "take_profit": ta.take_profit or 0.0,
-                    "stop_loss": ta.stop_loss or 0.0,
-                    "pnl_and_cost": ta.pnl_and_cost or 0.0,
-                    "mae": ta.mae_adverse or 0.0,
-                    "mfe": ta.mfe_favorable or 0.0,
-                    "notional_size": ta.notional_size or 0.0,
-                    "capital_at_risk": ta.capital_at_risk or 0.0,
-                    "lesson_tact": ta.lesson_learned or "",
-                    "visual_lesson_path": ta.visual_lesson_path or "nan",
-                    "pre_trade_emotions": ta.pre_trade_emotions or "",
-                    "mid_trade_emotions": ta.mid_trade_emotions or "",
-                    "post_trade_emotions": ta.post_trade_emotions or "",
-                    "confirmation_params": ta.confirmation_params or []
-                }
                 
             # Build global workspace
             workspace = {
@@ -3885,7 +3829,7 @@ def flow_repair_analysis_audits():
                                 continue
                                 
                             if field == "bias_a":
-                                workspace["bias_a"] = get_mandatory_text("Enter Bias A")
+                                workspace["bias_a"] = get_enum_choice("Edit Initial Structural Bias (Bias A)", StructuralBias).value
                             elif field == "real_bias_b":
                                 workspace["real_bias_b"] = get_enum_choice("Edit Real Bias B", StructuralBias).value
                             elif field == "resolution_type":

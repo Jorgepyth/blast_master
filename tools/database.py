@@ -109,6 +109,7 @@ class UnifiedDepartment(Base):
     long_prob: Mapped[float] = mapped_column(Float)
     short_prob: Mapped[float] = mapped_column(Float)
     no_trade_prob: Mapped[float] = mapped_column(Float)
+    is_backdated: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     efficiency_page_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     tactical_page_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
@@ -234,6 +235,8 @@ def init_db(db_url: str = "sqlite:///.data/flight_account_001_xauusd.db"):
                 conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN confirmation_params JSON"))
             if 'confirmation_5m_15m' not in columns:
                 conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN confirmation_5m_15m VARCHAR"))
+            if 'followed_plan' not in columns:
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN followed_plan VARCHAR"))
 
         # Migrate EfficiencyAudit table
         if "efficiency_audit" in inspector.get_table_names():
@@ -250,6 +253,8 @@ def init_db(db_url: str = "sqlite:///.data/flight_account_001_xauusd.db"):
                 conn.execute(text("ALTER TABLE unified_department ADD COLUMN efficiency_page_id VARCHAR"))
             if 'tactical_page_id' not in columns:
                 conn.execute(text("ALTER TABLE unified_department ADD COLUMN tactical_page_id VARCHAR"))
+            if 'is_backdated' not in columns:
+                conn.execute(text("ALTER TABLE unified_department ADD COLUMN is_backdated BOOLEAN DEFAULT 0"))
                 
     if db_url == "sqlite:///.data/flight_account_001_xauusd.db":
         engine_default = engine
