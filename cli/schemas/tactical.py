@@ -69,7 +69,7 @@ class TacticalAnalysis(BaseModel):
         import math
         import os
         
-        scaling_factor = float(os.getenv("TACTICAL_SCALING_FACTOR", 0.2125))
+        scaling_factor = float(os.getenv("TACTICAL_SCALING_FACTOR", 0.2833))
         no_trade_exponent = float(os.getenv("NO_TRADE_BASE_EXPONENT", 1.54))
         
         e_long = math.exp(self.calc_edge * scaling_factor)

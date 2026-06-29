@@ -3,7 +3,7 @@ import uuid
 import datetime
 from enum import Enum
 from typing import Dict, Any, List, Optional
-from sqlalchemy import String, DateTime, Float, Integer, ForeignKey, select, JSON, BigInteger, SmallInteger, Boolean, Text
+from sqlalchemy import String, DateTime, Numeric, Integer, ForeignKey, select, JSON, BigInteger, SmallInteger, Boolean, Text, event, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session, relationship
 from sqlalchemy import create_engine
 
@@ -95,7 +95,7 @@ class UnifiedDepartment(Base):
     
     # Unified Fields
     market_bias: Mapped[str] = mapped_column(String)
-    calc_edge: Mapped[float] = mapped_column(Float)
+    calc_edge: Mapped[float] = mapped_column(Numeric(18, 8))
     edge_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     
     # Tactical fields merged in
@@ -106,9 +106,9 @@ class UnifiedDepartment(Base):
     nodes_l1: Mapped[int] = mapped_column(Integer)
     nodes_l2: Mapped[int] = mapped_column(Integer)
     tactical_classification: Mapped[str] = mapped_column(String)
-    long_prob: Mapped[float] = mapped_column(Float)
-    short_prob: Mapped[float] = mapped_column(Float)
-    no_trade_prob: Mapped[float] = mapped_column(Float)
+    long_prob: Mapped[float] = mapped_column(Numeric(18, 8))
+    short_prob: Mapped[float] = mapped_column(Numeric(18, 8))
+    no_trade_prob: Mapped[float] = mapped_column(Numeric(18, 8))
     is_backdated: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     efficiency_page_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     tactical_page_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -170,20 +170,20 @@ class TacticalAudit(Base):
     cognitive_patterns: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
 
     # Financial and execution metrics
-    risk_usd: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    size: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    r_r: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    entry_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    closing_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    risk_usd: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
+    size: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
+    r_r: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
+    entry_price: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
+    closing_price: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
     could_hit_tp: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    take_profit: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    stop_loss: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    pnl_and_cost: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    mae_adverse: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    captured_mae: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    mfe_favorable: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    notional_size: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    capital_at_risk: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    take_profit: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
+    stop_loss: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
+    pnl_and_cost: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
+    mae_adverse: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
+    captured_mae: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
+    mfe_favorable: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
+    notional_size: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
+    capital_at_risk: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
     
     # Text blocks
     lesson_learned: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -201,11 +201,19 @@ def init_db(db_url: str = "sqlite:///.data/flight_account_001_xauusd.db"):
     global engine_default
     if db_url.startswith("sqlite:///.data"):
         os.makedirs(os.path.dirname(db_url.split("sqlite:///")[1]), exist_ok=True)
-    engine = create_engine(db_url)
+    engine = create_engine(db_url, connect_args={'check_same_thread': False, 'timeout': 15})
+    
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.close()
+
     Base.metadata.create_all(engine)
     
     # Safe migration for legacy state
-    from sqlalchemy import text, inspect
+    from sqlalchemy import inspect
     with engine.begin() as conn:
         try:
             conn.execute(text("UPDATE unified_department SET state = 'PENDING_AUDITS' WHERE state = 'PENDING_TACTICAL_AUDIT'"))
@@ -220,9 +228,9 @@ def init_db(db_url: str = "sqlite:///.data/flight_account_001_xauusd.db"):
             if 'ltf_trend_context' not in columns:
                 conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN ltf_trend_context VARCHAR"))
             if 'notional_size' not in columns:
-                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN notional_size REAL DEFAULT 0.0"))
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN notional_size NUMERIC DEFAULT 0.0"))
             if 'capital_at_risk' not in columns:
-                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN capital_at_risk REAL DEFAULT 0.0"))
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN capital_at_risk NUMERIC DEFAULT 0.0"))
             if 'visual_lesson_path' not in columns:
                 conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN visual_lesson_path TEXT"))
             if 'pre_trade_emotions' not in columns:

@@ -4,8 +4,14 @@ import datetime
 import subprocess
 import os
 import signal
+import logging
 
 from typing import Optional
+from decimal import Decimal, getcontext
+from sqlalchemy import text
+from core.math_engine import calculate_probabilities, calculate_algebraic_metrics
+
+getcontext().prec = 18
 
 try:
     signal.signal(signal.SIGTSTP, signal.SIG_IGN)
@@ -68,8 +74,8 @@ class AuditSession:
                 with open(CACHE_FILE, "r") as f:
                     cache = json.load(f)
                     self.state = cache.get(self.trade_id, {}).get(self.audit_type, {})
-            except Exception:
-                pass
+            except (FileNotFoundError, json.JSONDecodeError) as e:
+                logging.warning(f"Error cargando caché de estado: {e}")
 
     def save_state(self):
         cache = {}
@@ -77,8 +83,8 @@ class AuditSession:
             try:
                 with open(CACHE_FILE, "r") as f:
                     cache = json.load(f)
-            except Exception:
-                pass
+            except (FileNotFoundError, json.JSONDecodeError) as e:
+                logging.warning(f"Error cargando caché de estado: {e}")
         
         if self.trade_id not in cache:
             cache[self.trade_id] = {}
@@ -110,8 +116,8 @@ class AuditSession:
                         del cache[self.trade_id]
                     with open(CACHE_FILE, "w") as f:
                         json.dump(cache, f)
-            except Exception:
-                pass
+            except (OSError, json.JSONDecodeError) as e:
+                logging.warning(f"Error limpiando caché de estado: {e}")
 
     def prompt(self, key, func, *args, **kwargs):
         if key in self.state:
@@ -585,22 +591,6 @@ def determine_market_bias(i_cd: float) -> str:
     else:
         return "Bearish"
 
-def calculate_probabilities(calc_edge: float) -> tuple:
-    import math
-    import os
-    scaling_factor = float(os.getenv("TACTICAL_SCALING_FACTOR", 0.2125))
-    no_trade_exponent = float(os.getenv("NO_TRADE_BASE_EXPONENT", 1.54))
-    
-    e_long = math.exp(calc_edge * scaling_factor)
-    e_short = math.exp(-calc_edge * scaling_factor)
-    e_no_trade = math.exp(no_trade_exponent)
-    
-    total = e_long + e_short + e_no_trade
-    long_prob = round(e_long / total, 3)
-    short_prob = round(e_short / total, 3)
-    no_trade_prob = round(1.0 - long_prob - short_prob, 3)
-    return long_prob, short_prob, no_trade_prob
-
 def get_optional_text(prompt_text, multiline=False):
     message = f"{prompt_text} (Optional, press Enter to skip) >"
     if multiline:
@@ -1050,9 +1040,9 @@ def flow_review_analysis():
         LEFT JOIN efficiency_audit e ON u.id = e.id
         LEFT JOIN tactical_audit t ON u.id = t.id
         LEFT JOIN analysis_layer al ON u.id = al.trade_id
-        WHERE u.id = ?;
+        WHERE u.id = :selected_id;
         """
-        cursor = raw_conn.execute(detail_query, (selected_id,))
+        cursor = db_session.execute(text(detail_query), {"selected_id": selected_id})
         detail_rows = cursor.fetchall()
         
         if not detail_rows:
@@ -1096,12 +1086,13 @@ def flow_review_analysis():
                 }
 
         # Perform programmatic metric calculations in Python
-        ep = record["entry_price"]
-        cp = record["closing_price"]
-        sl = record["stop_loss"]
-        tp = record["take_profit"]
-        size = record["size"]
-        mfe = record["mfe_favorable"]
+        ep = Decimal(str(record["entry_price"])) if record["entry_price"] else Decimal('0.0')
+        cp = Decimal(str(record["closing_price"])) if record["closing_price"] else Decimal('0.0')
+        sl = Decimal(str(record["stop_loss"])) if record["stop_loss"] else Decimal('0.0')
+        tp = Decimal(str(record["take_profit"])) if record["take_profit"] else Decimal('0.0')
+        size = Decimal(str(record["size"])) if record["size"] else Decimal('0.0')
+        mfe = Decimal(str(record["mfe_favorable"])) if record["mfe_favorable"] else Decimal('0.0')
+        mae = Decimal(str(record["mae_adverse"])) if record["mae_adverse"] else Decimal('0.0')
         
         record["trade_decision"] = None
         record["notional_size_usd"] = None
@@ -1110,12 +1101,12 @@ def flow_review_analysis():
         record["dist_to_tp"] = None
         record["r_r"] = None
         record["pnl"] = None
-        record["cost"] = 0.0
+        record["cost"] = Decimal('0.0')
         record["r_multiple"] = None
         record["captured_mfe"] = None
         record["trade_duration"] = None
         
-        if ep is not None and sl is not None and size is not None:
+        if ep != Decimal('0.0') and sl != Decimal('0.0') and size != Decimal('0.0'):
             td = "Long" if ep > sl else "Short"
             record["trade_decision"] = td
             record["notional_size_usd"] = ep * size
@@ -1126,52 +1117,51 @@ def flow_review_analysis():
             else:
                 record["capital_at_risk"] = size * (sl - ep)
                 
-            if ep != 0:
+            if ep != Decimal('0.0'):
                 record["dist_to_sl"] = abs(ep - sl) / ep
             else:
-                record["dist_to_sl"] = 0.0
+                record["dist_to_sl"] = Decimal('0.0')
                 
-            if tp is not None and ep != 0:
+            if tp != Decimal('0.0') and ep != Decimal('0.0'):
                 record["dist_to_tp"] = abs(ep - tp) / ep
                 sl_dist_abs = abs(ep - sl)
-                if sl_dist_abs != 0:
+                if sl_dist_abs != Decimal('0.0'):
                     if td == "Long":
                         record["r_r"] = (tp - ep) / sl_dist_abs
                     else:
                         record["r_r"] = (ep - tp) / sl_dist_abs
                 else:
-                    record["r_r"] = 0.0
+                    record["r_r"] = Decimal('0.0')
             
-            if cp is not None:
+            if cp != Decimal('0.0'):
                 if td == "Long":
                     record["pnl"] = (cp - ep) * size
                 else:
                     record["pnl"] = (ep - cp) * size
                     
                 if record["pnl_and_cost"] is not None:
-                    record["cost"] = record["pnl"] - record["pnl_and_cost"]
+                    record["cost"] = record["pnl"] - Decimal(str(record["pnl_and_cost"]))
                 else:
-                    record["cost"] = 0.0
+                    record["cost"] = Decimal('0.0')
                     
                 sl_dist_abs = abs(ep - sl)
-                if sl_dist_abs != 0:
+                if sl_dist_abs != Decimal('0.0'):
                     if td == "Long":
                         record["r_multiple"] = (cp - ep) / sl_dist_abs
                     else:
                         record["r_multiple"] = (ep - cp) / sl_dist_abs
                 else:
-                    record["r_multiple"] = 0.0
+                    record["r_multiple"] = Decimal('0.0')
                     
-                if record["r_multiple"] < 0 or not mfe or mfe == 0.0:
-                    record["captured_mfe"] = 0.0
+                if record["r_multiple"] < Decimal('0.0') or mfe == Decimal('0.0'):
+                    record["captured_mfe"] = Decimal('0.0')
                 else:
                     record["captured_mfe"] = record["r_multiple"] / mfe
 
-                mae = record.get("mae_adverse")
-                if record["r_multiple"] < 0 and mae and mae > 0.0:
+                if record["r_multiple"] < Decimal('0.0') and mae > Decimal('0.0'):
                     record["captured_mae"] = abs(record["r_multiple"]) / mae
                 else:
-                    record["captured_mae"] = 0.0
+                    record["captured_mae"] = Decimal('0.0')
 
         # Map mae_adverse to mae and mfe_favorable to mfe for display compatibility
         record["mae"] = record["mae_adverse"]
@@ -1456,14 +1446,17 @@ def flow_review_analysis():
         console.print(dashboard)
         console.print(eff_panel)
         console.print(tact_panel)
-        back_prompt = inquirer.select(
-            message="Press Enter to return to index (or Ctrl+F to open all linked image assets) >",
-            choices=[Choice("back", name="[<] Return to Ledger Index")],
+        action_prompt = inquirer.select(
+            message="Select action (or Ctrl+F to open all linked image assets) >",
+            choices=[
+                Choice("back", name="[<] Return to Ledger Index"),
+                Choice("clone", name="[C] Clone for Re-Entry (Fork Structural Vector)")
+            ],
             pointer=">",
             qmark=""
         )
 
-        @back_prompt.register_kb("c-f")
+        @action_prompt.register_kb("c-f")
         def _open_linked_trade_images(event):
             import os
             import platform
@@ -1507,7 +1500,50 @@ def flow_review_analysis():
                     except Exception:
                         pass
                         
-        back_prompt.execute()
+        action = action_prompt.execute()
+        if action == "back":
+            return
+        elif action == "clone":
+            try:
+                ts_choice = inquirer.select(
+                    message="Select Timestamp mode for cloned trade >",
+                    choices=[
+                        Choice("current", name="[1] Use Current System Time"),
+                        Choice("custom", name="[2] Enter Custom/Backdated Time")
+                    ],
+                    pointer=">",
+                    qmark=""
+                ).execute()
+
+                backdated_ts = None
+                if ts_choice == "custom":
+                    backdated_ts = get_mandatory_datetime("Enter Target Timestamp", allow_cancel=True)
+
+                macro_state = {
+                    "asset": record["asset"],
+                    "edge_desc": record["edge_description"],
+                    "efficiency_timeframe": record["efficiency_timeframe"],
+                    "bias_a": StructuralBias(record["bias_a"]),
+                    "p0_dir": Direction(layers_dict["P0"]["direction"]),
+                    "p0_str": Strength(layers_dict["P0"]["strength"]),
+                    "p0_thesis": layers_dict["P0"]["thesis"],
+                    "p2_dir": Direction(layers_dict["P2"]["direction"]),
+                    "p2_str": Strength(layers_dict["P2"]["strength"]),
+                    "p2_thesis": layers_dict["P2"]["thesis"],
+                    "p3_dir": Direction(layers_dict["P3"]["direction"]),
+                    "p3_str": Strength(layers_dict["P3"]["strength"]),
+                    "p3_thesis": layers_dict["P3"]["thesis"]
+                }
+            except GoBackException:
+                console.print("[warning]Cloning cancelled.[/warning]")
+                return
+            except (KeyError, ValueError) as e:
+                console.print(f"[bold red]Error al clonar el estado estructural: {e}[/bold red]")
+                input("Press Enter to continue...")
+                return
+
+            flow_new_analysis(backdated_timestamp=backdated_ts, cloned_state=macro_state)
+            return
 
     while True:
         try:
@@ -1522,7 +1558,7 @@ def flow_review_analysis():
             raw_conn = db_session.connection().connection
             
             # Fetch rolling 10 entries via LEFT JOINs
-            cursor = raw_conn.execute(rolling_query)
+            cursor = db_session.execute(text(rolling_query))
             rows = cursor.fetchall()
             
             if not rows:
@@ -1560,7 +1596,7 @@ def flow_review_analysis():
                 FROM unified_department 
                 ORDER BY year DESC, month DESC;
                 """
-                cursor = raw_conn.execute(calendar_query)
+                cursor = db_session.execute(text(calendar_query))
                 calendar_rows = cursor.fetchall()
                 
                 month_names = {
@@ -1601,10 +1637,10 @@ def flow_review_analysis():
                 FROM unified_department u
                 LEFT JOIN efficiency_audit e ON u.id = e.id
                 LEFT JOIN tactical_audit t ON u.id = t.id
-                WHERE u.created_at BETWEEN ? AND ?
+                WHERE u.created_at BETWEEN :start_str AND :end_str
                 ORDER BY u.created_at DESC;
                 """
-                cursor = raw_conn.execute(month_query, (start_str, end_str))
+                cursor = db_session.execute(text(month_query), {"start_str": start_str, "end_str": end_str})
                 month_rows = cursor.fetchall()
                 
                 if not month_rows:
@@ -1638,9 +1674,9 @@ def flow_review_analysis():
                 collision_query = """
                 SELECT u.id, u.asset, u.created_at
                 FROM unified_department u
-                WHERE substr(u.id, 1, 8) = ?;
+                WHERE substr(u.id, 1, 8) = :short_id;
                 """
-                cursor = raw_conn.execute(collision_query, (short_id_input.lower(),))
+                cursor = db_session.execute(text(collision_query), {"short_id": short_id_input.lower()})
                 collision_rows = cursor.fetchall()
                 
                 if not collision_rows:
@@ -1667,11 +1703,14 @@ def flow_review_analysis():
             else:
                 # selected_id is a specific trade ID
                 show_unified_detail(selected_id, raw_conn)
-def flow_new_analysis(backdated_timestamp=None):
+def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
     trade_id = str(uuid.uuid4())
     console.print(f"\n[muted]Initialized new unified trade context: {trade_id}[/muted]")
     
     session = AnalysisSession(trade_id)
+    if cloned_state:
+        session.state.update(cloned_state)
+        
     while True:
         try:
             # --- STEP 1: Structure Parameters ---
@@ -3922,55 +3961,6 @@ def flow_repair_analysis_audits():
                             break
                             
                 elif comp_choice == "tactical":
-                    def calculate_algebraic_metrics(direction: str, ep: float, sl: float, cp: float, tp: float, size: float, mae: float, mfe: float, cost: float = 0.0):
-                        # Pass 2: Calculated Math using the resolved locked direction as an input parameter
-                        notional_size = ep * size
-                        notional_size_usd = ep * size
-                        sl_dist = abs(ep - sl)
-                        tp_dist = abs(ep - tp)
-                        
-                        dist_to_sl = (sl_dist / ep) if ep != 0.0 else 0.0
-                        dist_to_tp = (tp_dist / ep) if ep != 0.0 else 0.0
-                        
-                        if direction == "Long":
-                            capital_at_risk = size * (ep - sl)
-                            risk_usd = size * sl_dist
-                            pnl = (cp - ep) * size
-                            r_r = (tp - ep) / sl_dist if sl_dist != 0.0 else 0.0
-                            r_multiple = (cp - ep) / sl_dist if sl_dist != 0.0 else 0.0
-                        else:
-                            capital_at_risk = size * (sl - ep)
-                            risk_usd = size * sl_dist
-                            pnl = (ep - cp) * size
-                            r_r = (ep - tp) / sl_dist if sl_dist != 0.0 else 0.0
-                            r_multiple = (ep - cp) / sl_dist if sl_dist != 0.0 else 0.0
-                            
-                        if r_multiple < 0.0 or not mfe or mfe == 0.0:
-                            captured_mfe = 0.0
-                        else:
-                            captured_mfe = r_multiple / mfe
-                            
-                        if r_multiple < 0.0 and mae and mae > 0.0:
-                            captured_mae = abs(r_multiple) / mae
-                        else:
-                            captured_mae = 0.0
-                            
-                        return {
-                            "notional_size": notional_size,
-                            "notional_size_usd": notional_size_usd,
-                            "dist_to_sl": dist_to_sl,
-                            "dist_to_tp": dist_to_tp,
-                            "capital_at_risk": capital_at_risk,
-                            "risk_usd": risk_usd,
-                            "pnl": pnl,
-                            "pnl_and_cost": pnl - cost,
-                            "cost": cost,
-                            "r_r": r_r,
-                            "r_multiple": r_multiple,
-                            "captured_mfe": captured_mfe,
-                            "captured_mae": captured_mae
-                        }
-
                     def recalculate_tactical_math(w, p0_dir, p2_dir, p4_dir):
                         # Strict Two-Pass Sequenced Recalculation Engine (Amendment 2)
                         # Pass 1: Direction Resolution
@@ -3999,8 +3989,26 @@ def flow_repair_analysis_audits():
                         cost = float(w["cost"]) if w.get("cost") else 0.0
                         
                         # Pass 2: Calculated Math passing the resolved direction as an input parameter
-                        metrics = calculate_algebraic_metrics(direction, ep, sl, cp, tp, size, mae, mfe, cost)
-                        w.update(metrics)
+                        try:
+                            metrics = calculate_algebraic_metrics(direction, ep, sl, cp, tp, size, mae, mfe, cost)
+                            w.update(metrics)
+                        except ValueError as e:
+                            console.print(f"[bold red]Validation Error: {e}[/bold red]")
+                            w.update({
+                                "notional_size": Decimal('0.0'),
+                                "notional_size_usd": Decimal('0.0'),
+                                "dist_to_sl": Decimal('0.0'),
+                                "dist_to_tp": Decimal('0.0'),
+                                "capital_at_risk": Decimal('0.0'),
+                                "risk_usd": Decimal('0.0'),
+                                "pnl": Decimal('0.0'),
+                                "pnl_and_cost": Decimal('0.0'),
+                                "cost": Decimal('0.0'),
+                                "r_r": Decimal('0.0'),
+                                "r_multiple": Decimal('0.0'),
+                                "captured_mfe": Decimal('0.0'),
+                                "captured_mae": Decimal('0.0')
+                            })
                         
                     # Run initial recalculation pass
                     recalculate_tactical_math(workspace, workspace["p0_dir"], workspace["p2_dir"], workspace["p4_dir"])
