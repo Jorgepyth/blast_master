@@ -234,7 +234,7 @@ def test_flow_repair_analysis_audits_unified_recalculation_and_singular_sql_save
             asset="ETH/USDT",
             market_bias="Bearish",
             calc_edge=-0.35,
-            edge_description="original desc",
+            edge_description="Original Desc",
             p4_hierarchy="Psych Level",
             p1_timeframe="15M",
             p1_type="1st_iteration",
@@ -291,10 +291,8 @@ def test_flow_repair_analysis_audits_unified_recalculation_and_singular_sql_save
     with Session(in_memory_db) as session:
         ud = session.get(UnifiedDepartment, "trade-999")
         assert ud is not None
-        # P0 changed from Short/Strong (-2) to Long/Strong (+2).
-        # x0 went from -2 to +2. Total score went from -2.0 to 1.6 (or calculated edge is increased).
-        # Assert that calc_edge is updated and market_bias recalculated.
-        assert ud.calc_edge == pytest.approx(-0.4)
+        assert float(ud.calc_edge) == pytest.approx(-0.4)
+        assert ud.long_prob == pytest.approx(0.428, 0.01)
         
         p0_layer = session.execute(
             select(AnalysisLayer).where(AnalysisLayer.trade_id == "trade-999", AnalysisLayer.layer_name == "P0")

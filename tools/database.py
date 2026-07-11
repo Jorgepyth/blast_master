@@ -112,6 +112,8 @@ class UnifiedDepartment(Base):
     is_backdated: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     efficiency_page_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     tactical_page_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    edge_validation_price: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
+    structural_invalidation: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
 
     analysis_layers: Mapped[List["AnalysisLayer"]] = relationship(back_populates="unified_department", cascade="all, delete-orphan")
     efficiency_audit: Mapped[Optional["EfficiencyAudit"]] = relationship(back_populates="unified_department", cascade="all, delete-orphan", single_parent=True)
@@ -219,8 +221,16 @@ def init_db(db_url: str = "sqlite:///.data/flight_account_001_xauusd.db"):
             conn.execute(text("UPDATE unified_department SET state = 'PENDING_AUDITS' WHERE state = 'PENDING_TACTICAL_AUDIT'"))
         except Exception:
             pass
-        # Migrate TacticalAudit table
+            
         inspector = inspect(engine)
+        if "unified_department" in inspector.get_table_names():
+            ud_columns = [col['name'] for col in inspector.get_columns('unified_department')]
+            if 'edge_validation_price' not in ud_columns:
+                conn.execute(text("ALTER TABLE unified_department ADD COLUMN edge_validation_price NUMERIC"))
+            if 'structural_invalidation' not in ud_columns:
+                conn.execute(text("ALTER TABLE unified_department ADD COLUMN structural_invalidation NUMERIC"))
+                
+        # Migrate TacticalAudit table
         if "tactical_audit" in inspector.get_table_names():
             columns = [col['name'] for col in inspector.get_columns('tactical_audit')]
             if 'could_hit_tp' not in columns:
@@ -441,6 +451,8 @@ def get_records_by_state(state: LifecycleState | List[LifecycleState], engine=No
                 "efficiency": {
                     "Market_Bias": r.market_bias,
                     "Calc_edge": r.calc_edge,
+                    "Edge_Validation_Price": r.edge_validation_price,
+                    "Structural_Invalidation": r.structural_invalidation,
                 },
                 "tactical": {
                     "tactical_classification": r.tactical_classification,

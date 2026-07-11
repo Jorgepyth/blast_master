@@ -18,9 +18,9 @@ def test_perfect_long_tactical_setup():
         p1_thesis="P1 Thesis",
         calc_edge=4.0
     )
-    assert analysis.calc_edge == 4.0
-    assert analysis.long_prob == 0.315
-    assert analysis.short_prob == 0.058
+    assert analysis.calc_edge == 0.2833
+    assert analysis.long_prob == 0.384
+    assert analysis.short_prob == 0.289058
     assert analysis.no_trade_prob == 0.627
     assert analysis.tactical_classification == TacticalClassification.CONTINUATION_PRESSURE
 

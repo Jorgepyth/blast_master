@@ -23,12 +23,20 @@ class NotionAPIError(Exception):
 class RateLimitError(Exception):
     pass
 
+def safe_float(val):
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except (ValueError, TypeError, Exception):
+        return None
+
 def map_efficiency_payload(trade_id: str, asset: str, eff: dict, eff_audit: dict, created_at) -> dict:
     props = {
         "Trade ID": {"title": [{"text": {"content": trade_id}}]},
         "Asset": {"rich_text": [{"text": {"content": asset}}]},
         "Market Bias": {"select": {"name": eff.get("Market_Bias", "N/A")}},
-        "Calc Edge": {"number": eff.get("Calc_edge", 0.0)},
+        "Calc Edge": {"number": safe_float(eff.get("Calc_edge"))},
         "Bias A": {"select": {"name": eff_audit.get("bias_a", "N/A")}},
         "Real Bias B": {"select": {"name": eff_audit.get("real_bias_b", "N/A")}},
         "Resolution Type": {"select": {"name": eff_audit.get("resolution_type", "N/A")}},
@@ -36,6 +44,8 @@ def map_efficiency_payload(trade_id: str, asset: str, eff: dict, eff_audit: dict
         "Failure Reason": {"select": {"name": eff_audit.get("failure_reason", "N/A")}},
         "Specific Bias Compliance": {"select": {"name": eff_audit.get("specific_bias_compliance", "N/A")}},
         "False Regime Rate": {"select": {"name": eff_audit.get("false_regime_rate", "N/A")}},
+        "Edge Validation Price": {"number": safe_float(eff.get("Edge_Validation_Price"))},
+        "Structural Invalidation": {"number": safe_float(eff.get("Structural_Invalidation"))},
     }
     if hasattr(created_at, 'strftime'):
         props["Created Date"] = {"date": {"start": created_at.strftime('%Y-%m-%dT%H:%M:%S-06:00')}}

@@ -1025,7 +1025,7 @@ def flow_review_analysis():
         detail_query = """
         SELECT u.id, u.asset, u.market_bias, u.calc_edge, u.created_at, u.updated_at, u.edge_description, u.trade_status,
                u.p4_hierarchy, u.p1_timeframe, u.p1_type, u.nodes_l1, u.nodes_l2, u.tactical_classification,
-               u.long_prob, u.short_prob, u.no_trade_prob, u.is_backdated,
+               u.long_prob, u.short_prob, u.no_trade_prob, u.is_backdated, u.edge_validation_price, u.structural_invalidation,
                e.bias_a, e.resolution_type, e.real_bias_b, e.structural_resolution, e.failure_reason,
                e.specific_bias_compliance, e.false_regime_rate, e.lesson_learned as e_lesson, e.efficiency_timeframe,
                t.compliance, t.entry_time, t.exit_time, t.tier_setup, t.market_state, t.exit_type,
@@ -1053,7 +1053,7 @@ def flow_review_analysis():
         cols = [
             "id", "asset", "market_bias", "calc_edge", "created_at", "updated_at", "edge_description", "trade_status",
             "p4_hierarchy", "p1_timeframe", "p1_type", "nodes_l1", "nodes_l2", "tactical_classification",
-            "long_prob", "short_prob", "no_trade_prob", "is_backdated",
+            "long_prob", "short_prob", "no_trade_prob", "is_backdated", "edge_validation_price", "structural_invalidation",
             "bias_a", "resolution_type", "real_bias_b", "structural_resolution", "failure_reason",
             "specific_bias_compliance", "false_regime_rate", "e_lesson", "efficiency_timeframe",
             "compliance", "entry_time", "exit_time", "tier_setup", "market_state", "exit_type",
@@ -1266,6 +1266,14 @@ def flow_review_analysis():
         if record['edge_description']:
             indented_desc = format_indented_block(record['edge_description'], indent_spaces=11, first_line_flush=False, wrap_width=80)
             struct_text.append(f"\nEdge Description:\n{indented_desc}\n", style="italic white")
+            
+        struct_text.append("\nParametric Metrics:\n", style="bold cyan")
+        evp_val = str(record['edge_validation_price']) if record['edge_validation_price'] is not None else "N/A"
+        si_val = str(record['structural_invalidation']) if record['structural_invalidation'] is not None else "N/A"
+        struct_text.append("Edge Validation Price:   ", style="dim")
+        struct_text.append(f"{evp_val}\n", style="bold white")
+        struct_text.append("Structural Invalidation: ", style="dim")
+        struct_text.append(f"{si_val}\n", style="bold white")
 
         dashboard = Panel(
             struct_text,
@@ -1590,115 +1598,104 @@ def flow_review_analysis():
                 break
                 
             if selected_id == "see_calendar":
-                # Get distinct years and months via direct raw SQL query
-                calendar_query = """
-                SELECT DISTINCT strftime('%Y', created_at) as year, strftime('%m', created_at) as month 
-                FROM unified_department 
-                ORDER BY year DESC, month DESC;
-                """
-                cursor = db_session.execute(text(calendar_query))
-                calendar_rows = cursor.fetchall()
-                
-                month_names = {
-                    "01": "January", "02": "February", "03": "March", "04": "April", "05": "May", "06": "June",
-                    "07": "July", "08": "August", "09": "September", "10": "October", "11": "November", "12": "December"
-                }
-                
-                cal_choices = []
-                for y, m in calendar_rows:
-                    if y and m:
-                        cal_choices.append(Choice(f"{y}-{m}", name=f"📅 {month_names.get(m, m)} {y}"))
-                cal_choices.append(Choice("back_to_index", name="[<] Back to Index"))
-                
-                selected_month = inquirer.select(
-                    message="Select Calendar Month >",
-                    choices=cal_choices,
-                    pointer=">",
-                    qmark=""
-                ).execute()
-                
-                if selected_month == "back_to_index":
-                    continue
+                while True:
+                    # Get distinct years and months via direct raw SQL query
+                    calendar_query = """
+                    SELECT DISTINCT strftime('%Y', created_at) as year, strftime('%m', created_at) as month 
+                    FROM unified_department 
+                    ORDER BY year DESC, month DESC;
+                    """
+                    cursor = db_session.execute(text(calendar_query))
+                    calendar_rows = cursor.fetchall()
                     
-                year_str, month_str = selected_month.split("-")
-                year = int(year_str)
-                month = int(month_str)
-                
-                # Python programmatic range calculation
-                last_day = calendar.monthrange(year, month)[1]
-                start_str = f"{year:04d}-{month:02d}-01 00:00:00"
-                end_str = f"{year:04d}-{month:02d}-{last_day:02d} 23:59:59.999999"
-                
-                # Executing month search with LEFT JOINs
-                month_query = """
-                SELECT u.id, u.asset, u.market_bias, u.calc_edge, u.created_at, 
-                       e.bias_a, e.real_bias_b, e.resolution_type, 
-                       t.compliance, u.trade_status, u.is_backdated
-                FROM unified_department u
-                LEFT JOIN efficiency_audit e ON u.id = e.id
-                LEFT JOIN tactical_audit t ON u.id = t.id
-                WHERE u.created_at BETWEEN :start_str AND :end_str
-                ORDER BY u.created_at DESC;
-                """
-                cursor = db_session.execute(text(month_query), {"start_str": start_str, "end_str": end_str})
-                month_rows = cursor.fetchall()
-                
-                if not month_rows:
-                    console.print(f"[yellow]No records found for {month_names.get(month_str)} {year}.[/yellow]")
-                    input("Press Enter to continue...")
-                    continue
+                    month_names = {
+                        "01": "January", "02": "February", "03": "March", "04": "April", "05": "May", "06": "June",
+                        "07": "July", "08": "August", "09": "September", "10": "October", "11": "November", "12": "December"
+                    }
                     
-                m_table = render_ledger_table(month_rows)
-                
-                try:
-                    console.clear(home=True)
-                except TypeError:
-                    console.clear()
+                    cal_choices = []
+                    for y, m in calendar_rows:
+                        if y and m:
+                            cal_choices.append(Choice(f"{y}-{m}", name=f"📅 {month_names.get(m, m)} {y}"))
+                    cal_choices.append(Choice("back", name="[<] Return to Main Ledger"))
                     
-                console.rule(f"[bold cyan]Analyses for {month_names.get(month_str)} {year}[/bold cyan]")
-                console.print()
-                console.print(m_table)
-                console.print()
-                
-                short_id_input = bind_pause(inquirer.text(
-                    message="Enter Short ID to inspect (or press Enter to return) >",
-                    multiline=False,
-                    keybindings={"skip": []}
-                )).execute()
-                if short_id_input:
-                    short_id_input = short_id_input.strip()
-                if not short_id_input:
-                    continue
-                    
-                # Collision query mitigation
-                collision_query = """
-                SELECT u.id, u.asset, u.created_at
-                FROM unified_department u
-                WHERE substr(u.id, 1, 8) = :short_id;
-                """
-                cursor = db_session.execute(text(collision_query), {"short_id": short_id_input.lower()})
-                collision_rows = cursor.fetchall()
-                
-                if not collision_rows:
-                    console.print("[bold red]No records found for that Short ID.[/bold red]")
-                    input("Press Enter to continue...")
-                    continue
-                    
-                if len(collision_rows) == 1:
-                    inspect_id = collision_rows[0][0]
-                else:
-                    col_choices = [
-                        Choice(row[0], name=f"{to_local_display(row[2]) if isinstance(row[2], datetime.datetime) else str(row[2])} | {row[1]} (Full ID: {row[0]})")
-                        for row in collision_rows
-                    ]
-                    inspect_id = inquirer.select(
-                        message="Short ID collision detected! Please select target trade session >",
-                        choices=col_choices,
+                    selected_month = inquirer.select(
+                        message="Select Calendar Month >",
+                        choices=cal_choices,
                         pointer=">",
                         qmark=""
                     ).execute()
                     
-                show_unified_detail(inspect_id, raw_conn)
+                    if selected_month == "back":
+                        break
+                        
+                    year_str, month_str = selected_month.split("-")
+                    year = int(year_str)
+                    month = int(month_str)
+                    
+                    # Python programmatic range calculation
+                    last_day = calendar.monthrange(year, month)[1]
+                    start_str = f"{year:04d}-{month:02d}-01 00:00:00"
+                    end_str = f"{year:04d}-{month:02d}-{last_day:02d} 23:59:59.999999"
+                    
+                    # Executing month search with LEFT JOINs
+                    month_query = """
+                    SELECT u.id, u.asset, u.market_bias, u.calc_edge, u.created_at, 
+                           e.bias_a, e.real_bias_b, e.resolution_type, 
+                           t.compliance, u.trade_status, u.is_backdated
+                    FROM unified_department u
+                    LEFT JOIN efficiency_audit e ON u.id = e.id
+                    LEFT JOIN tactical_audit t ON u.id = t.id
+                    WHERE u.created_at BETWEEN :start_str AND :end_str
+                    ORDER BY u.created_at DESC;
+                    """
+                    cursor = db_session.execute(text(month_query), {"start_str": start_str, "end_str": end_str})
+                    month_rows = cursor.fetchall()
+                    
+                    if not month_rows:
+                        console.print(f"[yellow]No records found for {month_names.get(month_str)} {year}.[/yellow]")
+                        input("Press Enter to continue...")
+                        continue
+                        
+                    while True:
+                        try:
+                            console.clear(home=True)
+                        except TypeError:
+                            console.clear()
+                            
+                        m_table = render_ledger_table(month_rows)
+                        console.rule(f"[bold cyan]Analyses for {month_names.get(month_str)} {year}[/bold cyan]")
+                        console.print()
+                        console.print(m_table)
+                        console.print()
+                        
+                        trade_choices = []
+                        for idx, row in enumerate(month_rows):
+                            r_id = row[0]
+                            asset = row[1]
+                            market_bias = row[2]
+                            calc_edge = row[3]
+                            created_at = row[4]
+                            
+                            created_str = to_local_display(created_at, '%Y-%m-%d %H:%M:%S') if isinstance(created_at, datetime.datetime) else str(created_at)[0:19]
+                            short_id = r_id[:8]
+                            calc_edge_val = float(calc_edge) if calc_edge is not None else 0.0
+                            
+                            trade_choices.append(Choice(r_id, name=f"[{idx+1}] {created_str} | {short_id} - {asset} (Bias: {market_bias}, Edge: {calc_edge_val:.4f})"))
+                            
+                        trade_choices.append(Choice("back", name="[<] Return to Months List"))
+                        
+                        inspect_id = inquirer.select(
+                            message=f"Select Trade from {month_names.get(month_str)} {year}:",
+                            choices=trade_choices,
+                            pointer=">",
+                            qmark=""
+                        ).execute()
+                        
+                        if inspect_id == "back":
+                            break
+                            
+                        show_unified_detail(inspect_id, raw_conn)
                 
             else:
                 # selected_id is a specific trade ID
@@ -1867,11 +1864,14 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
             edge_desc = session.prompt("edge_desc", prompt_edge_desc)
             
             efficiency_timeframe = session.prompt("efficiency_timeframe", lambda: bind_pause(inquirer.select(
-                message="Select Efficiency Timeframe [1H/4H] >",
-                choices=[Choice("1H", name="1H"), Choice("4H", name="4H")],
+                message="Select Efficiency Timeframe [15M/1H/4H] >",
+                choices=[Choice("15M", name="15M"), Choice("1H", name="1H"), Choice("4H", name="4H")],
                 pointer=">",
                 qmark=""
             )).execute())
+            
+            evp_raw = session.prompt("evp_raw", lambda: bind_pause(inquirer.text(message="Edge Validation Price (Target Convergence) [Optional] >")).execute())
+            si_raw = session.prompt("si_raw", lambda: bind_pause(inquirer.text(message="Structural Invalidation Price (Nullification Threshold) [Optional] >")).execute())
             
             bias_a = session.prompt("bias_a", get_enum_choice, "Initial Structural Bias (Bias A)", StructuralBias)
             tact_class = session.prompt("tact_class", get_enum_choice, "Tactical Classification", TacticalClassification)
@@ -2116,6 +2116,16 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
                                 no_trade_prob=tactical.no_trade_prob,
                                 is_backdated=backdated_timestamp is not None
                             )
+                            
+                            evp_val = session.state.get("evp_raw", "")
+                            si_val = session.state.get("si_raw", "")
+                            try:
+                                new_record.edge_validation_price = Decimal(str(evp_val)) if evp_val.strip() else None
+                                new_record.structural_invalidation = Decimal(str(si_val)) if si_val.strip() else None
+                            except Exception:
+                                console.print("[bold red]Invalid decimal input for price metrics. Setting to None.[/bold red]")
+                                new_record.edge_validation_price = None
+                                new_record.structural_invalidation = None
                             if backdated_timestamp:
                                 new_record.created_at = backdated_timestamp
                                 new_record.updated_at = backdated_timestamp
@@ -3413,6 +3423,8 @@ def flow_repair_analysis_audits():
                 "short_prob": record.short_prob,
                 "no_trade_prob": record.no_trade_prob,
                 "trade_status": record.trade_status or None,
+                "edge_validation_price": record.edge_validation_price,
+                "structural_invalidation": record.structural_invalidation,
                 
                 "p0_dir": p0.direction if p0 else "Neutral",
                 "p0_str": p0.strength if p0 else "Weak",
@@ -3653,6 +3665,9 @@ def flow_repair_analysis_audits():
                             edit_choices = [
                                 Choice("asset", name=f"Asset: {workspace['asset']}"),
                                 Choice("edge_description", name=f"Edge Description: {workspace['edge_description']}"),
+                                Choice("edge_validation_price", name=f"[Edit] Edge Validation Price: {workspace.get('edge_validation_price', 'N/A')}"),
+                                Choice("structural_invalidation", name=f"[Edit] Structural Invalidation Price: {workspace.get('structural_invalidation', 'N/A')}"),
+                                Choice("efficiency_timeframe", name=f"[Edit] Efficiency Timeframe: {workspace.get('efficiency_timeframe', '1H')}"),
                                 Choice("p4_hierarchy", name=f"P4 Hierarchy: {workspace['p4_hierarchy']}"),
                                 Choice("p1_timeframe", name=f"P1 Timeframe: {workspace['p1_timeframe']}"),
                                 Choice("p1_type", name=f"P1 Fractal Type: {workspace['p1_type']}"),
@@ -3691,6 +3706,25 @@ def flow_repair_analysis_audits():
                                 workspace["asset"] = get_mandatory_text("Enter Asset Name (e.g. BTC/USDT)")
                             elif field == "edge_description":
                                 workspace["edge_description"] = get_mandatory_text("Enter Edge Description")
+                            elif field == "edge_validation_price":
+                                try:
+                                    val = get_mandatory_text("Enter Edge Validation Price (Target Convergence) [Leave empty for None]")
+                                    workspace["edge_validation_price"] = Decimal(val) if val.strip() else None
+                                except Exception:
+                                    console.print("[bold red]Invalid decimal input. Aborting modification.[/bold red]")
+                            elif field == "structural_invalidation":
+                                try:
+                                    val = get_mandatory_text("Enter Structural Invalidation Price [Leave empty for None]")
+                                    workspace["structural_invalidation"] = Decimal(val) if val.strip() else None
+                                except Exception:
+                                    console.print("[bold red]Invalid decimal input. Aborting modification.[/bold red]")
+                            elif field == "efficiency_timeframe":
+                                workspace["efficiency_timeframe"] = inquirer.select(
+                                    message="Edit Efficiency Timeframe [15M/1H/4H] >",
+                                    choices=[Choice("15M", name="15M"), Choice("1H", name="1H"), Choice("4H", name="4H")],
+                                    pointer=">",
+                                    qmark=""
+                                ).execute()
                             elif field == "p4_hierarchy":
                                 workspace["p4_hierarchy"] = get_enum_choice("Edit P4 Hierarchy", Hierarchy).value
                             elif field == "p1_timeframe":
@@ -3794,6 +3828,11 @@ def flow_repair_analysis_audits():
                                             INSERT INTO analysis_layer (trade_id, department, layer_name, direction, strength, thesis, score)
                                             VALUES (?, ?, ?, ?, ?, ?, ?)
                                         """, (record.id, dept, l_name, dir_val, str_val, thesis_val, score_val))
+                                        
+                                record.edge_validation_price = workspace.get("edge_validation_price")
+                                record.structural_invalidation = workspace.get("structural_invalidation")
+                                if getattr(record, "efficiency_audit", None):
+                                    record.efficiency_audit.efficiency_timeframe = workspace.get("efficiency_timeframe")
                                         
                                 db_session.commit()
                                 console.print("[green]Unified Analysis Repair saved successfully.[/green]")
