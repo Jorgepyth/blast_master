@@ -81,11 +81,13 @@ class TrendContext(str, Enum):
     SKIP = "Skip"
 
 class ConfirmationStatus(str, Enum):
-    YES_BAD_ENTRY = "yes but bad entry poing(too tight)"
-    YES_CLOSED_EARLY = "yes but closed too early - Fear"
-    NO = "No"
-    YES = "Yes"
-    YES_LATE_ENTRY = "Yes but late entry"
+    S1_CLEAN = "S1: Sí - ejecución limpia"
+    S2_EARLY = "S2: Sí, pero entrada muy estrecha/temprana"
+    S3_LATE = "S3: Sí, pero entrada tardía (persiguió precio)"
+    S4_FEAR_CLOSE = "S4: Sí, pero cerró antes de tiempo (miedo)"
+    S5_MOVED_SLTP = "S5: Sí, pero movió SL/TP después de entrar"
+    S6_FEAR_NO_ENTRY = "S6: No - setup válido, nunca entró (miedo)"
+    S7_REVENGE_FORCED = "S7: No - forzó entrada pese a gate fallido (revenge)"
     SKIP = "Skip"
 
 class ConfirmationParams(str, Enum):
@@ -207,6 +209,30 @@ class TacticalAudit(BaseModel):
     # Text blocks
     lesson_learned: Optional[str] = None
     visual_lesson_path: Optional[str] = None
+
+    # Motor B (Gates)
+    g1_trend_15m: Optional[bool] = False
+    g2_fractal_trend: Optional[bool] = False
+    g3_limit_order: Optional[bool] = False
+    g4_breathing: Optional[bool] = False
+    g5_manual_cooldown: Optional[bool] = False
+    g6_sl_validated: Optional[bool] = False
+    g7_tp_validated: Optional[bool] = False
+
+    # Motor B (Confirmations)
+    c1_kl_support: Optional[bool] = False
+    c2_fractal_std: Optional[bool] = False
+    c3_fractal_1m: Optional[bool] = False
+    c4_fractal_1h: Optional[bool] = False
+    c5_kl_target: Optional[bool] = False
+    c6_liquidity: Optional[bool] = False
+    c7_retracement: Optional[bool] = False
+    c8_convergence_15m: Optional[bool] = False
+
+    # Motor B (Metrics)
+    gates_failed: Optional[int] = None
+    confirmations_count: Optional[int] = None
+    mfe_potencial_estimado: Optional[float] = None
 
     # Automated fields
     trade_decision: Optional[str] = None

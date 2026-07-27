@@ -65,21 +65,12 @@ class TacticalAnalysis(BaseModel):
     def calculate_derived_tactics(self) -> 'TacticalAnalysis':
         if self.calc_edge == 0.0:
             self.tactical_classification = TacticalClassification.NA
-            
-        import math
-        import os
-        
-        scaling_factor = float(os.getenv("TACTICAL_SCALING_FACTOR", 0.2833))
-        no_trade_exponent = float(os.getenv("NO_TRADE_BASE_EXPONENT", 1.54))
-        
-        e_long = math.exp(self.calc_edge * scaling_factor)
-        e_short = math.exp(-self.calc_edge * scaling_factor)
-        e_no_trade = math.exp(no_trade_exponent)
-        
-        total = e_long + e_short + e_no_trade
-        self.long_prob = round(e_long / total, 3)
-        self.short_prob = round(e_short / total, 3)
-        self.no_trade_prob = round(1.0 - self.long_prob - self.short_prob, 3)
+
+        from core.math_engine import calculate_probabilities
+        probs = calculate_probabilities(self.calc_edge)
+        self.long_prob = float(probs.long_prob)
+        self.short_prob = float(probs.short_prob)
+        self.no_trade_prob = float(probs.no_trade_prob)
 
         return self
 

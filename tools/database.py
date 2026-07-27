@@ -147,6 +147,31 @@ class TacticalAudit(Base):
     entry_time: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
     exit_time: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
 
+    # Gates
+    g1_trend_15m: Mapped[bool] = mapped_column(Boolean, default=False)
+    g2_fractal_trend: Mapped[bool] = mapped_column(Boolean, default=False)
+    g3_limit_order: Mapped[bool] = mapped_column(Boolean, default=False)
+    g4_breathing: Mapped[bool] = mapped_column(Boolean, default=False)
+    g5_manual_cooldown: Mapped[bool] = mapped_column(Boolean, default=False)
+    g6_sl_validated: Mapped[bool] = mapped_column(Boolean, default=False)
+    g7_tp_validated: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Confirmations
+    c1_kl_support: Mapped[bool] = mapped_column(Boolean, default=False)
+    c2_fractal_std: Mapped[bool] = mapped_column(Boolean, default=False)
+    c3_fractal_1m: Mapped[bool] = mapped_column(Boolean, default=False)
+    c4_fractal_1h: Mapped[bool] = mapped_column(Boolean, default=False)
+    c5_kl_target: Mapped[bool] = mapped_column(Boolean, default=False)
+    c6_liquidity: Mapped[bool] = mapped_column(Boolean, default=False)
+    c7_retracement: Mapped[bool] = mapped_column(Boolean, default=False)
+    c8_convergence_15m: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Metrics
+    gates_failed: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    confirmations_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    mfe_potencial_estimado: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
+
+
     # Categorical data
     tier_setup: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     market_state: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -255,6 +280,22 @@ def init_db(db_url: str = "sqlite:///.data/flight_account_001_xauusd.db"):
                 conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN confirmation_5m_15m VARCHAR"))
             if 'followed_plan' not in columns:
                 conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN followed_plan VARCHAR"))
+            
+            # Motor B Additions
+            for gate in ['g1_trend_15m', 'g2_fractal_trend', 'g3_limit_order', 'g4_breathing', 'g5_manual_cooldown', 'g6_sl_validated', 'g7_tp_validated']:
+                if gate not in columns:
+                    conn.execute(text(f"ALTER TABLE tactical_audit ADD COLUMN {gate} BOOLEAN DEFAULT 0"))
+            
+            for conf in ['c1_kl_support', 'c2_fractal_std', 'c3_fractal_1m', 'c4_fractal_1h', 'c5_kl_target', 'c6_liquidity', 'c7_retracement', 'c8_convergence_15m']:
+                if conf not in columns:
+                    conn.execute(text(f"ALTER TABLE tactical_audit ADD COLUMN {conf} BOOLEAN DEFAULT 0"))
+            
+            if 'gates_failed' not in columns:
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN gates_failed INTEGER"))
+            if 'confirmations_count' not in columns:
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN confirmations_count INTEGER"))
+            if 'mfe_potencial_estimado' not in columns:
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN mfe_potencial_estimado NUMERIC"))
 
         # Migrate EfficiencyAudit table
         if "efficiency_audit" in inspector.get_table_names():

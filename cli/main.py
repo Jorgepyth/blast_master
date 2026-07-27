@@ -5,6 +5,8 @@ import subprocess
 import os
 import signal
 import logging
+import shutil
+from pathlib import Path
 
 from typing import Optional
 from decimal import Decimal, getcontext
@@ -487,6 +489,40 @@ def format_indented_block(text_value, indent_spaces=11, first_line_flush=True, w
     else:
         return prefix + lines[0] + "".join(f"\n{prefix}{line}" for line in lines[1:])
 
+def auto_fetch_tradingview_screenshot(asset: str) -> Optional[str]:
+    """
+    Escanea la carpeta Downloads, filtra por el ticker del activo,
+    selecciona el archivo más reciente, lo mueve a staging y retorna el nombre.
+    """
+    downloads_dir = Path("/mnt/c/Users/jcifu/Downloads")
+    staging_dir = Path(os.getcwd()) / ".assets" / "staging"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+
+    # Normalización de Ticker (ej. XAUUSD asimila XAUUSDT.P)
+    base_ticker = asset.upper().replace("/", "").replace("USDT", "USD")
+    if "XAU" in base_ticker: base_ticker = "XAUUSD"
+    if "BTC" in base_ticker: base_ticker = "BTC"
+
+    # Filtro Lexical y de Extensión
+    search_patterns = [f"*{base_ticker}*.png", f"*{base_ticker}*.jpg"]
+    possible_files = []
+    for pattern in search_patterns:
+        possible_files.extend(list(downloads_dir.glob(pattern)))
+
+    if not possible_files:
+        return None
+
+    # Filtro Temporal: El más reciente es el índice 0
+    possible_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    target_file = possible_files[0]
+
+    destination = staging_dir / target_file.name
+    try:
+        shutil.move(str(target_file), str(destination))
+        return target_file.name
+    except Exception:
+        return None
+
 def handle_visual_lesson_assignment(trade_id: str, asset: str, current_path: Optional[str] = "nan", suffix: str = "_VL") -> Optional[str]:
     import os
     import shutil
@@ -508,6 +544,8 @@ def handle_visual_lesson_assignment(trade_id: str, asset: str, current_path: Opt
         choices = []
         if current_path and current_path != "nan":
             choices.append(Choice("keep", name=f"[ Keep Current File: {current_path} ]"))
+            
+        choices.append(Choice("auto_fetch", name=f"[ 🔄 Auto-Fetch recent {asset} screenshot from Downloads ]"))
             
         for f in files:
             choices.append(Choice(f, name=f))
@@ -570,6 +608,14 @@ def handle_visual_lesson_assignment(trade_id: str, asset: str, current_path: Opt
         if selected == "keep":
             return current_path
             
+        if selected == "auto_fetch":
+            fetched_file = auto_fetch_tradingview_screenshot(asset)
+            if fetched_file:
+                print(f"\n[+] Successfully fetched and moved: {fetched_file}")
+            else:
+                print(f"\n[-] No recent screenshots found for {asset} in Downloads.")
+            continue
+
         if selected == "skip":
             return "nan"
             
@@ -1022,6 +1068,73 @@ def flow_review_analysis():
             return str(val)
 
     def show_unified_detail(selected_id, raw_conn):
+        # ── Visual Helper Functions ──
+        def render_bar(value, max_val, width=20, fill_char="█", empty_char="░"):
+            if max_val <= 0 or value is None:
+                return empty_char * width
+            ratio = min(max(float(value) / float(max_val), 0.0), 1.0)
+            filled = int(ratio * width)
+            return fill_char * filled + empty_char * (width - filled)
+
+        def render_scale_bar(value, max_val=5, width=10):
+            if value is None:
+                return "░" * width + "  -/5"
+            v = int(value)
+            return render_bar(v, max_val, width) + f"  {v}/{max_val}"
+
+        def render_prob_bar(probability, width=28):
+            if probability is None:
+                return "░" * width + "   -.-%"
+            pct = float(probability) * 100
+            return render_bar(probability, 1.0, width) + f"  {pct:5.1f}%"
+
+        def render_edge_gauge(edge_val, width=44):
+            e = float(edge_val)
+            norm = (e + 1.0) / 2.0
+            pos = int(norm * (width - 1))
+            pos = max(0, min(pos, width - 1))
+            mark_low = int((-0.26 + 1.0) / 2.0 * (width - 1))
+            mark_high = int((0.26 + 1.0) / 2.0 * (width - 1))
+            gauge = list("─" * width)
+            gauge[mark_low] = "┊"
+            gauge[mark_high] = "┊"
+            gauge[width // 2] = "┃"
+            gauge[pos] = "●"
+            label = f"  [{'+' if e >= 0 else ''}{e:.2f}]"
+            return "".join(gauge) + label
+
+        GATE_LABELS = {
+            "g1": "15m Trend Alignment",
+            "g2": "Fractal Trend Confirmed",
+            "g3": "Limit Order Placed",
+            "g4": "Breathing Protocol Executed",
+            "g5": "Manual Cooldown (5-min wait)",
+            "g6": "Stop-Loss Price Validated",
+            "g7": "Take-Profit Price Validated"
+        }
+
+        GATE_FIELDS = [
+            "g1_trend_15m", "g2_fractal_trend", "g3_limit_order", "g4_breathing",
+            "g5_manual_cooldown", "g6_sl_validated", "g7_tp_validated"
+        ]
+
+        CONF_LABELS = {
+            "c1": "KL as Support/Resistance",
+            "c2": "Fractal Std (5-10-15m)",
+            "c3": "Fractal 1M",
+            "c4": "Fractal 1H (Cont/Inflection)",
+            "c5": "KL as Target",
+            "c6": "Liquidity Grabbed",
+            "c7": "Retracement 0.4-0.6",
+            "c8": "15M Convergence"
+        }
+
+        CONF_FIELDS = [
+            "c1_kl_support", "c2_fractal_std", "c3_fractal_1m", "c4_fractal_1h",
+            "c5_kl_target", "c6_liquidity", "c7_retracement", "c8_convergence_15m"
+        ]
+
+        # ── Extended Detail Query ──
         detail_query = """
         SELECT u.id, u.asset, u.market_bias, u.calc_edge, u.created_at, u.updated_at, u.edge_description, u.trade_status,
                u.p4_hierarchy, u.p1_timeframe, u.p1_type, u.nodes_l1, u.nodes_l2, u.tactical_classification,
@@ -1035,6 +1148,12 @@ def flow_review_analysis():
                t.closing_price, t.could_hit_tp, t.take_profit, t.stop_loss, t.pnl_and_cost,
                t.mae_adverse, t.captured_mae, t.mfe_favorable, t.notional_size, t.capital_at_risk,
                t.lesson_learned as t_lesson, t.session, t.visual_lesson_path, t.confirmation_5m_15m, t.confirmation_params,
+               t.gates_failed, t.confirmations_count, t.mfe_potencial_estimado,
+               t.g1_trend_15m, t.g2_fractal_trend, t.g3_limit_order, t.g4_breathing,
+               t.g5_manual_cooldown, t.g6_sl_validated, t.g7_tp_validated,
+               t.c1_kl_support, t.c2_fractal_std, t.c3_fractal_1m, t.c4_fractal_1h,
+               t.c5_kl_target, t.c6_liquidity, t.c7_retracement, t.c8_convergence_15m,
+               t.pre_trade_emotions, t.mid_trade_emotions, t.post_trade_emotions,
                al.department, al.layer_name, al.direction, al.strength, al.thesis
         FROM unified_department u
         LEFT JOIN efficiency_audit e ON u.id = e.id
@@ -1062,7 +1181,13 @@ def flow_review_analysis():
             "emotions", "behavioral_errors", "cognitive_patterns", "size", "entry_price",
             "closing_price", "could_hit_tp", "take_profit", "stop_loss", "pnl_and_cost",
             "mae_adverse", "captured_mae", "mfe_favorable", "notional_size", "capital_at_risk",
-            "t_lesson", "session", "visual_lesson_path", "confirmation_5m_15m", "confirmation_params"
+            "t_lesson", "session", "visual_lesson_path", "confirmation_5m_15m", "confirmation_params",
+            "gates_failed", "confirmations_count", "mfe_potencial_estimado",
+            "g1_trend_15m", "g2_fractal_trend", "g3_limit_order", "g4_breathing",
+            "g5_manual_cooldown", "g6_sl_validated", "g7_tp_validated",
+            "c1_kl_support", "c2_fractal_std", "c3_fractal_1m", "c4_fractal_1h",
+            "c5_kl_target", "c6_liquidity", "c7_retracement", "c8_convergence_15m",
+            "pre_trade_emotions", "mid_trade_emotions", "post_trade_emotions"
         ]
         
         record = {}
@@ -1188,133 +1313,202 @@ def flow_review_analysis():
         else:
             record["trade_duration"] = "N/A"
 
-        # Format Top Section (Unified Analysis Dashboard)
+        # ── Panel 1: Structural Vector Analysis ──
         struct_text = Text()
+
+        # Header row
         struct_text.append("Asset: ", style="dim")
         struct_text.append(f"{record['asset']}", style="bold white")
-        struct_text.append(" | ID: ", style="dim")
+        struct_text.append(" │ ID: ", style="dim")
         struct_text.append(f"{record['id'][:8]}", style="bold cyan")
         if record.get('is_backdated'):
             struct_text.append(" [BACKDATED]", style="bold yellow")
         else:
             struct_text.append(" [ORIGINAL]", style="bold green")
         created_str = to_local_display(record['created_at']) if isinstance(record['created_at'], datetime.datetime) else str(record['created_at'])
-        struct_text.append(" | ", style="dim")
-        struct_text.append(Text.from_markup(f"[dim cyan]{created_str}[/dim cyan]\n"))
-        
+        struct_text.append(" │ ", style="dim")
+        struct_text.append(Text.from_markup(f"[dim cyan]{created_str}[/dim cyan]\n\n"))
+
+        # Market Bias + Edge Gauge
         struct_text.append("Market Bias: ", style="dim")
         bias_style = "bold green" if record['market_bias'] == "Bullish" else "bold red" if record['market_bias'] == "Bearish" else "bold yellow"
-        struct_text.append(f"{record['market_bias']}\n\n", style=bias_style)
-        
-        struct_text.append("Directional Probabilities:\n", style="dim")
-        struct_text.append("  Long Prob:      ", style="dim")
-        struct_text.append(f"{record['long_prob'] * 100:.1f}%\n", style="green")
-        struct_text.append("  Short Prob:     ", style="dim")
-        struct_text.append(f"{record['short_prob'] * 100:.1f}%\n", style="red")
-        struct_text.append("  No-Trade Prob:  ", style="dim")
-        struct_text.append(f"{record['no_trade_prob'] * 100:.1f}%\n\n", style="yellow")
-        
-        for label, name in [("P0 (Macro)", "P0"), ("P2 (Struc)", "P2"), ("P3 (Trend)", "P3"), ("P4 (Hier )", "P4"), ("P1 (Timef)", "P1")]:
-            l = layers_dict.get(name)
-            struct_text.append(f"{label}: ", style="bold cyan" if name in ["P0", "P2", "P3"] else "bold magenta")
-            if l:
-                d = l["direction"]
-                s = l["strength"]
-                t = l["thesis"]
-                d_style = "bold green" if d == "Long" else "bold red" if d == "Short" else "bold yellow"
-                struct_text.append(f"{d.upper()}", style=d_style)
-                struct_text.append(" | ", style="dim")
-                s_style = "bold" if s == "Strong" else ""
-                struct_text.append(f"{s.upper()}\n", style=s_style)
-                
-                if name == "P4":
-                    struct_text.append("   Hierarchy:            ", style="dim italic")
-                    struct_text.append(f"{record['p4_hierarchy']}\n", style="white")
-                elif name == "P1":
-                    struct_text.append("   Timeframe:            ", style="dim italic")
-                    struct_text.append(f"{record['p1_timeframe']}\n", style="white")
-                    struct_text.append("   Fractal Type:         ", style="dim italic")
-                    struct_text.append(f"{record['p1_type']}\n", style="white")
-                    struct_text.append("   Nodes L1 / L2:        ", style="dim italic")
-                    struct_text.append(f"{record['nodes_l1']} / {record['nodes_l2']}\n", style="white")
-                    struct_text.append("   Classification:       ", style="dim italic")
-                    struct_text.append(f"{record['tactical_classification']}\n", style="cyan")
+        struct_text.append(f"{record['market_bias']}", style=bias_style)
+        edge_val = float(record['calc_edge'])
+        edge_style = "bold green" if edge_val >= 0.26 else "bold red" if edge_val <= -0.26 else "bold yellow"
+        struct_text.append("          I_CD (Edge): ", style="dim")
+        struct_text.append(f"{edge_val:+.4f}\n", style=edge_style)
+        gauge = render_edge_gauge(edge_val, width=44)
+        struct_text.append(f"                              {gauge}\n", style="dim")
+        struct_text.append("                          -1.0   -0.26  0  +0.26   +1.0\n\n", style="dim")
 
-                if t:
-                    if name == "P1":
-                        try:
-                            import json
-                            p1_data = json.loads(t) if t else {}
-                            if isinstance(p1_data, dict) and p1_data:
-                                struct_text.append("   Normal Fractal:   ", style="dim italic")
-                                struct_text.append(f"{p1_data.get('normal_fractal', 'None')}\n", style="dim cyan")
-                                struct_text.append("   Inverted Fractal: ", style="dim italic")
-                                struct_text.append(f"{p1_data.get('inverted_fractal', 'None')}\n", style="dim cyan")
-                            else:
-                                raise ValueError()
-                        except (Exception, ValueError):
-                            indented_thesis = format_indented_block(t, indent_spaces=11, first_line_flush=True, wrap_width=80)
-                            struct_text.append("   Thesis: ", style="dim italic")
-                            struct_text.append(f"{indented_thesis}\n", style="dim italic")
-                    else:
-                        indented_thesis = format_indented_block(t, indent_spaces=11, first_line_flush=True, wrap_width=80)
-                        struct_text.append("   Thesis: ", style="dim italic")
-                        struct_text.append(f"{indented_thesis}\n", style="dim italic")
+        # P-Layer Table
+        def get_dir_weight(d):
+            if d == "Long": return 1
+            if d == "Short": return -1
+            return 0
+        def get_str_weight(s):
+            if s == "Strong": return 2
+            if s == "Mid": return 1
+            return 0
+
+        p_weights = {"P0": 0.30, "P1": 0.25, "P2": 0.15, "P3": 0.10, "P4": 0.20}
+        formula_parts = []
+
+        struct_text.append("  Layer │ Direction │ Strength │ Score │ Thesis\n", style="bold white")
+        struct_text.append("  ──────┼───────────┼──────────┼───────┼─────────────────────────────\n", style="dim")
+
+        for layer_name in ["P0", "P2", "P3", "P4", "P1"]:
+            l = layers_dict.get(layer_name)
+            d_val = l["direction"] if l else "N/A"
+            s_val = l["strength"] if l else "N/A"
+            score = get_dir_weight(d_val) * get_str_weight(s_val) if l else 0
+            formula_parts.append((layer_name, p_weights.get(layer_name, 0), score))
+
+            d_style = "bold green" if d_val == "Long" else "bold red" if d_val == "Short" else "bold yellow"
+            thesis_raw = l.get("thesis", "") if l else ""
+            # Truncate thesis for table row
+            if thesis_raw:
+                if layer_name == "P1":
+                    try:
+                        p1_data = json.loads(thesis_raw) if thesis_raw else {}
+                        if isinstance(p1_data, dict):
+                            thesis_short = f"NF: ...{str(p1_data.get('normal_fractal', 'N/A'))[-18:]} │ IF: ...{str(p1_data.get('inverted_fractal', 'N/A'))[-18:]}"
+                        else:
+                            thesis_short = str(thesis_raw)[:45]
+                    except Exception:
+                        thesis_short = str(thesis_raw)[:45]
+                else:
+                    first_line = str(thesis_raw).split('\n')[0]
+                    thesis_short = first_line[:45] + ("…" if len(first_line) > 45 else "")
             else:
-                struct_text.append("N/A\n", style="dim")
-                
-        if record['edge_description']:
-            indented_desc = format_indented_block(record['edge_description'], indent_spaces=11, first_line_flush=False, wrap_width=80)
-            struct_text.append(f"\nEdge Description:\n{indented_desc}\n", style="italic white")
-            
-        struct_text.append("\nParametric Metrics:\n", style="bold cyan")
+                thesis_short = "N/A"
+
+            struct_text.append(f"  {layer_name:<5} │ ", style="dim")
+            struct_text.append(f"{d_val:<9}", style=d_style)
+            struct_text.append(f" │ {s_val:<8} │ {score:+4d}  │ ", style="dim")
+            struct_text.append(f"{thesis_short}\n", style="dim italic")
+
+        struct_text.append("\n")
+
+        # I_CD Formula Breakdown
+        numerator_str = " + ".join([f"{w:.2f}×{s:+d}" for name, w, s in formula_parts])
+        struct_text.append(f"  I_CD = ({numerator_str}) / 2.0 = {edge_val:+.4f}\n\n", style="dim")
+
+        # Directional Probabilities with bars
+        struct_text.append("  Directional Probabilities:\n", style="bold white")
+        long_p = float(record['long_prob'])
+        short_p = float(record['short_prob'])
+        no_trade_p = float(record['no_trade_prob'])
+        struct_text.append(f"  Long:      {render_prob_bar(long_p)}\n", style="green")
+        struct_text.append(f"  Short:     {render_prob_bar(short_p)}\n", style="red")
+        struct_text.append(f"  No-Trade:  {render_prob_bar(no_trade_p)}\n\n", style="yellow")
+
+        # Parametric Metrics
         evp_val = str(record['edge_validation_price']) if record['edge_validation_price'] is not None else "N/A"
         si_val = str(record['structural_invalidation']) if record['structural_invalidation'] is not None else "N/A"
-        struct_text.append("Edge Validation Price:   ", style="dim")
-        struct_text.append(f"{evp_val}\n", style="bold white")
-        struct_text.append("Structural Invalidation: ", style="dim")
+        struct_text.append("  Edge Validation Price: ", style="dim")
+        struct_text.append(f"{evp_val}", style="bold white")
+        struct_text.append("    Structural Invalidation: ", style="dim")
         struct_text.append(f"{si_val}\n", style="bold white")
+
+        # Tactical Classification Metadata
+        struct_text.append("  Hierarchy: ", style="dim")
+        struct_text.append(f"{record['p4_hierarchy']}", style="bold white")
+        struct_text.append("      Tactical Class: ", style="dim")
+        struct_text.append(f"{record['tactical_classification']}\n", style="bold cyan")
+        struct_text.append("  P1 Timeframe: ", style="dim")
+        struct_text.append(f"{record['p1_timeframe']}", style="bold white")
+        struct_text.append("           Fractal Type: ", style="dim")
+        struct_text.append(f"{record['p1_type']}\n", style="bold white")
+        struct_text.append("  Nodes L1 / L2: ", style="dim")
+        struct_text.append(f"{record['nodes_l1']} / {record['nodes_l2']}\n", style="bold white")
+
+        # Edge Description
+        if record['edge_description']:
+            indented_desc = format_indented_block(record['edge_description'], indent_spaces=4, first_line_flush=False, wrap_width=80)
+            struct_text.append(f"\n  Edge Description:\n{indented_desc}\n", style="italic white")
+
+        # Full thesis detail rendering (below table for deep review)
+        struct_text.append("\n")
+        for layer_name in ["P0", "P2", "P3", "P4", "P1"]:
+            l = layers_dict.get(layer_name)
+            if l and l.get("thesis"):
+                thesis_raw = l["thesis"]
+                if layer_name == "P1":
+                    try:
+                        p1_data = json.loads(thesis_raw) if thesis_raw else {}
+                        if isinstance(p1_data, dict) and p1_data:
+                            struct_text.append(f"  {layer_name} Detail:\n", style="bold cyan")
+                            struct_text.append(f"    Normal Fractal:   {p1_data.get('normal_fractal', 'None')}\n", style="dim cyan")
+                            struct_text.append(f"    Inverted Fractal: {p1_data.get('inverted_fractal', 'None')}\n", style="dim cyan")
+                        else:
+                            raise ValueError()
+                    except Exception:
+                        indented_thesis = format_indented_block(thesis_raw, indent_spaces=4, first_line_flush=False, wrap_width=80)
+                        struct_text.append(f"  {layer_name} Thesis:\n{indented_thesis}\n", style="dim italic")
+                else:
+                    indented_thesis = format_indented_block(thesis_raw, indent_spaces=4, first_line_flush=False, wrap_width=80)
+                    struct_text.append(f"  {layer_name} Thesis:\n{indented_thesis}\n", style="dim italic")
 
         dashboard = Panel(
             struct_text,
-            title=f"[white]Unified Analysis Dashboard: {record['asset']} - {to_local_display(record['created_at'], '%Y-%m-%d %H:%M:%S')}[/white]",
+            title=f"[white]Structural Vector Analysis: {record['asset']} - {to_local_display(record['created_at'], '%Y-%m-%d %H:%M:%S')}[/white]",
             border_style="bold blue",
             box=box.DOUBLE
         )
 
-        # Efficiency Audit View
+        # ── Panel 2: Efficiency Audit ──
         eff_text = Text()
         if record["bias_a"] is None:
             eff_text.append("\n  [ Pending Audit ]\n\n", style="bold yellow")
         else:
-            eff_text.append("Bias A (Initial): ", style="dim")
-            eff_text.append(f"{record['bias_a']}\n", style="bold white")
-            eff_text.append("Eff Timeframe:    ", style="dim")
-            eff_text.append(f"{record['efficiency_timeframe']}\n", style="bold white")
-            eff_text.append("Real Bias B:      ", style="dim")
-            eff_text.append(Text.from_markup(f"{format_row_value(record['real_bias_b'], is_bias=True)}\n"))
-            eff_text.append("Resolution Type:  ", style="dim")
+            bias_a_val = str(record['bias_a'])
+            bias_b_val = str(record['real_bias_b']) if record['real_bias_b'] else "Pending"
+            res_type = str(record['resolution_type']) if record['resolution_type'] else "Open"
+
+            # Bias Flow Visualization
+            is_confirmed = "Confirmed" in res_type
+            is_invalidated = "Invalidated" in res_type
+            flow_symbol = "[bold green]✓[/bold green]" if is_confirmed else "[bold red]✗[/bold red]" if is_invalidated else "[bold yellow]◌[/bold yellow]"
+            eff_text.append("  Bias Flow:   ", style="dim")
+            eff_text.append(f"{bias_a_val}", style="bold white")
+            eff_text.append("  ─────→  ", style="dim")
+            eff_text.append(f"{bias_b_val}", style="bold white")
+            eff_text.append("          ")
+            eff_text.append(Text.from_markup(f"{flow_symbol} "))
+            eff_text.append(Text.from_markup(f"{format_row_value(res_type, is_bias=True)}\n"))
+            eff_text.append("               (A)                (B)\n\n", style="dim")
+
+            eff_text.append("  Resolution Type:       ", style="dim")
             eff_text.append(Text.from_markup(f"{format_row_value(record['resolution_type'], is_bias=True)}\n"))
-            eff_text.append("Structural Res:   ", style="dim")
+            eff_text.append("  Structural Resolution: ", style="dim")
             eff_text.append(f"{record['structural_resolution']}\n", style="bold white")
-            eff_text.append("Failure Reason:   ", style="dim")
-            eff_text.append(f"{record['failure_reason']}\n", style="bold white")
-            eff_text.append("Compliance:       ", style="dim")
-            eff_text.append(f"{record['specific_bias_compliance']}\n", style="bold white")
-            eff_text.append("Regime Rate:      ", style="dim")
-            eff_text.append(f"{record['false_regime_rate']}\n", style="bold white")
+            eff_text.append("  Efficiency Timeframe:  ", style="dim")
+            eff_text.append(f"{record['efficiency_timeframe']}\n", style="bold white")
+            eff_text.append("  Failure Reason:        ", style="dim")
+            eff_text.append(f"{record['failure_reason']}\n\n", style="bold white")
+
+            eff_text.append("  ── Auto-Calculated Metrics ──\n", style="bold cyan")
+            eff_text.append("  Bias Compliance:  ", style="dim")
+            comp_style = "bold green" if record['specific_bias_compliance'] == "Valid" else "bold red"
+            eff_text.append(f"{record['specific_bias_compliance']}", style=comp_style)
+            eff_text.append("        Regime Rate: ", style="dim")
+            rr_val = str(record['false_regime_rate'])
+            rr_style = "bold green" if "True Positive" in rr_val or "True Negative" in rr_val else "bold red" if "False" in rr_val else "bold yellow"
+            eff_text.append(f"{rr_val}\n", style=rr_style)
+
             if record['e_lesson']:
-                indented_lesson = format_indented_block(record['e_lesson'], indent_spaces=11, first_line_flush=False, wrap_width=80)
-                eff_text.append(f"\nLesson Learned:\n{indented_lesson}\n", style="italic white")
-                
+                indented_lesson = format_indented_block(record['e_lesson'], indent_spaces=4, first_line_flush=False, wrap_width=80)
+                eff_text.append(f"\n  Lesson Learned:\n{indented_lesson}\n", style="italic white")
+
         eff_panel = Panel(
             eff_text,
-            title="[bold cyan]Step 2/3: Efficiency Audit View[/bold cyan]",
+            title="[bold cyan]Efficiency Audit[/bold cyan]",
             border_style="cyan",
             box=box.ROUNDED
         )
 
-        # Tactical Audit View
+        # ── Panel 3: Tactical Execution ──
         tact_text = Text()
         if record["compliance"] is None:
             tact_text.append("\n  [ Pending Audit ]\n\n", style="bold yellow")
@@ -1327,91 +1521,156 @@ def flow_review_analysis():
                 except (ValueError, TypeError):
                     return str(val)
 
-            tact_text.append("Compliance:       ", style="dim")
-            tact_text.append(Text.from_markup(f"{format_row_value(record['compliance'], is_compliance=True)}\n"))
-            tact_text.append("Trade Status:     ", style="dim")
-            tact_text.append(Text.from_markup(f"{format_row_value(record['trade_status'], is_status=True)}\n"))
-            
+            # Header row
+            td = record.get("trade_decision", "N/A")
+            td_style = "bold green" if td == "Long" else "bold red" if td == "Short" else "bold white"
+            tact_text.append("  Decision: ", style="dim")
+            tact_text.append(f"{td}", style=td_style)
+            tact_text.append("    │  Compliance: ", style="dim")
+            tact_text.append(Text.from_markup(f"{format_row_value(record['compliance'], is_compliance=True)}"))
+            tact_text.append("    │  Status: ", style="dim")
+            tact_text.append(Text.from_markup(f"{format_row_value(record['trade_status'], is_status=True)}\n\n"))
+
+            # Trade Timing
+            tact_text.append("  ── Trade Timing ──\n", style="bold white")
             entry_str = to_local_display(record['entry_time']) if isinstance(record['entry_time'], datetime.datetime) else str(record['entry_time'])
             exit_str = to_local_display(record['exit_time']) if isinstance(record['exit_time'], datetime.datetime) else str(record['exit_time'])
-            tact_text.append("Entry Time:       ", style="dim")
-            tact_text.append(Text.from_markup(f"[dim cyan]{entry_str}[/dim cyan]\n"))
-            tact_text.append("Exit Time:        ", style="dim")
-            tact_text.append(Text.from_markup(f"[dim cyan]{exit_str}[/dim cyan]\n"))
-            tact_text.append("Duration:         ", style="dim")
-            tact_text.append(f"{record['trade_duration']}\n", style="bold white")
-            tact_text.append("Session:          ", style="dim")
-            tact_text.append(f"{record['session']}\n\n", style="bold white")
-            
-            tact_text.append("Setup & Context Details:\n", style="bold white")
-            tact_text.append(f"  Tier Setup:     {record['tier_setup']}\n", style="dim")
-            tact_text.append(f"  Market State:   {record['market_state']}\n", style="dim")
-            tact_text.append(f"  Setup Type:     {record['setup_type']}\n", style="dim")
-            tact_text.append(f"  Exit Type:      {record['exit_type']}\n", style="dim")
-            tact_text.append(f"  HTF Trend:      {record['htf_trend_context']}\n", style="dim")
-            tact_text.append(f"  LTF Trend:      {record['ltf_trend_context']}\n", style="dim")
-            tact_text.append("  5m/15m Conf:    ", style="dim")
-            tact_text.append(f"{record.get('confirmation_5m_15m')}\n", style="bold white")
-            tact_text.append(f"  Confirmation:   {record['confirmation_status']}\n", style="dim")
-            tact_text.append("  Followed Plan:  ", style="dim")
-            tact_text.append(f"{record.get('followed_plan')}\n\n", style="bold white")
+            tact_text.append("  Entry: ", style="dim")
+            tact_text.append(Text.from_markup(f"[dim cyan]{entry_str}[/dim cyan]"))
+            tact_text.append("    Exit: ", style="dim")
+            tact_text.append(Text.from_markup(f"[dim cyan]{exit_str}[/dim cyan]"))
+            tact_text.append(f"    Duration: {record['trade_duration']}\n", style="dim")
+            tact_text.append(f"  Session: {record['session']}\n\n", style="dim")
 
-            tact_text.append("Financial & Execution Metrics:\n", style="bold white")
-            tact_text.append(f"  Size:           {record['size']}\n", style="dim")
-            tact_text.append(f"  Entry Price:    {record['entry_price']}\n", style="dim")
-            tact_text.append(f"  Closing Price:  {record['closing_price']}\n", style="dim")
-            tact_text.append(f"  Stop Loss:      {record['stop_loss']}\n", style="dim")
-            tact_text.append(f"  Take Profit:    {record['take_profit']}\n", style="dim")
-            tact_text.append(f"  Could Hit TP:   {record['could_hit_tp']}\n", style="dim")
-            tact_text.append(f"  Notional (USD): {fmt_f(record['notional_size_usd'])}\n", style="dim")
-            tact_text.append(f"  Risk (USD):     {fmt_f(record['risk_usd'])}\n", style="dim")
-            tact_text.append(f"  Capital Risk:   {fmt_f(record['capital_at_risk'])}\n", style="dim")
-            
+            # Position Sizing
+            tact_text.append("  ── Position Sizing ──\n", style="bold white")
+            tact_text.append(f"  Size: {record['size']}          Entry Price: {record['entry_price']}     Closing Price: {record['closing_price']}\n", style="dim")
+            tact_text.append(f"  Stop Loss: {record['stop_loss']}    Take Profit: {record['take_profit']}    Could Hit TP: {record['could_hit_tp']}\n\n", style="dim")
+
+            # Risk Metrics
+            tact_text.append("  ── Risk Metrics ──\n", style="bold white")
+            tact_text.append(f"  Notional (USD): ${fmt_f(record['notional_size_usd'])}        Risk (USD): ${fmt_f(record['risk_usd'])}\n", style="dim")
+            tact_text.append(f"  Capital @ Risk: ${fmt_f(record['capital_at_risk'])}        ", style="dim")
+            tact_text.append(f"Dist → SL: {fmt_f(record.get('dist_to_sl'), 4)}    Dist → TP: {fmt_f(record.get('dist_to_tp'), 4)}\n\n", style="dim")
+
+            # P&L
+            tact_text.append("  ── P&L ──\n", style="bold white")
             pnl_style = "bold green" if record['pnl'] is not None and record['pnl'] >= 0 else "bold red"
-            pnl_val = fmt_f(record['pnl'], 4)
-            tact_text.append("  PnL:            ", style="dim")
-            tact_text.append(Text.from_markup(f"[{pnl_style}]{pnl_val}[/{pnl_style}]\n"))
-            
-            pnl_c_val = fmt_f(record['pnl_and_cost'], 4)
-            tact_text.append("  PnL & Cost:     ", style="dim")
-            tact_text.append(Text.from_markup(f"[{pnl_style}]{pnl_c_val}[/{pnl_style}]\n"))
-            tact_text.append(f"  Cost:           {fmt_f(record['cost'], 4)}\n", style="dim")
-            
+            tact_text.append("  PnL: ", style="dim")
+            tact_text.append(Text.from_markup(f"[{pnl_style}]${fmt_f(record['pnl'], 4)}[/{pnl_style}]"))
+            tact_text.append(f"       Cost: ${fmt_f(record['cost'], 4)}       ", style="dim")
+            tact_text.append("PnL & Cost: ", style="dim")
+            tact_text.append(Text.from_markup(f"[{pnl_style}]${fmt_f(record['pnl_and_cost'], 4)}[/{pnl_style}]\n"))
             r_mult_style = "bold green" if record['r_multiple'] is not None and record['r_multiple'] >= 0 else "bold red"
-            tact_text.append("  R-Multiple:     ", style="dim")
-            tact_text.append(Text.from_markup(f"[{r_mult_style}]{fmt_f(record['r_multiple'])}[/{r_mult_style}]\n"))
-            tact_text.append(f"  R/R Ratio:      {fmt_f(record['r_r'])}\n", style="dim")
-            
-            tact_text.append(f"  MAE / MFE:      {record['mae']} / {record['mfe']}\n", style="dim")
-            tact_text.append(f"  Captured MAE:   {fmt_f(record['captured_mae'])}\n", style="dim")
-            tact_text.append(f"  Captured MFE:   {fmt_f(record['captured_mfe'])}\n\n", style="dim")
-            
-            tact_text.append("Execution Framework Context:\n", style="bold white")
-            tact_text.append("  Followed Plan:        ", style="dim")
-            tact_text.append(f"{record['followed_plan']}\n", style="white")
-            tact_text.append("  5m/15m Conf:          ", style="dim")
-            tact_text.append(f"{record['confirmation_5m_15m']}\n", style="white")
-            
-            raw_conf = record.get("confirmation_params")
-            try:
-                conf_list = json.loads(raw_conf) if isinstance(raw_conf, str) else (raw_conf or [])
-                conf_str = ", ".join([str(x).replace("ConfirmationParams.", "") for x in conf_list if x]) if conf_list else "N/A"
-            except Exception: conf_str = "Pending / N/A"
-            tact_text.append(f"  Conf. Params:         {format_indented_block(conf_str, indent_spaces=24, first_line_flush=True, wrap_width=60)}\n\n", style="white")
+            tact_text.append("  R:R Ratio: ", style="dim")
+            tact_text.append(f"{fmt_f(record['r_r'])}", style="bold white")
+            tact_text.append("       R-Multiple: ", style="dim")
+            tact_text.append(Text.from_markup(f"[{r_mult_style}]{fmt_f(record['r_multiple'])}[/{r_mult_style}]\n\n"))
 
-            tact_text.append("Psychological & Cognitive Profile:\n", style="bold white")
-            tact_text.append("  Anxiety Level:        ", style="dim")
-            tact_text.append(f"{record['anxiety_level']} / 5\n", style="white")
-            tact_text.append("  Impatience Level:     ", style="dim")
-            tact_text.append(f"{record['impatience_level']} / 5\n", style="white")
-            tact_text.append("  Mental Clarity Level: ", style="dim")
-            tact_text.append(f"{record['mental_clarity_level']} / 5\n", style="white")
-            tact_text.append("  Primary Emotion:      ", style="dim")
-            tact_text.append(f"{record['primary_emotion']}\n", style="white")
-            
+            # Efficiency Capture Bars
+            tact_text.append("  ── Efficiency Capture ──\n", style="bold white")
+            mfe_raw = float(record['mfe']) if record.get('mfe') else 0.0
+            cap_mfe_val = float(record['captured_mfe']) if record.get('captured_mfe') else 0.0
+            cap_mae_val = float(record['captured_mae']) if record.get('captured_mae') else 0.0
+            cap_mfe_pct = cap_mfe_val * 100 if cap_mfe_val <= 1.0 else cap_mfe_val
+            cap_mae_pct = cap_mae_val * 100 if cap_mae_val <= 1.0 else cap_mae_val
+            tact_text.append(f"  MFE Capture:  {render_bar(cap_mfe_val, 1.0, 28)}  {cap_mfe_pct:5.1f}% of {mfe_raw:.2f}R\n", style="green")
+            tact_text.append(f"  MAE Exposure: {render_bar(cap_mae_val, 1.0, 28)}  {cap_mae_pct:5.1f}%\n", style="red")
+            tact_text.append(f"  Raw MAE: {record.get('mae', 'N/A')}R     Raw MFE: {record.get('mfe', 'N/A')}R\n", style="dim")
+            tact_text.append(f"  Captured MAE: {fmt_f(record.get('captured_mae'))}  Captured MFE: {fmt_f(record.get('captured_mfe'))}\n\n", style="dim")
+
+            # Setup Context
+            tact_text.append("  ── Setup Context ──\n", style="bold white")
+            tact_text.append(f"  Tier: {record['tier_setup']} │ Market: {record['market_state']} │ Setup: {record['setup_type']} │ Exit: {record['exit_type']}\n", style="dim")
+            tact_text.append(f"  HTF Trend: {record['htf_trend_context']}       LTF Trend: {record['ltf_trend_context']}\n", style="dim")
+            tact_text.append(f"  Confirmation: {record['confirmation_status']}\n", style="dim")
+            tact_text.append(f"  5m/15m Confirmation: {record.get('confirmation_5m_15m', 'N/A')}\n", style="dim")
+            tact_text.append("  Followed Plan: ", style="dim")
+            tact_text.append(f"{record.get('followed_plan')}\n", style="bold white")
+
+        tact_panel = Panel(
+            tact_text,
+            title="[bold magenta]Tactical Execution[/bold magenta]",
+            border_style="magenta",
+            box=box.ROUNDED
+        )
+
+        # ── Panel 4: Execution Framework (Motor B) ──
+        fw_text = Text()
+        if record["compliance"] is None:
+            fw_text.append("\n  [ Pending Audit ]\n\n", style="bold yellow")
+        else:
+            gates_failed_val = record.get("gates_failed", 0) or 0
+            confs_count_val = record.get("confirmations_count", 0) or 0
+
+            gf_style = "bold red" if gates_failed_val > 0 else "bold green"
+            fw_text.append("  ── GATES (Pre-Entry Checklist) ──", style="bold white")
+            fw_text.append("                            Failed: ", style="dim")
+            fw_text.append(Text.from_markup(f"[{gf_style}]{gates_failed_val}[/{gf_style}]\n"))
+
+            for gate_key, gate_label in GATE_LABELS.items():
+                field_idx = int(gate_key[1]) - 1
+                field_name = GATE_FIELDS[field_idx]
+                passed = bool(record.get(field_name, False))
+                icon = "[bold green]✓[/bold green]" if passed else "[bold red]✗[/bold red]"
+                fw_text.append(Text.from_markup(f"  [{icon}] {gate_key.upper()}: {gate_label}\n"))
+
+            fw_text.append(f"\n  ── CONFIRMATIONS (Signal Quality) ──", style="bold white")
+            fw_text.append(f"                   Count: {confs_count_val}/8\n", style="dim")
+
+            # Render confirmations in 2 columns: c1-c4 left, c5-c8 right
+            for i in range(4):
+                left_key = f"c{i+1}"
+                right_key = f"c{i+5}"
+                left_field = CONF_FIELDS[i]
+                right_field = CONF_FIELDS[i + 4]
+                left_passed = bool(record.get(left_field, False))
+                right_passed = bool(record.get(right_field, False))
+                left_icon = "[bold green]✓[/bold green]" if left_passed else "[bold red]✗[/bold red]"
+                right_icon = "[bold green]✓[/bold green]" if right_passed else "[bold red]✗[/bold red]"
+                left_label = CONF_LABELS[left_key]
+                right_label = CONF_LABELS[right_key]
+                fw_text.append(Text.from_markup(f"  [{left_icon}] {left_key.upper()}: {left_label:<30}  [{right_icon}] {right_key.upper()}: {right_label}\n"))
+
+            # Confirmation Params
+            raw_cp = record.get("confirmation_params")
+            if raw_cp:
+                try:
+                    cp_list = json.loads(raw_cp) if isinstance(raw_cp, str) else (raw_cp or [])
+                    cp_str = ", ".join(str(x) for x in cp_list) if isinstance(cp_list, list) else str(cp_list)
+                except Exception:
+                    cp_str = str(raw_cp)
+                indented_cp = format_indented_block(cp_str, indent_spaces=4, first_line_flush=False, wrap_width=80)
+                fw_text.append(f"\n  Confirmation Parameters:\n{indented_cp}\n", style="dim")
+
+            mfe_pot = record.get("mfe_potencial_estimado")
+            if mfe_pot is not None:
+                fw_text.append("\n  MFE Potencial Estimado (S6): ", style="dim")
+                fw_text.append(f"{mfe_pot}R\n", style="bold yellow")
+
+        fw_panel = Panel(
+            fw_text,
+            title="[bold green]Execution Framework (Motor B)[/bold green]",
+            border_style="green",
+            box=box.ROUNDED
+        )
+
+        # ── Panel 5: Psychological & Cognitive Profile ──
+        psych_text = Text()
+        if record["compliance"] is None:
+            psych_text.append("\n  [ Pending Audit ]\n\n", style="bold yellow")
+        else:
+            psych_text.append("  Primary Emotion: ", style="dim")
+            psych_text.append(f"{record['primary_emotion']}\n\n", style="bold white")
+
+            psych_text.append(f"  Anxiety:      {render_scale_bar(record['anxiety_level'])}\n", style="red")
+            psych_text.append(f"  Impatience:   {render_scale_bar(record['impatience_level'])}\n", style="yellow")
+            psych_text.append(f"  Clarity:      {render_scale_bar(record['mental_clarity_level'])}\n\n", style="green")
+
+            # Emotion lists
             raw_emo = record.get("emotions")
             raw_be = record.get("behavioral_errors")
-            raw_cp = record.get("cognitive_patterns")
+            raw_cpat = record.get("cognitive_patterns")
             try:
                 emo_list = json.loads(raw_emo) if isinstance(raw_emo, str) else (raw_emo or [])
                 emo_str = ", ".join([str(x).replace("Emotions.", "") for x in emo_list if x]) if emo_list else "N/A"
@@ -1421,28 +1680,42 @@ def flow_review_analysis():
                 be_str = ", ".join([str(x).replace("BehavioralErrors.", "") for x in be_list if x]) if be_list else "N/A"
             except Exception: be_str = "N/A"
             try:
-                cp_list = json.loads(raw_cp) if isinstance(raw_cp, str) else (raw_cp or [])
-                cp_str = ", ".join([str(x).replace("CognitivePatterns.", "") for x in cp_list if x]) if cp_list else "N/A"
+                cp_list_parsed = json.loads(raw_cpat) if isinstance(raw_cpat, str) else (raw_cpat or [])
+                cp_str = ", ".join([str(x).replace("CognitivePatterns.", "") for x in cp_list_parsed if x]) if cp_list_parsed else "N/A"
             except Exception: cp_str = "N/A"
 
-            tact_text.append(f"  Emotions:             {format_indented_block(emo_str, indent_spaces=24, first_line_flush=True, wrap_width=60)}\n", style="white")
-            tact_text.append(f"  Behav. Errors:        {format_indented_block(be_str, indent_spaces=24, first_line_flush=True, wrap_width=60)}\n", style="white")
-            tact_text.append(f"  Cognitive Pat:        {format_indented_block(cp_str, indent_spaces=24, first_line_flush=True, wrap_width=60)}\n", style="white")
-            
+            psych_text.append(f"  Emotions:       {format_indented_block(emo_str, indent_spaces=18, first_line_flush=True, wrap_width=60)}\n", style="white")
+            psych_text.append(f"  Behav. Errors:  {format_indented_block(be_str, indent_spaces=18, first_line_flush=True, wrap_width=60)}\n", style="white")
+            psych_text.append(f"  Cognitive Pat.: {format_indented_block(cp_str, indent_spaces=18, first_line_flush=True, wrap_width=60)}\n", style="white")
+
+            # Emotional Timeline (NEW - previously hidden data)
+            pre_emo = record.get("pre_trade_emotions")
+            mid_emo = record.get("mid_trade_emotions")
+            post_emo = record.get("post_trade_emotions")
+            if pre_emo or mid_emo or post_emo:
+                psych_text.append("\n  ── Emotional Timeline ──\n", style="bold white")
+                if pre_emo:
+                    indented_pre = format_indented_block(str(pre_emo), indent_spaces=14, first_line_flush=True, wrap_width=70)
+                    psych_text.append(f"  Pre-Trade:  {indented_pre}\n", style="dim italic")
+                if mid_emo:
+                    indented_mid = format_indented_block(str(mid_emo), indent_spaces=14, first_line_flush=True, wrap_width=70)
+                    psych_text.append(f"  Mid-Trade:  {indented_mid}\n", style="dim italic")
+                if post_emo:
+                    indented_post = format_indented_block(str(post_emo), indent_spaces=14, first_line_flush=True, wrap_width=70)
+                    psych_text.append(f"  Post-Trade: {indented_post}\n", style="dim italic")
+
             if record['t_lesson']:
-                indented_lesson = format_indented_block(record['t_lesson'], indent_spaces=11, first_line_flush=False, wrap_width=80)
-                tact_text.append(f"\nLesson Learned:\n{indented_lesson}\n", style="italic white")
-                
+                indented_lesson = format_indented_block(record['t_lesson'], indent_spaces=4, first_line_flush=False, wrap_width=80)
+                psych_text.append(f"\n  Lesson Learned:\n{indented_lesson}\n", style="italic white")
+
             v_lesson = record.get("visual_lesson_path") or "None"
             if v_lesson == "nan": v_lesson = "None"
-            tact_text.append(f"\n  Visual Lesson:    {v_lesson}\n", style="dim cyan")
+            psych_text.append(f"\n  Visual Lesson: {v_lesson}\n", style="dim cyan")
 
-
-                
-        tact_panel = Panel(
-            tact_text,
-            title="[bold magenta]Step 3/3: Tactical Audit View[/bold magenta]",
-            border_style="magenta",
+        psych_panel = Panel(
+            psych_text,
+            title="[bold yellow]Psychological & Cognitive Profile[/bold yellow]",
+            border_style="yellow",
             box=box.ROUNDED
         )
 
@@ -1450,10 +1723,12 @@ def flow_review_analysis():
             console.clear(home=True)
         except TypeError:
             console.clear()
-            
+
         console.print(dashboard)
         console.print(eff_panel)
         console.print(tact_panel)
+        console.print(fw_panel)
+        console.print(psych_panel)
         action_prompt = inquirer.select(
             message="Select action (or Ctrl+F to open all linked image assets) >",
             choices=[
@@ -2523,94 +2798,230 @@ def flow_pending_audits():
                     break
                 else:
                     while True:
-                        htf_trend = session.prompt("htf_trend", get_enum_choice, "HTF Trend Context", HTFTrendContext)
-                        ltf_trend = session.prompt("ltf_trend", get_enum_choice, "LTF Trend Context", TrendContext)
-                        confirmation_5m_15m = session.prompt("confirmation_5m_15m", lambda: bind_pause(inquirer.select(
-                            message="5m_15m_confirmation >",
-                            choices=[Choice("yes", name="yes"), Choice("no", name="no")],
-                            pointer=">",
-                            qmark=""
-                        )).execute())
+                        # --- Auto-Heal Legacy Tactical State ---
+                        legacy_trigger_vals = [
+                            "Yes", "yes but bad entry point (too tight)", 
+                            "Yes but late entry", "yes but closed too early - Fear", "No"
+                        ]
+                        current_conf = session.state.get("conf_status") or session.state.get("confirmation_status")
+                        if isinstance(current_conf, str) and current_conf in legacy_trigger_vals:
+                            # Purgar claves tácticas legacy para forzar re-evaluación bajo Motor B
+                            for k in ["conf_status", "confirmation_status", "selected_gates", "selected_confs", "mfe_potencial_estimado", "gate_action", "htf_trend", "ltf_trend", "lesson_tact", "visual_lesson_path"]:
+                                session.state.pop(k, None)
+
                         sl = session.prompt("sl", get_mandatory_float, "Stop Loss")
                         entry_p = session.prompt("entry_p", get_mandatory_float, "Entry Price")
-                        conf_params = session.prompt("conf_params", get_multi_enum_choice, "Confirmation Params", ConfirmationParams)
                         size = session.prompt("size", get_mandatory_float, "Size")
                         tp = session.prompt("tp", get_mandatory_float, "Take Profit")
                         entry_time = session.prompt("entry_time", get_mandatory_datetime, "Entry Time")
-                        emotions = session.prompt("emotions", get_multi_enum_choice, "Emotions", Emotions)
-                        pre_trade_emotions = session.prompt("pre_trade_emotions", get_mandatory_text, "Pre Trade Emotions")
-                        p_emotion = session.prompt("p_emotion", get_enum_choice, "Primary Emotion", PrimaryEmotion)
-                        mental_clarity = session.prompt("mental_clarity", get_mandatory_int, "Mental Clarity Level", 1, 5)
-                        impatience = session.prompt("impatience", get_mandatory_int, "Impatience Level", 1, 5)
-                        anxiety = session.prompt("anxiety", get_mandatory_int, "Anxiety Level", 1, 5)
-                        mid_trade_emotions = session.prompt("mid_trade_emotions", get_mandatory_text, "Mid Trade Emotions")
-                        post_trade_emotions = session.prompt("post_trade_emotions", get_mandatory_text, "Post Trade Emotions")
-                        exit_time = session.prompt("exit_time", get_mandatory_datetime, "Exit Time")
-                        exit_type = session.prompt("exit_type", get_enum_choice, "Exit Type", ExitType)
-                        conf_status = session.prompt("conf_status", get_enum_choice, "Confirmation Status", ConfirmationStatus)
-                        close_p = session.prompt("close_p", get_mandatory_float, "Closing Price")
-                        
-                        def ask_could_hit_tp():
-                            return bind_pause(inquirer.select(
-                                message="Could hit TP? >",
-                                choices=[Choice("yes", name="yes"), Choice("no", name="no")],
-                                pointer=">",
-                                qmark="",
-                                keybindings={"skip": []}
-                            )).execute()
-                            
-                        could_hit_tp = session.prompt("could_hit_tp", ask_could_hit_tp)
-                        t_comp = session.prompt("t_comp", get_enum_choice, "Compliance State", ComplianceState)
-                        tier_setup = session.prompt("tier_setup", get_enum_choice, "Tier Setup", TierSetup)
-                        market_state = session.prompt("market_state", get_enum_choice, "Market State", MarketState)
-                        f_plan = session.prompt("f_plan", get_enum_choice, "Followed Plan", FollowedPlan)
-                        setup_t = session.prompt("setup_t", get_enum_choice, "Setup Type", SetupType)
-                        behav_errors = session.prompt("behav_errors", get_multi_enum_choice, "Behavioral Errors", BehavioralErrors)
-                        cog_patterns = session.prompt("cog_patterns", get_multi_enum_choice, "Cognitive Patterns", CognitivePatterns)
-                        mae = session.prompt("mae", get_mandatory_float, "MAE (0 <= MAE <= 10)", min_val=0, max_val=10)
-                        mfe = session.prompt("mfe", get_mandatory_float, "MFE (0 <= MFE <= 10)", min_val=0, max_val=10)
-                        cost = session.prompt("cost", get_mandatory_float, "Cost (Fees/Funding)")
-                        lesson_tact = session.prompt("lesson_tact", get_mandatory_text, "Tactical Lesson Learned", multiline=True)
-                        visual_path = session.prompt("visual_lesson_path", handle_visual_lesson_assignment, trade_id, payload.get("asset", "Unknown"))
 
-                        audit_tactical = TacticalAudit(
-                            tactical_id=trade_id,
-                            trade_status=t_status,
-                            htf_trend_context=htf_trend,
-                            ltf_trend_context=ltf_trend,
-                            confirmation_5m_15m=confirmation_5m_15m,
-                            stop_loss=sl,
-                            entry_price=entry_p,
-                            confirmation_params=conf_params,
-                            size=size,
-                            take_profit=tp,
-                            entry_time=entry_time,
-                            emotions=emotions,
-                            pre_trade_emotions=pre_trade_emotions,
-                            primary_emotion=p_emotion,
-                            mental_clarity_level=mental_clarity,
-                            impatience_level=impatience,
-                            anxiety_level=anxiety,
-                            mid_trade_emotions=mid_trade_emotions,
-                            post_trade_emotions=post_trade_emotions,
-                            exit_time=exit_time,
-                            exit_type=exit_type,
-                            confirmation_status=conf_status,
-                            closing_price=close_p,
-                            could_hit_tp=could_hit_tp,
-                            compliance=t_comp,
-                            tier_setup=tier_setup,
-                            market_state=market_state,
-                            followed_plan=f_plan,
-                            setup_type=setup_t,
-                            behavioral_errors=behav_errors,
-                            cognitive_patterns=cog_patterns,
-                            cost=cost,
-                            mae=mae,
-                            mfe=mfe,
-                            lesson_learned=lesson_tact,
-                            visual_lesson_path=visual_path
-                        )
+                        def ask_gates():
+                            choices = [
+                                Choice("g1", name="G1: P0 Trend 15m"),
+                                Choice("g2", name="G2: Trend Fractal (5m or 15m)"),
+                                Choice("g3", name="G3: Limit Order"),
+                                Choice("g4", name="G4: Breathing - Mindfulness"),
+                                Choice("g5", name="G5: Manual Cooldown"),
+                                Choice("g6", name="G6: SL Validated"),
+                                Choice("g7", name="G7: TP Validated")
+                            ]
+                            return bind_pause(inquirer.checkbox(message="Select fulfilled Gates >", choices=choices)).execute()
+                            
+                        selected_gates = session.prompt("selected_gates", ask_gates)
+                        gates_failed_cnt = 7 - len(selected_gates)
+                        
+                        g1_trend_15m = "g1" in selected_gates
+                        g2_fractal_trend = "g2" in selected_gates
+                        g3_limit_order = "g3" in selected_gates
+                        g4_breathing = "g4" in selected_gates
+                        g5_manual_cooldown = "g5" in selected_gates
+                        g6_sl_validated = "g6" in selected_gates
+                        g7_tp_validated = "g7" in selected_gates
+
+                        abort_trade = False
+                        if gates_failed_cnt > 0:
+                            gate_action = session.prompt("gate_action", lambda: bind_pause(inquirer.select(
+                                message="[GATES FAILED] Operación inválida estructuralmente:",
+                                choices=["Abortar Trade", "Forzar Entrada (Revenge)"]
+                            )).execute())
+                            if gate_action == "Abortar Trade":
+                                abort_trade = True
+                                t_status = next((c for c in TradeStatus if c.value == "Trade_no_taken"), TradeStatus.NO_TAKEN)
+                                session.state["t_status"] = t_status
+                        
+                        if abort_trade:
+                            t_comp = session.prompt("t_comp", get_enum_choice, "Compliance State", ComplianceState)
+                            htf_trend = session.prompt("htf_trend", get_enum_choice, "HTF Trend Context", HTFTrendContext)
+                            ltf_trend = session.prompt("ltf_trend", get_enum_choice, "LTF Trend Context", TrendContext)
+                            lesson_tact = session.prompt("lesson_tact", get_mandatory_text, "Tactical Lesson Learned", multiline=True)
+                            visual_path = session.prompt("visual_lesson_path", handle_visual_lesson_assignment, trade_id, payload.get("asset", "Unknown"))
+                            
+                            audit_tactical = TacticalAudit(
+                                tactical_id=trade_id,
+                                trade_status=t_status,
+                                compliance=t_comp,
+                                htf_trend_context=htf_trend,
+                                ltf_trend_context=ltf_trend,
+                                lesson_learned=lesson_tact,
+                                visual_lesson_path=visual_path,
+                                gates_failed=gates_failed_cnt,
+                                confirmations_count=0,
+                                stop_loss=0.0,
+                                entry_price=0.0,
+                                size=0.0,
+                                take_profit=0.0,
+                                cost=0.0,
+                                mae=0.0,
+                                mfe=0.0,
+                                g1_trend_15m=g1_trend_15m,
+                                g2_fractal_trend=g2_fractal_trend,
+                                g3_limit_order=g3_limit_order,
+                                g4_breathing=g4_breathing,
+                                g5_manual_cooldown=g5_manual_cooldown,
+                                g6_sl_validated=g6_sl_validated,
+                                g7_tp_validated=g7_tp_validated
+                            )
+                        else:
+                            if gates_failed_cnt == 0:
+                                def ask_confirmations():
+                                    choices = [
+                                        Choice("c1", name="C1: KL as Support/Resistance"),
+                                        Choice("c2", name="C2: Standard Fractal Confirmation (5-15m)"),
+                                        Choice("c3", name="C3: 1m Fractal Confirmation/Assistance"),
+                                        Choice("c4", name="C4: 1h Fractal Continuation or Inflection"),
+                                        Choice("c5", name="C5: KL as target"),
+                                        Choice("c6", name="C6: Liquidity grabbed or to be grabbed"),
+                                        Choice("c7", name="C7: 0.4-0.6 Retracement in P015m"),
+                                        Choice("c8", name="C8: Convergence with P015m")
+                                    ]
+                                    return bind_pause(inquirer.checkbox(message="Select fulfilled Confirmations >", choices=choices)).execute()
+                                
+                                selected_confs = session.prompt("selected_confs", ask_confirmations)
+                                conf_status = session.prompt("conf_status", lambda: bind_pause(inquirer.select(
+                                    message="Confirmation Status >",
+                                    choices=[c for c in ConfirmationStatus if c not in (ConfirmationStatus.S7_REVENGE_FORCED, ConfirmationStatus.SKIP)]
+                                )).execute())
+                                
+                                if conf_status == ConfirmationStatus.S6_FEAR_NO_ENTRY:
+                                    mfe_potencial = session.prompt("mfe_potencial_estimado", get_mandatory_float, "MFE Potencial Estimado")
+                                else:
+                                    mfe_potencial = None
+                            else:
+                                selected_confs = []
+                                conf_status = ConfirmationStatus.S7_REVENGE_FORCED
+                                mfe_potencial = None
+                                
+                            confirmations_count = len(selected_confs)
+                            c1_kl_support = "c1" in selected_confs
+                            c2_fractal_std = "c2" in selected_confs
+                            c3_fractal_1m = "c3" in selected_confs
+                            c4_fractal_1h = "c4" in selected_confs
+                            c5_kl_target = "c5" in selected_confs
+                            c6_liquidity = "c6" in selected_confs
+                            c7_retracement = "c7" in selected_confs
+                            c8_convergence_15m = "c8" in selected_confs
+
+                            if conf_status == ConfirmationStatus.S7_REVENGE_FORCED or gates_failed_cnt >= 3:
+                                tier_setup = TierSetup.F
+                            elif gates_failed_cnt >= 1:
+                                tier_setup = TierSetup.D
+                            elif confirmations_count >= 5:
+                                tier_setup = TierSetup.A
+                            elif confirmations_count >= 4:
+                                tier_setup = TierSetup.B
+                            else:
+                                tier_setup = TierSetup.C
+
+                            htf_trend = session.prompt("htf_trend", get_enum_choice, "HTF Trend Context", HTFTrendContext)
+                            ltf_trend = session.prompt("ltf_trend", get_enum_choice, "LTF Trend Context", TrendContext)
+                            emotions = session.prompt("emotions", get_multi_enum_choice, "Emotions", Emotions)
+                            pre_trade_emotions = session.prompt("pre_trade_emotions", get_mandatory_text, "Pre Trade Emotions")
+                            p_emotion = session.prompt("p_emotion", get_enum_choice, "Primary Emotion", PrimaryEmotion)
+                            mental_clarity = session.prompt("mental_clarity", get_mandatory_int, "Mental Clarity Level", 1, 5)
+                            impatience = session.prompt("impatience", get_mandatory_int, "Impatience Level", 1, 5)
+                            anxiety = session.prompt("anxiety", get_mandatory_int, "Anxiety Level", 1, 5)
+                            mid_trade_emotions = session.prompt("mid_trade_emotions", get_mandatory_text, "Mid Trade Emotions")
+                            post_trade_emotions = session.prompt("post_trade_emotions", get_mandatory_text, "Post Trade Emotions")
+                            exit_time = session.prompt("exit_time", get_mandatory_datetime, "Exit Time")
+                            exit_type = session.prompt("exit_type", get_enum_choice, "Exit Type", ExitType)
+                            close_p = session.prompt("close_p", get_mandatory_float, "Closing Price")
+                            
+                            def ask_could_hit_tp():
+                                return bind_pause(inquirer.select(
+                                    message="Could hit TP? >",
+                                    choices=[Choice("yes", name="yes"), Choice("no", name="no")],
+                                    pointer=">",
+                                    qmark="",
+                                    keybindings={"skip": []}
+                                )).execute()
+                                
+                            could_hit_tp = session.prompt("could_hit_tp", ask_could_hit_tp)
+                            t_comp = session.prompt("t_comp", get_enum_choice, "Compliance State", ComplianceState)
+                            market_state = session.prompt("market_state", get_enum_choice, "Market State", MarketState)
+                            f_plan = session.prompt("f_plan", get_enum_choice, "Followed Plan", FollowedPlan)
+                            setup_t = session.prompt("setup_t", get_enum_choice, "Setup Type", SetupType)
+                            behav_errors = session.prompt("behav_errors", get_multi_enum_choice, "Behavioral Errors", BehavioralErrors)
+                            cog_patterns = session.prompt("cog_patterns", get_multi_enum_choice, "Cognitive Patterns", CognitivePatterns)
+                            mae = session.prompt("mae", get_mandatory_float, "MAE (0 <= MAE <= 10)", min_val=0, max_val=10)
+                            mfe = session.prompt("mfe", get_mandatory_float, "MFE (0 <= MFE <= 10)", min_val=0, max_val=10)
+                            cost = session.prompt("cost", get_mandatory_float, "Cost (Fees/Funding)")
+                            lesson_tact = session.prompt("lesson_tact", get_mandatory_text, "Tactical Lesson Learned", multiline=True)
+                            visual_path = session.prompt("visual_lesson_path", handle_visual_lesson_assignment, trade_id, payload.get("asset", "Unknown"))
+
+                            audit_tactical = TacticalAudit(
+                                tactical_id=trade_id,
+                                trade_status=t_status,
+                                htf_trend_context=htf_trend,
+                                ltf_trend_context=ltf_trend,
+                                stop_loss=sl,
+                                entry_price=entry_p,
+                                size=size,
+                                take_profit=tp,
+                                entry_time=entry_time,
+                                emotions=emotions,
+                                pre_trade_emotions=pre_trade_emotions,
+                                primary_emotion=p_emotion,
+                                mental_clarity_level=mental_clarity,
+                                impatience_level=impatience,
+                                anxiety_level=anxiety,
+                                mid_trade_emotions=mid_trade_emotions,
+                                post_trade_emotions=post_trade_emotions,
+                                exit_time=exit_time,
+                                exit_type=exit_type,
+                                confirmation_status=conf_status,
+                                closing_price=close_p,
+                                could_hit_tp=could_hit_tp,
+                                compliance=t_comp,
+                                tier_setup=tier_setup,
+                                market_state=market_state,
+                                followed_plan=f_plan,
+                                setup_type=setup_t,
+                                behavioral_errors=behav_errors,
+                                cognitive_patterns=cog_patterns,
+                                cost=cost,
+                                mae=mae,
+                                mfe=mfe,
+                                lesson_learned=lesson_tact,
+                                visual_lesson_path=visual_path,
+                                g1_trend_15m=g1_trend_15m,
+                                g2_fractal_trend=g2_fractal_trend,
+                                g3_limit_order=g3_limit_order,
+                                g4_breathing=g4_breathing,
+                                g5_manual_cooldown=g5_manual_cooldown,
+                                g6_sl_validated=g6_sl_validated,
+                                g7_tp_validated=g7_tp_validated,
+                                c1_kl_support=c1_kl_support,
+                                c2_fractal_std=c2_fractal_std,
+                                c3_fractal_1m=c3_fractal_1m,
+                                c4_fractal_1h=c4_fractal_1h,
+                                c5_kl_target=c5_kl_target,
+                                c6_liquidity=c6_liquidity,
+                                c7_retracement=c7_retracement,
+                                c8_convergence_15m=c8_convergence_15m,
+                                gates_failed=gates_failed_cnt,
+                                confirmations_count=confirmations_count,
+                                mfe_potencial_estimado=mfe_potencial
+                            )
 
                         # Post Review Panel Reconstructed & Homologated
                         ep = audit_tactical.entry_price or 0.0
@@ -2663,12 +3074,17 @@ def flow_pending_audits():
                         rev_text.append(f"Market State:         {market_state.value if hasattr(market_state, 'value') else market_state}\n", style="white")
                         rev_text.append(f"HTF Trend Context:    {htf_trend.value if hasattr(htf_trend, 'value') else htf_trend}\n", style="white")
                         rev_text.append(f"LTF Trend Context:    {ltf_trend.value if hasattr(ltf_trend, 'value') else ltf_trend}\n", style="white")
-                        rev_text.append(f"5m/15m Confirmation:  {confirmation_5m_15m}\n", style="white")
                         rev_text.append(f"Confirmation Status:  {conf_status.value if hasattr(conf_status, 'value') else conf_status}\n", style="white")
                         rev_text.append(f"Followed Plan:        {f_plan.value if hasattr(f_plan, 'value') else f_plan}\n", style="white")
-                        conf_str = ", ".join([c.value if hasattr(c, 'value') else str(c) for c in conf_params]) if isinstance(conf_params, list) else str(conf_params)
-                        rev_text.append(f"Conf. Params:         {format_indented_block(conf_str, indent_spaces=22, first_line_flush=True, wrap_width=60)}\n\n", style="white")
                         
+                        # --- Motor B (Gates & Confirmations) ---
+                        rev_text.append("--- Motor B (Gates & Confirmations) ---\n", style="bold magenta")
+                        rev_text.append(f"Gates Failed:         {gates_failed_cnt}\n", style="red" if gates_failed_cnt > 0 else "green")
+                        if not abort_trade:
+                            rev_text.append(f"Confirmations Count:  {confirmations_count}\n", style="white")
+                            if mfe_potencial is not None:
+                                rev_text.append(f"MFE Potencial (S6):   {mfe_potencial}\n", style="yellow")
+
                         # --- Psychological & Cognitive Logging ---
                         rev_text.append("--- Psychological & Cognitive Logging ---\n", style="bold blue")
                         rev_text.append(f"Primary Emotion:      {p_emotion.value if hasattr(p_emotion, 'value') else p_emotion}\n", style="white")
@@ -3554,19 +3970,12 @@ def flow_repair_analysis_audits():
                         else:
                             w["market_bias"] = "Bearish"
 
-                        import math
-                        import os
-                        scaling_factor = float(os.getenv("TACTICAL_SCALING_FACTOR", 0.2125))
-                        no_trade_exponent = float(os.getenv("NO_TRADE_BASE_EXPONENT", 1.54))
-                        
-                        e_long = math.exp(val * scaling_factor)
-                        e_short = math.exp(-val * scaling_factor)
-                        e_no_trade = math.exp(no_trade_exponent)
-                        total = e_long + e_short + e_no_trade
-                        
-                        w["long_prob"] = round(e_long / total, 3)
-                        w["short_prob"] = round(e_short / total, 3)
-                        w["no_trade_prob"] = round(1.0 - w["long_prob"] - w["short_prob"], 3)
+                        from core.math_engine import calculate_probabilities as _calc_probs
+                        _probs = _calc_probs(val)
+                        w["long_prob"] = float(_probs.long_prob)
+                        w["short_prob"] = float(_probs.short_prob)
+                        w["no_trade_prob"] = float(_probs.no_trade_prob)
+
 
                     while True:
                         struct_text = Text()
@@ -4096,7 +4505,6 @@ def flow_repair_analysis_audits():
                         rev_text.append(f"Market State: {workspace.get('market_state')}\n", style="white")
                         rev_text.append(f"HTF Trend Context: {workspace.get('htf_trend_context')}\n", style="white")
                         rev_text.append(f"LTF Trend Context: {workspace.get('ltf_trend_context')}\n", style="white")
-                        rev_text.append(f"5m/15m Confirmation: {workspace.get('confirmation_5m_15m')}\n", style="white")
                         rev_text.append(f"Confirmation Status: {workspace.get('confirmation_status')}\n", style="white")
                         rev_text.append(f"Followed Plan: {workspace.get('followed_plan')}\n", style="white")
                         
@@ -4392,8 +4800,14 @@ def flow_repair_analysis_audits():
                                             id, compliance, confirmation_5m_15m, entry_price, closing_price, size, stop_loss, take_profit, mae_adverse, mfe_favorable, could_hit_tp, lesson_learned,
                                             tier_setup, market_state, followed_plan, primary_emotion, setup_type, htf_trend_context, ltf_trend_context, confirmation_status, anxiety_level, impatience_level, mental_clarity_level,
                                             risk_usd, r_r, pnl_and_cost, notional_size, capital_at_risk, trade_decision, emotions, behavioral_errors, cognitive_patterns, visual_lesson_path,
-                                            pre_trade_emotions, mid_trade_emotions, post_trade_emotions, confirmation_params, entry_time, exit_time
-                                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                            pre_trade_emotions, mid_trade_emotions, post_trade_emotions, confirmation_params, entry_time, exit_time,
+                                            g1_trend_15m, g2_fractal_trend, g3_limit_order, g4_breathing, g5_manual_cooldown, g6_sl_validated, g7_tp_validated,
+                                            c1_kl_support, c2_fractal_std, c3_fractal_1m, c4_fractal_1h, c5_kl_target, c6_liquidity, c7_retracement, c8_convergence_15m,
+                                            gates_failed, confirmations_count, mfe_potencial_estimado
+                                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                                  0, 0, 0, 0, 0, 0, 0,
+                                                  0, 0, 0, 0, 0, 0, 0, 0,
+                                                  NULL, NULL, NULL)
                                     """, (
                                         record.id,
                                         workspace["compliance"] or "nan",
