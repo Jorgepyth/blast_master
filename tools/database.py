@@ -6,6 +6,13 @@ from typing import Dict, Any, List, Optional
 from sqlalchemy import String, DateTime, Numeric, Integer, ForeignKey, select, JSON, BigInteger, SmallInteger, Boolean, Text, event, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session, relationship
 from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
+
+@event.listens_for(Engine, "connect")
+def _enforce_sqlite_foreign_keys(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
 
 class LifecycleState(str, Enum):
     ANALYSIS = "ANALYSIS"
