@@ -494,7 +494,14 @@ def auto_fetch_tradingview_screenshot(asset: str) -> Optional[str]:
     Escanea la carpeta Downloads, filtra por el ticker del activo,
     selecciona el archivo más reciente, lo mueve a staging y retorna el nombre.
     """
-    downloads_dir = Path("/mnt/c/Users/jcifu/Downloads")
+    downloads_dir_env = os.getenv("TRADINGVIEW_DOWNLOADS_DIR")
+    if not downloads_dir_env:
+        raise RuntimeError(
+            "TRADINGVIEW_DOWNLOADS_DIR no está configurada. Define esta variable en tu .env "
+            "con la ruta local de tu carpeta de Downloads (ver .env.template) para usar el "
+            "auto-fetch de screenshots de TradingView."
+        )
+    downloads_dir = Path(downloads_dir_env)
     staging_dir = Path(os.getcwd()) / ".assets" / "staging"
     staging_dir.mkdir(parents=True, exist_ok=True)
 
