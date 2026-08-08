@@ -102,3 +102,43 @@ def test_database_lifecycle(test_engine):
     assert records[0]["payload"]["tactical"]["calc_edge"] == 3.0
     assert records[0]["payload"]["audit_tactical"]["compliance"] == "Edge_valid"
 
+
+def test_r_multiple_and_captured_mfe_persist_via_update_record_state(test_engine):
+    # Regression test for the gap found in the blast_master / notion_api_analysis
+    # cross-analysis: r_multiple and captured_mfe were computed by the Pydantic
+    # model but silently dropped by update_record_state()'s valid_keys filter
+    # because they weren't mapped ORM columns on TacticalAudit.
+    record_id = "test-r-multiple-persist"
+    with Session(test_engine) as session:
+        session.add(UnifiedDepartment(
+            id=record_id,
+            state=LifecycleState.ANALYSIS.value,
+            asset="XAU/USD",
+            market_bias="Bullish",
+            calc_edge=2.0,
+            p4_hierarchy="Hard_Level (Daily,Weekly,Monthly)",
+            p1_timeframe="15M",
+            p1_type="1st_iteration",
+            nodes_l1=2,
+            nodes_l2=1,
+            tactical_classification="Continuation_Pressure",
+            long_prob=0.80,
+            short_prob=0.20,
+            no_trade_prob=0.0
+        ))
+        session.commit()
+
+    update_record_state(record_id, LifecycleState.READY_FOR_NOTION, append_payload={
+        "audit_tactical": {
+            "compliance": "Edge_valid",
+            "r_multiple": 2.0,
+            "captured_mfe": 1.0,
+        }
+    }, engine=test_engine)
+
+    with Session(test_engine) as session:
+        record = session.get(UnifiedDepartment, record_id)
+        assert record.tactical_audit is not None
+        assert record.tactical_audit.r_multiple == 2.0
+        assert record.tactical_audit.captured_mfe == 1.0
+

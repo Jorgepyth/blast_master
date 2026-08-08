@@ -148,6 +148,25 @@ class Emotions(str, Enum):
     FORBIDDEN_FRIENDSHIP = "forbidden friendship"
     SKIP = "Skip"
 
+# Curated subset offered to the user going forward (picker UI only).
+# The full Emotions enum above is left untouched so historical records tagged
+# with a cut/merged value (e.g. "hesitation", "mantained courage") keep parsing fine.
+# Cut (duplicates of behavioral_errors or the anxiety_level/impatience_level scales):
+#   traded on the phone, hesitation, lack of discipline, closed too early,
+#   anxiety, impatience, revenge trade, overtrading
+# Merged away (near-duplicate constructs, one canonical value kept):
+#   system hoping -> hope hold, focus/presence -> flow/in the zone,
+#   detatched neutrality -> equanimity, calm/serenity -> equanimity,
+#   mantained courage -> courange
+ACTIVE_EMOTIONS = [
+    Emotions.CONSISTENCY, Emotions.STATISTICAL_THINKING, Emotions.ACCOUNTABILITY, Emotions.DECISIVENESS,
+    Emotions.BLAMING, Emotions.HOPE_HOLD, Emotions.EGO_ATTACHMENT, Emotions.ANXIETY_IMMEDIATE_RESULTS,
+    Emotions.FLOW_ZONE, Emotions.EQUANIMITY, Emotions.LOSS_ACCEPTANCE, Emotions.GROUNDED_CONFIDENCE,
+    Emotions.PATIENCE, Emotions.BOREDOM, Emotions.SHAME, Emotions.FRUSTRATION, Emotions.FEAR_NOT_GOOD_ENOUGH,
+    Emotions.FOMO, Emotions.FEAR_OF_LOSING, Emotions.FEAR_BEING_WRONG, Emotions.OVERLEVERAGING,
+    Emotions.GREED, Emotions.COURAGE, Emotions.FORBIDDEN_FRIENDSHIP,
+]
+
 class BehavioralErrors(str, Enum):
     CLOSED_TOO_EARLY = "Closed too early"
     LACK_OF_DISCIPLINE = "Lack of Discipline"

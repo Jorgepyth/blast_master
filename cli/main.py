@@ -20,7 +20,6 @@ try:
 except Exception:
     pass
 
-from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.prompt import Prompt, IntPrompt
@@ -29,17 +28,17 @@ from rich.columns import Columns
 from rich.align import Align
 from rich.text import Text
 from rich import box
-from rich.theme import Theme
 from rich.live import Live
 
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
 from InquirerPy.separator import Separator
+from InquirerPy.utils import get_style
 
 from cli.schemas.efficiency import EfficiencyAnalysis, Direction, Strength
 from cli.schemas.audit_efficiency import EfficiencyAudit, StructuralBias, ResolutionType, StructuralResolution, FailureReason
 from cli.schemas.tactical import TacticalAnalysis, Hierarchy, Timeframe, FractalType, TacticalClassification, TradeStatus
-from cli.schemas.audit_tactical import TacticalAudit, ComplianceState, TierSetup, MarketState, Session, ExitType, TradeDecision, FollowedPlan, PrimaryEmotion, SetupType, HTFTrendContext, TrendContext, ConfirmationStatus, ConfirmationParams, Emotions, BehavioralErrors, CognitivePatterns
+from cli.schemas.audit_tactical import TacticalAudit, ComplianceState, TierSetup, MarketState, Session, ExitType, TradeDecision, FollowedPlan, PrimaryEmotion, SetupType, HTFTrendContext, TrendContext, ConfirmationStatus, ConfirmationParams, Emotions, ACTIVE_EMOTIONS, BehavioralErrors
 from tools.database import (
     init_db, update_record_state, get_records_by_state,
     LifecycleState, add_asset, get_assets, to_local_display
@@ -57,10 +56,42 @@ from cli.ui_manager import (
     render_wizard_layout,
     check_daemon_status,
     get_total_records_count,
-    console
+    console,
+    STEP1_KEYS,
+    STEP2_KEYS
 )
 
 CACHE_FILE = ".data/paused_audits.json"
+
+# Shared InquirerPy style, mapped 1:1 to the rich `blast_theme` semantic colors
+# (cli/ui_manager.py) so prompts no longer fall back to InquirerPy's default
+# "one dark" palette (blue/gold) once a rich panel above them is already themed
+# cyan/magenta/green/yellow/red. ANSI color names (not fixed hex) are used so both
+# libraries resolve against the same terminal palette. get_style() with the default
+# style_override=True blanks any key left out, so every supported key is declared
+# explicitly here.
+INQUIRER_STYLE = get_style({
+    "questionmark": "ansicyan bold",
+    "answermark": "ansicyan bold",
+    "answer": "ansicyan bold",
+    "input": "ansiwhite",
+    "question": "",
+    "answered_question": "",
+    "instruction": "ansiwhite",
+    "long_instruction": "ansiwhite",
+    "pointer": "ansicyan bold",
+    "checkbox": "ansigreen bold",
+    "separator": "ansimagenta bold",
+    "skipped": "ansiwhite",
+    "validator": "ansired bold",
+    "marker": "ansiyellow bold",
+    "fuzzy_prompt": "ansimagenta bold",
+    "fuzzy_info": "ansiwhite",
+    "fuzzy_border": "ansiwhite",
+    "fuzzy_match": "ansimagenta bold",
+    "spinner_pattern": "ansiyellow bold",
+    "spinner_text": "",
+}, style_override=True)
 
 class AuditSession:
     def __init__(self, trade_id, audit_type):
@@ -307,57 +338,6 @@ class FlightSessionManager:
                 try: os.remove(db_path)
                 except Exception: pass
 
-blast_theme = Theme({
-    "primary": "bold cyan",
-    "secondary": "bold magenta",
-    "success": "bold green",
-    "warning": "bold yellow",
-    "danger": "bold red",
-    "muted": "dim white",
-    "highlight": "bold reverse cyan",
-})
-
-console = Console(theme=blast_theme)
-
-KEY_LABELS = {
-    "asset": "Asset Selector",
-    "p0_thesis": "P0 Thesis",
-    "p0_dir": "P0 Direction",
-    "p0_str": "P0 Strength",
-    "p1_thesis": "P1 Thesis",
-    "p1_dir": "P1 Direction",
-    "p1_str": "P1 Strength",
-    "p1_tf": "P1 Timeframe",
-    "p1_type": "P1 Fractal Type",
-    "nodes_l1": "Nodes L1",
-    "nodes_l2": "Nodes L2",
-    "p2_thesis": "P2 Thesis",
-    "p2_dir": "P2 Direction",
-    "p2_str": "P2 Strength",
-    "p3_thesis": "P3 Thesis",
-    "p3_dir": "P3 Direction",
-    "p3_str": "P3 Strength",
-    "p4_thesis": "P4 Thesis",
-    "p4_dir": "P4 Direction",
-    "p4_str": "P4 Strength",
-    "p4_hier": "P4 Hierarchy",
-    "edge_desc": "Edge Description",
-    "bias_a": "Structural Bias (Bias A)",
-    "tact_class": "Tactical Classification"
-}
-STEP1_KEYS = [
-    "asset", 
-    "p0_thesis", "p0_dir", "p0_str",
-    "p2_thesis", "p2_dir", "p2_str",
-    "p3_thesis", "p3_dir", "p3_str"
-]
-
-STEP2_KEYS = [
-    "p1_thesis", "p1_dir", "p1_str", "p1_tf", "p1_type", "nodes_l1", "nodes_l2",
-    "p4_thesis", "p4_dir", "p4_str", "p4_hier",
-    "edge_desc", "bias_a", "tact_class"
-]
-
 class PauseAuditException(Exception):
     pass
 
@@ -429,21 +409,27 @@ def get_enum_choice(prompt_text, enum_class, exclude=None):
         choices=inq_choices,
         pointer=">",
         qmark="",
-        keybindings={"skip": []}
+        keybindings={"skip": []},
+        style=INQUIRER_STYLE
     )).execute()
     return result
 
-def get_multi_enum_choice(prompt_text, enum_class):
-    choices = [e for e in enum_class if e.name != "SKIP"]
-    inq_choices = [Choice(e, name=f"[{i+1}] {e.value}") for i, e in enumerate(choices)]
-    
+def get_multi_enum_choice(prompt_text, enum_class, choices=None, preselected=None):
+    source = choices if choices is not None else [e for e in enum_class if e.name != "SKIP"]
+    preselected_vals = set()
+    if preselected:
+        for p in preselected:
+            preselected_vals.add(p.value if hasattr(p, "value") else p)
+    inq_choices = [Choice(e, name=f"[{i+1}] {e.value}", enabled=(e.value in preselected_vals)) for i, e in enumerate(source)]
+
     while True:
         result = bind_pause(inquirer.checkbox(
             message=f"{prompt_text} (Select at least one) >",
             choices=inq_choices,
             pointer=">",
             qmark="",
-            keybindings={"skip": []}
+            keybindings={"skip": []},
+            style=INQUIRER_STYLE
         )).execute()
         if result:
             return result
@@ -454,13 +440,18 @@ def get_mandatory_text(prompt_text, multiline=False, default=""):
         if multiline:
             message += " (Presiona Esc + Enter para guardar)"
         val = bind_pause(inquirer.text(
-            message=message, 
-            multiline=multiline, 
-            default=default, 
-            keybindings={"skip": []}
+            message=message,
+            multiline=multiline,
+            default=default,
+            keybindings={"skip": []},
+            style=INQUIRER_STYLE
         )).execute()
         if val and val.strip():
             return val.strip()
+
+# Intentionally separate from ui_manager.format_indented_block: different defaults
+# (wrap_width=80 here vs None there) with real call-sites in each file depending on
+# their own default.
 def format_indented_block(text_value, indent_spaces=11, first_line_flush=True, wrap_width=80):
     if not text_value:
         return ""
@@ -488,6 +479,37 @@ def format_indented_block(text_value, indent_spaces=11, first_line_flush=True, w
         return lines[0] + "".join(f"\n{prefix}{line}" for line in lines[1:])
     else:
         return prefix + lines[0] + "".join(f"\n{prefix}{line}" for line in lines[1:])
+
+def compute_detected_patterns(psych):
+    primary_emotion = psych.get("primary_emotion")
+    anxiety = psych.get("anxiety_level")
+    impatience = psych.get("impatience_level")
+    clarity = psych.get("mental_clarity_level")
+    behav_errors = psych.get("behavioral_errors") or []
+    conf_status = str(psych.get("confirmation_status") or "")
+    gates_failed = psych.get("gates_failed")
+    followed_plan = psych.get("followed_plan")
+
+    tags = []
+    if conf_status.startswith("S7") or (gates_failed is not None and gates_failed >= 1 and followed_plan == "No"):
+        tags.append(("Overconfidence / Rule Override", "bold red"))
+    if conf_status.startswith("S6") and primary_emotion in ("Fear of being wrong", "Self-doubt", "Anxiety"):
+        tags.append(("Loss Aversion (Missed Opportunity)", "bold yellow"))
+    if impatience is not None and impatience >= 4 and "Overtrading" in behav_errors:
+        tags.append(("Impulsivity Loop", "bold red"))
+    if clarity is not None and clarity <= 2 and "bad entry" in conf_status.lower():
+        tags.append(("Impaired Judgment Execution", "bold yellow"))
+    if anxiety is not None and anxiety >= 4 and "Lack of Discipline" in behav_errors:
+        tags.append(("Anxiety-Driven Discipline Breakdown", "bold red"))
+    if primary_emotion == "Equanimity" and clarity is not None and clarity >= 4:
+        tags.append(("Flow State", "bold green"))
+
+    if not tags:
+        if anxiety is None and impatience is None and clarity is None:
+            tags.append(("Insufficient data (legacy trade)", "dim"))
+        else:
+            tags.append(("No pattern detected", "dim white"))
+    return tags
 
 def auto_fetch_tradingview_screenshot(asset: str) -> Optional[str]:
     """
@@ -571,7 +593,8 @@ def handle_visual_lesson_assignment(trade_id: str, asset: str, current_path: Opt
             choices=choices,
             pointer=">",
             qmark="",
-            keybindings={"skip": []}
+            keybindings={"skip": []},
+            style=INQUIRER_STYLE
         )
         
         @prompt.register_kb("c-f")
@@ -648,7 +671,7 @@ def get_optional_text(prompt_text, multiline=False):
     message = f"{prompt_text} (Optional, press Enter to skip) >"
     if multiline:
         message += " (Presiona Esc + Enter para guardar)"
-    val = bind_pause(inquirer.text(message=message, multiline=multiline, keybindings={"skip": []})).execute()
+    val = bind_pause(inquirer.text(message=message, multiline=multiline, keybindings={"skip": []}, style=INQUIRER_STYLE)).execute()
     return val.strip() if val else None
 
 def get_mandatory_int(prompt_text, min_val=None, max_val=None):
@@ -664,7 +687,8 @@ def get_mandatory_int(prompt_text, min_val=None, max_val=None):
         message=f"{prompt_text}{range_str} >",
         validate=validate_int,
         invalid_message="Must be a valid integer in range",
-        keybindings={"skip": []}
+        keybindings={"skip": []},
+        style=INQUIRER_STYLE
     )).execute()
     return int(val)
 
@@ -682,7 +706,8 @@ def get_mandatory_float(prompt_text, min_val=None, max_val=None):
         message=f"{prompt_text} >",
         validate=validate_float,
         invalid_message="Must be a valid float",
-        keybindings={"skip": []}
+        keybindings={"skip": []},
+        style=INQUIRER_STYLE
     )).execute()
     return float(val)
 
@@ -705,9 +730,10 @@ def get_mandatory_datetime(prompt_text, allow_cancel=False):
         message=msg,
         validate=validate_datetime,
         invalid_message="Must be in format YYYY-MM-DD HH:MM or 'c'",
-        keybindings={"skip": []}
+        keybindings={"skip": []},
+        style=INQUIRER_STYLE
     )).execute()
-    
+
     if allow_cancel and val.lower() == 'c':
         raise GoBackException("Cancelled by user")
     dt = datetime.datetime.strptime(val, "%Y-%m-%d %H:%M")
@@ -1145,7 +1171,7 @@ def flow_review_analysis():
         detail_query = """
         SELECT u.id, u.asset, u.market_bias, u.calc_edge, u.created_at, u.updated_at, u.edge_description, u.trade_status,
                u.p4_hierarchy, u.p1_timeframe, u.p1_type, u.nodes_l1, u.nodes_l2, u.tactical_classification,
-               u.long_prob, u.short_prob, u.no_trade_prob, u.is_backdated, u.edge_validation_price, u.structural_invalidation,
+               u.long_prob, u.short_prob, u.no_trade_prob, u.is_backdated, u.edge_validation_price, u.structural_invalidation, u.mark_price,
                e.bias_a, e.resolution_type, e.real_bias_b, e.structural_resolution, e.failure_reason,
                e.specific_bias_compliance, e.false_regime_rate, e.lesson_learned as e_lesson, e.efficiency_timeframe,
                t.compliance, t.entry_time, t.exit_time, t.tier_setup, t.market_state, t.exit_type,
@@ -1179,7 +1205,7 @@ def flow_review_analysis():
         cols = [
             "id", "asset", "market_bias", "calc_edge", "created_at", "updated_at", "edge_description", "trade_status",
             "p4_hierarchy", "p1_timeframe", "p1_type", "nodes_l1", "nodes_l2", "tactical_classification",
-            "long_prob", "short_prob", "no_trade_prob", "is_backdated", "edge_validation_price", "structural_invalidation",
+            "long_prob", "short_prob", "no_trade_prob", "is_backdated", "edge_validation_price", "structural_invalidation", "mark_price",
             "bias_a", "resolution_type", "real_bias_b", "structural_resolution", "failure_reason",
             "specific_bias_compliance", "false_regime_rate", "e_lesson", "efficiency_timeframe",
             "compliance", "entry_time", "exit_time", "tier_setup", "market_state", "exit_type",
@@ -1413,6 +1439,9 @@ def flow_review_analysis():
         # Parametric Metrics
         evp_val = str(record['edge_validation_price']) if record['edge_validation_price'] is not None else "N/A"
         si_val = str(record['structural_invalidation']) if record['structural_invalidation'] is not None else "N/A"
+        mark_price_val = str(record['mark_price']) if record['mark_price'] is not None else "N/A"
+        struct_text.append("  Mark Price: ", style="dim")
+        struct_text.append(f"{mark_price_val}\n", style="bold white")
         struct_text.append("  Edge Validation Price: ", style="dim")
         struct_text.append(f"{evp_val}", style="bold white")
         struct_text.append("    Structural Invalidation: ", style="dim")
@@ -1677,23 +1706,34 @@ def flow_review_analysis():
             # Emotion lists
             raw_emo = record.get("emotions")
             raw_be = record.get("behavioral_errors")
-            raw_cpat = record.get("cognitive_patterns")
             try:
                 emo_list = json.loads(raw_emo) if isinstance(raw_emo, str) else (raw_emo or [])
                 emo_str = ", ".join([str(x).replace("Emotions.", "") for x in emo_list if x]) if emo_list else "N/A"
             except Exception: emo_str = "N/A"
             try:
                 be_list = json.loads(raw_be) if isinstance(raw_be, str) else (raw_be or [])
-                be_str = ", ".join([str(x).replace("BehavioralErrors.", "") for x in be_list if x]) if be_list else "N/A"
-            except Exception: be_str = "N/A"
-            try:
-                cp_list_parsed = json.loads(raw_cpat) if isinstance(raw_cpat, str) else (raw_cpat or [])
-                cp_str = ", ".join([str(x).replace("CognitivePatterns.", "") for x in cp_list_parsed if x]) if cp_list_parsed else "N/A"
-            except Exception: cp_str = "N/A"
+                be_list_clean = [str(x).replace("BehavioralErrors.", "") for x in be_list if x]
+                be_str = ", ".join(be_list_clean) if be_list_clean else "N/A"
+            except Exception:
+                be_list_clean = []
+                be_str = "N/A"
 
             psych_text.append(f"  Emotions:       {format_indented_block(emo_str, indent_spaces=18, first_line_flush=True, wrap_width=60)}\n", style="white")
             psych_text.append(f"  Behav. Errors:  {format_indented_block(be_str, indent_spaces=18, first_line_flush=True, wrap_width=60)}\n", style="white")
-            psych_text.append(f"  Cognitive Pat.: {format_indented_block(cp_str, indent_spaces=18, first_line_flush=True, wrap_width=60)}\n", style="white")
+
+            detected = compute_detected_patterns({
+                "primary_emotion": record.get("primary_emotion"),
+                "anxiety_level": record.get("anxiety_level"),
+                "impatience_level": record.get("impatience_level"),
+                "mental_clarity_level": record.get("mental_clarity_level"),
+                "behavioral_errors": be_list_clean,
+                "confirmation_status": record.get("confirmation_status"),
+                "gates_failed": record.get("gates_failed"),
+                "followed_plan": record.get("followed_plan"),
+            })
+            psych_text.append("  Detected Patterns:\n", style="dim")
+            for label, color in detected:
+                psych_text.append(f"    • {label}\n", style=color)
 
             # Emotional Timeline (NEW - previously hidden data)
             pre_emo = record.get("pre_trade_emotions")
@@ -1982,6 +2022,17 @@ def flow_review_analysis():
             else:
                 # selected_id is a specific trade ID
                 show_unified_detail(selected_id, raw_conn)
+
+def _preview(text, length=30):
+    text = str(text)
+    return text if len(text) <= length else text[:length] + "..."
+
+def _dir_icon(d):
+    return "🟢" if d == "Long" else "🔴" if d == "Short" else "🟡"
+
+def _str_icon(s):
+    return "●●●" if s == "Strong" else "●●○" if s == "Mid" else "●○○"
+
 def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
     trade_id = str(uuid.uuid4())
     console.print(f"\n[muted]Initialized new unified trade context: {trade_id}[/muted]")
@@ -2003,7 +2054,8 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
                     choices=choices,
                     pointer=">",
                     qmark="",
-                    keybindings={"skip": []}
+                    keybindings={"skip": []},
+                    style=INQUIRER_STYLE
                 )).execute()
                 
                 if asset_choice == "back_to_main":
@@ -2061,6 +2113,19 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
             p4_dir = session.prompt("p4_dir", get_enum_choice, "P4 Direction", Direction)
             p4_str = session.prompt("p4_str", get_enum_choice, "P4 Strength", Strength)
             p4_hier = session.prompt("p4_hier", get_enum_choice, "P4 Hierarchy", Hierarchy)
+
+            efficiency_timeframe = session.prompt("efficiency_timeframe", lambda: bind_pause(inquirer.select(
+                message="Select Efficiency Timeframe [15M/1H/4H] >",
+                choices=[Choice("15M", name="15M"), Choice("1H", name="1H"), Choice("4H", name="4H")],
+                pointer=">",
+                qmark="",
+                style=INQUIRER_STYLE
+            )).execute())
+
+            mark_price_raw = session.prompt("mark_price_raw", lambda: bind_pause(inquirer.text(message="Mark Price (Asset price at analysis completion) [Optional] >", style=INQUIRER_STYLE)).execute())
+
+            evp_raw = session.prompt("evp_raw", lambda: bind_pause(inquirer.text(message="Edge Validation Price (Target Convergence) [Optional] >", style=INQUIRER_STYLE)).execute())
+            si_raw = session.prompt("si_raw", lambda: bind_pause(inquirer.text(message="Structural Invalidation Price (Nullification Threshold) [Optional] >", style=INQUIRER_STYLE)).execute())
 
             def prompt_edge_desc():
                 current_asset = session.state.get("asset")
@@ -2144,17 +2209,7 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
                 return get_mandatory_text("Efficiency Edge Description", multiline=True)
 
             edge_desc = session.prompt("edge_desc", prompt_edge_desc)
-            
-            efficiency_timeframe = session.prompt("efficiency_timeframe", lambda: bind_pause(inquirer.select(
-                message="Select Efficiency Timeframe [15M/1H/4H] >",
-                choices=[Choice("15M", name="15M"), Choice("1H", name="1H"), Choice("4H", name="4H")],
-                pointer=">",
-                qmark=""
-            )).execute())
-            
-            evp_raw = session.prompt("evp_raw", lambda: bind_pause(inquirer.text(message="Edge Validation Price (Target Convergence) [Optional] >")).execute())
-            si_raw = session.prompt("si_raw", lambda: bind_pause(inquirer.text(message="Structural Invalidation Price (Nullification Threshold) [Optional] >")).execute())
-            
+
             bias_a = session.prompt("bias_a", get_enum_choice, "Initial Structural Bias (Bias A)", StructuralBias)
             tact_class = session.prompt("tact_class", get_enum_choice, "Tactical Classification", TacticalClassification)
 
@@ -2234,7 +2289,8 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
                         message="Please select invalid field to fix >",
                         choices=[Choice("tact_class", name="Tactical Classification"), Choice("discard", name="Discard")],
                         pointer=">",
-                        qmark=""
+                        qmark="",
+                        style=INQUIRER_STYLE
                     ).execute()
                     if field_to_edit == "discard":
                         raise PauseAuditException("Discard requested")
@@ -2335,7 +2391,10 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
                     meta_text.append(f"  {edge_desc}\n", style="italic white")
                 meta_text.append(f"Efficiency Timeframe: ", style="dim")
                 meta_text.append(f"{efficiency_timeframe}\n", style="white")
-                    
+                mark_price_display = session.state.get("mark_price_raw", "")
+                meta_text.append(f"Mark Price: ", style="dim")
+                meta_text.append(f"{mark_price_display if mark_price_display else 'N/A'}\n", style="white")
+
                 p_struct = Panel(struct_text, title="[Structural Vector (Eff)]", border_style="cyan", box=box.ROUNDED)
                 p_tact = Panel(tact_text, title="[Tactical Vector (Exec)]", border_style="magenta", box=box.ROUNDED)
                 p_quant = Panel(quant_text, title="[Quantitative Profile]", border_style="green", box=box.ROUNDED)
@@ -2365,12 +2424,13 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
                 action_choice = inquirer.select(
                     message="Review Action >",
                     choices=[
-                        Choice("save", name="[1] Confirm & Save"),
-                        Choice("edit", name="[2] Edit a Field"),
-                        Choice("discard", name="[3] Discard")
+                        Choice("save", name="[1] ✓ Confirm & Save"),
+                        Choice("edit", name="[2] ✎ Edit a Field"),
+                        Choice("discard", name="[3] ✕ Discard")
                     ],
                     pointer=">",
-                    qmark=""
+                    qmark="",
+                    style=INQUIRER_STYLE
                 ).execute()
 
                 if action_choice == "save":
@@ -2401,6 +2461,7 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
                             
                             evp_val = session.state.get("evp_raw", "")
                             si_val = session.state.get("si_raw", "")
+                            mark_price_val = session.state.get("mark_price_raw", "")
                             try:
                                 new_record.edge_validation_price = Decimal(str(evp_val)) if evp_val.strip() else None
                                 new_record.structural_invalidation = Decimal(str(si_val)) if si_val.strip() else None
@@ -2408,6 +2469,11 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
                                 console.print("[bold red]Invalid decimal input for price metrics. Setting to None.[/bold red]")
                                 new_record.edge_validation_price = None
                                 new_record.structural_invalidation = None
+                            try:
+                                new_record.mark_price = Decimal(str(mark_price_val)) if mark_price_val.strip() else None
+                            except Exception:
+                                console.print("[bold red]Invalid decimal input for Mark Price. Setting to None.[/bold red]")
+                                new_record.mark_price = None
                             if backdated_timestamp:
                                 new_record.created_at = backdated_timestamp
                                 new_record.updated_at = backdated_timestamp
@@ -2448,38 +2514,46 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
                 elif action_choice == "edit":
                     edit_choices = [
                         Choice("asset", name=f"Asset: {asset}"),
-                        Choice("p0_thesis", name=f"P0 Thesis: {p0_thesis[:30]}..."),
+                        Separator("── P0 · Macro Vector ──"),
+                        Choice("p0_thesis", name=f"P0 Thesis: {_preview(p0_thesis)}"),
                         Choice("p0_dir", name=f"P0 Direction: {p0_dir.value}"),
                         Choice("p0_str", name=f"P0 Strength: {p0_str.value}"),
-                        Choice("p1_thesis", name=f"P1 Thesis: {p1_thesis[:30]}..."),
+                        Separator("── P1 · Tactical Timing ──"),
+                        Choice("p1_thesis", name=f"P1 Thesis: {_preview(p1_thesis)}"),
                         Choice("p1_dir", name=f"P1 Direction: {p1_dir.value}"),
                         Choice("p1_str", name=f"P1 Strength: {p1_str.value}"),
                         Choice("p1_tf", name=f"P1 Timeframe: {p1_tf.value}"),
                         Choice("p1_type", name=f"P1 Fractal Type: {p1_type.value}"),
                         Choice("nodes_l1", name=f"Nodes L1: {nodes_l1}"),
                         Choice("nodes_l2", name=f"Nodes L2: {nodes_l2}"),
-                        Choice("p2_thesis", name=f"P2 Thesis: {p2_thesis[:30]}..."),
+                        Separator("── P2 · Structure ──"),
+                        Choice("p2_thesis", name=f"P2 Thesis: {_preview(p2_thesis)}"),
                         Choice("p2_dir", name=f"P2 Direction: {p2_dir.value}"),
                         Choice("p2_str", name=f"P2 Strength: {p2_str.value}"),
-                        Choice("p3_thesis", name=f"P3 Thesis: {p3_thesis[:30]}..."),
+                        Separator("── P3 · Trend ──"),
+                        Choice("p3_thesis", name=f"P3 Thesis: {_preview(p3_thesis)}"),
                         Choice("p3_dir", name=f"P3 Direction: {p3_dir.value}"),
                         Choice("p3_str", name=f"P3 Strength: {p3_str.value}"),
-                        Choice("p4_thesis", name=f"P4 Thesis: {p4_thesis[:30]}..."),
+                        Separator("── P4 · Hierarchy ──"),
+                        Choice("p4_thesis", name=f"P4 Thesis: {_preview(p4_thesis)}"),
                         Choice("p4_dir", name=f"P4 Direction: {p4_dir.value}"),
                         Choice("p4_str", name=f"P4 Strength: {p4_str.value}"),
                         Choice("p4_hier", name=f"P4 Hierarchy: {p4_hier.value}"),
-                        Choice("edge_desc", name=f"Edge Description: {edge_desc[:30]}..."),
+                        Separator("── Edge / Meta ──"),
+                        Choice("edge_desc", name=f"Edge Description: {_preview(edge_desc)}"),
                         Choice("efficiency_timeframe", name=f"Efficiency Timeframe: {efficiency_timeframe}"),
                         Choice("bias_a", name=f"Bias A: {bias_a.value}"),
                         Choice("tact_class", name=f"Tactical Classification: {tact_class.value}"),
+                        Separator(),
                         Choice("back", name="[<] Back to Review")
                     ]
-                    
+
                     field_to_edit = inquirer.select(
                         message="Select Field to Edit >",
                         choices=edit_choices,
                         pointer=">",
-                        qmark=""
+                        qmark="",
+                        style=INQUIRER_STYLE
                     ).execute()
                     
                     if field_to_edit == "back":
@@ -2494,7 +2568,8 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
                                 message="Select Asset >",
                                 choices=choices,
                                 pointer=">",
-                                qmark=""
+                                qmark="",
+                                style=INQUIRER_STYLE
                             ).execute()
                             if asset_choice == "CUSTOM":
                                 new_val = get_mandatory_text("Enter Asset (e.g., BTC/USDT)")
@@ -2518,7 +2593,7 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
                         elif field_to_edit == "edge_desc":
                             new_val = get_mandatory_text("Edit Edge Description", multiline=True)
                         elif field_to_edit == "efficiency_timeframe":
-                            new_val = inquirer.select(message="Edit Efficiency Timeframe >", choices=[Choice("1H", name="1H"), Choice("4H", name="4H")], pointer=">", qmark="").execute()
+                            new_val = inquirer.select(message="Edit Efficiency Timeframe >", choices=[Choice("1H", name="1H"), Choice("4H", name="4H")], pointer=">", qmark="", style=INQUIRER_STYLE).execute()
                         elif field_to_edit == "bias_a":
                             new_val = get_enum_choice("Edit Bias A", StructuralBias)
                         elif field_to_edit == "tact_class":
@@ -2606,6 +2681,15 @@ def flow_pending_audits():
             
         eff_tf_val = payload.get("audit_efficiency", {}).get("efficiency_timeframe", "N/A")
         console.print(f"[bold cyan]Original Market Bias (Bias A):[/bold cyan] {market_bias_val} / {bias_a_val} | [bold cyan]Timeframe:[/bold cyan] {eff_tf_val}")
+
+        evp_val = payload.get("efficiency", {}).get("Edge_Validation_Price")
+        si_val = payload.get("efficiency", {}).get("Structural_Invalidation")
+        mark_price_val = payload.get("efficiency", {}).get("Mark_Price")
+        evp_display = f"{evp_val:.2f}" if evp_val is not None else "N/A"
+        si_display = f"{si_val:.2f}" if si_val is not None else "N/A"
+        mark_price_display = f"{mark_price_val:.2f}" if mark_price_val is not None else "N/A"
+        console.print(f"[bold green]Edge Validation Price:[/bold green] {evp_display}   [bold red]Structural Invalidation:[/bold red] {si_display}   [bold cyan]Mark Price:[/bold cyan] {mark_price_display}")
+
         edge_desc_val = payload.get("edge_description")
         if edge_desc_val:
             console.print(f"[bold cyan]Edge Description:[/bold cyan] {edge_desc_val}")
@@ -2816,12 +2900,6 @@ def flow_pending_audits():
                             for k in ["conf_status", "confirmation_status", "selected_gates", "selected_confs", "mfe_potencial_estimado", "gate_action", "htf_trend", "ltf_trend", "lesson_tact", "visual_lesson_path"]:
                                 session.state.pop(k, None)
 
-                        sl = session.prompt("sl", get_mandatory_float, "Stop Loss")
-                        entry_p = session.prompt("entry_p", get_mandatory_float, "Entry Price")
-                        size = session.prompt("size", get_mandatory_float, "Size")
-                        tp = session.prompt("tp", get_mandatory_float, "Take Profit")
-                        entry_time = session.prompt("entry_time", get_mandatory_datetime, "Entry Time")
-
                         def ask_gates():
                             choices = [
                                 Choice("g1", name="G1: P0 Trend 15m"),
@@ -2939,9 +3017,15 @@ def flow_pending_audits():
                             else:
                                 tier_setup = TierSetup.C
 
+                            sl = session.prompt("sl", get_mandatory_float, "Stop Loss")
+                            entry_p = session.prompt("entry_p", get_mandatory_float, "Entry Price")
+                            size = session.prompt("size", get_mandatory_float, "Size")
+                            tp = session.prompt("tp", get_mandatory_float, "Take Profit")
+                            entry_time = session.prompt("entry_time", get_mandatory_datetime, "Entry Time")
+
                             htf_trend = session.prompt("htf_trend", get_enum_choice, "HTF Trend Context", HTFTrendContext)
                             ltf_trend = session.prompt("ltf_trend", get_enum_choice, "LTF Trend Context", TrendContext)
-                            emotions = session.prompt("emotions", get_multi_enum_choice, "Emotions", Emotions)
+                            emotions = session.prompt("emotions", get_multi_enum_choice, "Emotions", Emotions, choices=ACTIVE_EMOTIONS)
                             pre_trade_emotions = session.prompt("pre_trade_emotions", get_mandatory_text, "Pre Trade Emotions")
                             p_emotion = session.prompt("p_emotion", get_enum_choice, "Primary Emotion", PrimaryEmotion)
                             mental_clarity = session.prompt("mental_clarity", get_mandatory_int, "Mental Clarity Level", 1, 5)
@@ -2968,7 +3052,6 @@ def flow_pending_audits():
                             f_plan = session.prompt("f_plan", get_enum_choice, "Followed Plan", FollowedPlan)
                             setup_t = session.prompt("setup_t", get_enum_choice, "Setup Type", SetupType)
                             behav_errors = session.prompt("behav_errors", get_multi_enum_choice, "Behavioral Errors", BehavioralErrors)
-                            cog_patterns = session.prompt("cog_patterns", get_multi_enum_choice, "Cognitive Patterns", CognitivePatterns)
                             mae = session.prompt("mae", get_mandatory_float, "MAE (0 <= MAE <= 10)", min_val=0, max_val=10)
                             mfe = session.prompt("mfe", get_mandatory_float, "MFE (0 <= MFE <= 10)", min_val=0, max_val=10)
                             cost = session.prompt("cost", get_mandatory_float, "Cost (Fees/Funding)")
@@ -3004,7 +3087,6 @@ def flow_pending_audits():
                                 followed_plan=f_plan,
                                 setup_type=setup_t,
                                 behavioral_errors=behav_errors,
-                                cognitive_patterns=cog_patterns,
                                 cost=cost,
                                 mae=mae,
                                 mfe=mfe,
@@ -3096,11 +3178,24 @@ def flow_pending_audits():
                         rev_text.append("--- Psychological & Cognitive Logging ---\n", style="bold blue")
                         rev_text.append(f"Primary Emotion:      {p_emotion.value if hasattr(p_emotion, 'value') else p_emotion}\n", style="white")
                         emotions_str = ", ".join([e.value if hasattr(e, 'value') else str(e) for e in emotions]) if isinstance(emotions, list) else str(emotions)
-                        be_str = ", ".join([b.value if hasattr(b, 'value') else str(b) for b in behav_errors]) if isinstance(behav_errors, list) else str(behav_errors)
-                        cp_str = ", ".join([c.value if hasattr(c, 'value') else str(c) for c in cog_patterns]) if isinstance(cog_patterns, list) else str(cog_patterns)
+                        be_list_clean = [b.value if hasattr(b, 'value') else str(b) for b in behav_errors] if isinstance(behav_errors, list) else []
+                        be_str = ", ".join(be_list_clean) if be_list_clean else "N/A"
                         rev_text.append(f"Emotions:             {format_indented_block(emotions_str, indent_spaces=22, first_line_flush=True, wrap_width=60)}\n", style="white")
                         rev_text.append(f"Behav. Errors:        {format_indented_block(be_str, indent_spaces=22, first_line_flush=True, wrap_width=60)}\n", style="white")
-                        rev_text.append(f"Cognitive Pat:        {format_indented_block(cp_str, indent_spaces=22, first_line_flush=True, wrap_width=60)}\n", style="white")
+
+                        detected = compute_detected_patterns({
+                            "primary_emotion": p_emotion.value if hasattr(p_emotion, 'value') else p_emotion,
+                            "anxiety_level": anxiety,
+                            "impatience_level": impatience,
+                            "mental_clarity_level": mental_clarity,
+                            "behavioral_errors": be_list_clean,
+                            "confirmation_status": conf_status.value if hasattr(conf_status, 'value') else conf_status,
+                            "gates_failed": gates_failed_cnt,
+                            "followed_plan": f_plan.value if hasattr(f_plan, 'value') else f_plan,
+                        })
+                        rev_text.append("Detected Patterns:\n", style="dim")
+                        for label, color in detected:
+                            rev_text.append(f"    • {label}\n", style=color)
                         rev_text.append(f"Pre-Trade Emotions:   {format_indented_block(pre_trade_emotions, indent_spaces=22, first_line_flush=True, wrap_width=60)}\n", style="white")
                         rev_text.append(f"Mid-Trade Emotions:   {format_indented_block(mid_trade_emotions, indent_spaces=22, first_line_flush=True, wrap_width=60)}\n", style="white")
                         rev_text.append(f"Post-Trade Emotions:  {format_indented_block(post_trade_emotions, indent_spaces=22, first_line_flush=True, wrap_width=60)}\n\n", style="white")
@@ -3174,7 +3269,6 @@ def flow_pending_audits():
                                 Choice("primary_emotion", name=f"Primary Emotion: {p_emotion.value if hasattr(p_emotion, 'value') else p_emotion}"),
                                 Choice("emotions", name=f"Emotions: {len(emotions) if isinstance(emotions, list) else 0} chosen"),
                                 Choice("behav_errors", name=f"Behavioral Errors: {len(behav_errors) if isinstance(behav_errors, list) else 0} chosen"),
-                                Choice("cog_patterns", name=f"Cognitive Patterns: {len(cog_patterns) if isinstance(cog_patterns, list) else 0} chosen"),
                                 Choice("anxiety", name=f"Anxiety Level: {anxiety}"),
                                 Choice("impatience", name=f"Impatience Level: {impatience}"),
                                 Choice("mental_clarity", name=f"Mental Clarity Level: {mental_clarity}"),
@@ -3245,11 +3339,9 @@ def flow_pending_audits():
                             elif field_to_edit == "primary_emotion":
                                 session.state["p_emotion"] = get_enum_choice("Edit Primary Emotion", PrimaryEmotion)
                             elif field_to_edit == "emotions":
-                                session.state["emotions"] = get_multi_enum_choice("Edit Emotions", Emotions)
+                                session.state["emotions"] = get_multi_enum_choice("Edit Emotions", Emotions, choices=ACTIVE_EMOTIONS, preselected=session.state.get("emotions"))
                             elif field_to_edit == "behav_errors":
                                 session.state["behav_errors"] = get_multi_enum_choice("Edit Behavioral Errors", BehavioralErrors)
-                            elif field_to_edit == "cog_patterns":
-                                session.state["cog_patterns"] = get_multi_enum_choice("Edit Cognitive Patterns", CognitivePatterns)
                             elif field_to_edit == "anxiety":
                                 session.state["anxiety"] = get_mandatory_int("Edit Anxiety Level (1 to 5)", 1, 5)
                             elif field_to_edit == "impatience":
@@ -3420,10 +3512,10 @@ def render_final_review_layout(record, workspace=None, pyd_ta=None):
         anx = workspace.get("anxiety_level") if (workspace and "anxiety_level" in workspace) else (ta.anxiety_level if ta else None)
         imp = workspace.get("impatience_level") if (workspace and "impatience_level" in workspace) else (ta.impatience_level if ta else None)
         clar = workspace.get("mental_clarity_level") if (workspace and "mental_clarity_level" in workspace) else (ta.mental_clarity_level if ta else None)
-        
+        gf = workspace.get("gates_failed") if (workspace and "gates_failed" in workspace) else (ta.gates_failed if ta else None)
+
         em_list = workspace.get("emotions") if (workspace and "emotions" in workspace) else (ta.emotions if ta else None)
         be_list = workspace.get("behavioral_errors") if (workspace and "behavioral_errors" in workspace) else (ta.behavioral_errors if ta else None)
-        cp_list = workspace.get("cognitive_patterns") if (workspace and "cognitive_patterns" in workspace) else (ta.cognitive_patterns if ta else None)
         
         pre_emo = workspace.get("pre_trade_emotions") if (workspace and "pre_trade_emotions" in workspace) else (ta.pre_trade_emotions if ta else None)
         mid_emo = workspace.get("mid_trade_emotions") if (workspace and "mid_trade_emotions" in workspace) else (ta.mid_trade_emotions if ta else None)
@@ -3480,13 +3572,26 @@ def render_final_review_layout(record, workspace=None, pyd_ta=None):
         
         conf_str = ", ".join([str(p.value if hasattr(p, 'value') else p) for p in c_params]) if isinstance(c_params, list) else str(c_params)
         emotions_str = ", ".join([str(e.value if hasattr(e, 'value') else e) for e in em_list]) if isinstance(em_list, list) else str(em_list)
-        be_str = ", ".join([str(b.value if hasattr(b, 'value') else b) for b in be_list]) if isinstance(be_list, list) else str(be_list)
-        cp_str = ", ".join([str(c.value if hasattr(c, 'value') else c) for c in cp_list]) if isinstance(cp_list, list) else str(cp_list)
+        be_list_clean = [str(b.value if hasattr(b, 'value') else b) for b in be_list] if isinstance(be_list, list) else []
+        be_str = ", ".join(be_list_clean) if be_list_clean else "N/A"
 
         tact_text.append(f"  Conf. Params:         {format_indented_block(conf_str, indent_spaces=24, first_line_flush=True, wrap_width=60)}\n", style="white")
         tact_text.append(f"  Emotions:             {format_indented_block(emotions_str, indent_spaces=24, first_line_flush=True, wrap_width=60)}\n", style="white")
         tact_text.append(f"  Behav. Errors:        {format_indented_block(be_str, indent_spaces=24, first_line_flush=True, wrap_width=60)}\n", style="white")
-        tact_text.append(f"  Cognitive Pat:        {format_indented_block(cp_str, indent_spaces=24, first_line_flush=True, wrap_width=60)}\n", style="white")
+
+        detected = compute_detected_patterns({
+            "primary_emotion": p_emo.value if hasattr(p_emo, 'value') else p_emo,
+            "anxiety_level": anx,
+            "impatience_level": imp,
+            "mental_clarity_level": clar,
+            "behavioral_errors": be_list_clean,
+            "confirmation_status": c_status.value if hasattr(c_status, 'value') else c_status,
+            "gates_failed": gf,
+            "followed_plan": f_plan.value if hasattr(f_plan, 'value') else f_plan,
+        })
+        tact_text.append("  Detected Patterns:\n", style="dim")
+        for label, color in detected:
+            tact_text.append(f"    • {label}\n", style=color)
 
         if pre_emo:
             tact_text.append(f"Pre-Trade Emotions:\n  {format_indented_block(pre_emo, 2, 38)}\n", style="white")
@@ -3717,9 +3822,7 @@ def flow_repair_analysis_audits():
             table.add_column("Calc Edge", justify="right", no_wrap=True, width=10)
             table.add_column("Created At", justify="center", style="dim cyan", no_wrap=True, width=16)
             table.add_column("Audit Status", justify="center", no_wrap=True, width=14)
-            
-            choices = []
-            
+
             for idx, r in enumerate(records):
                 ts_str = to_local_display(r.created_at)
                 bias_val = r.market_bias or "Neutral"
@@ -3738,24 +3841,24 @@ def flow_repair_analysis_audits():
                     status_str
                 )
                 
-                choice_name = f"[{idx + 1}] Inspect Record {r.id[:8]} | {r.asset}"
-                choices.append(Choice(r.id, name=choice_name))
-                
             console.print(table)
             console.print()
-            
-            choices.append(Choice("back", name="[Back to Analysis Modification Menu]"))
-            
-            selected_id = inquirer.select(
-                message="Select Trade to Inspect and Repair >",
-                choices=choices,
-                pointer=">",
-                qmark=""
-            ).execute()
-            
-            if selected_id == "back":
+
+            record_num = get_mandatory_text("Enter Record # to Inspect and Repair (or 'b' to go back)")
+            if record_num.strip().lower() in ("b", "back"):
                 return
-                
+
+            try:
+                record_idx = int(record_num.strip())
+                if record_idx < 1 or record_idx > len(records):
+                    raise ValueError
+            except ValueError:
+                console.print("[red]Invalid record #.[/red]")
+                input("Press Enter to continue...")
+                continue
+
+            selected_id = records[record_idx - 1].id
+
             record = db_session.get(UnifiedDepartment, selected_id)
             if not record:
                 console.print("[red]Error: Record not found.[/red]")
@@ -3827,7 +3930,28 @@ def flow_repair_analysis_audits():
                 "pre_trade_emotions": ta.pre_trade_emotions if (ta and hasattr(ta, "pre_trade_emotions") and ta.pre_trade_emotions) else "",
                 "mid_trade_emotions": ta.mid_trade_emotions if (ta and hasattr(ta, "mid_trade_emotions") and ta.mid_trade_emotions) else "",
                 "post_trade_emotions": ta.post_trade_emotions if (ta and hasattr(ta, "post_trade_emotions") and ta.post_trade_emotions) else "",
-                "confirmation_params": ta.confirmation_params if (ta and hasattr(ta, "confirmation_params") and ta.confirmation_params) else []
+                "confirmation_params": ta.confirmation_params if (ta and hasattr(ta, "confirmation_params") and ta.confirmation_params) else [],
+                # Motor B (Gates)
+                "g1_trend_15m": bool(ta.g1_trend_15m) if (ta and hasattr(ta, "g1_trend_15m")) else False,
+                "g2_fractal_trend": bool(ta.g2_fractal_trend) if (ta and hasattr(ta, "g2_fractal_trend")) else False,
+                "g3_limit_order": bool(ta.g3_limit_order) if (ta and hasattr(ta, "g3_limit_order")) else False,
+                "g4_breathing": bool(ta.g4_breathing) if (ta and hasattr(ta, "g4_breathing")) else False,
+                "g5_manual_cooldown": bool(ta.g5_manual_cooldown) if (ta and hasattr(ta, "g5_manual_cooldown")) else False,
+                "g6_sl_validated": bool(ta.g6_sl_validated) if (ta and hasattr(ta, "g6_sl_validated")) else False,
+                "g7_tp_validated": bool(ta.g7_tp_validated) if (ta and hasattr(ta, "g7_tp_validated")) else False,
+                # Motor B (Confirmations)
+                "c1_kl_support": bool(ta.c1_kl_support) if (ta and hasattr(ta, "c1_kl_support")) else False,
+                "c2_fractal_std": bool(ta.c2_fractal_std) if (ta and hasattr(ta, "c2_fractal_std")) else False,
+                "c3_fractal_1m": bool(ta.c3_fractal_1m) if (ta and hasattr(ta, "c3_fractal_1m")) else False,
+                "c4_fractal_1h": bool(ta.c4_fractal_1h) if (ta and hasattr(ta, "c4_fractal_1h")) else False,
+                "c5_kl_target": bool(ta.c5_kl_target) if (ta and hasattr(ta, "c5_kl_target")) else False,
+                "c6_liquidity": bool(ta.c6_liquidity) if (ta and hasattr(ta, "c6_liquidity")) else False,
+                "c7_retracement": bool(ta.c7_retracement) if (ta and hasattr(ta, "c7_retracement")) else False,
+                "c8_convergence_15m": bool(ta.c8_convergence_15m) if (ta and hasattr(ta, "c8_convergence_15m")) else False,
+                # Motor B (Metrics)
+                "gates_failed": ta.gates_failed if (ta and hasattr(ta, "gates_failed") and ta.gates_failed is not None) else 0,
+                "confirmations_count": ta.confirmations_count if (ta and hasattr(ta, "confirmations_count") and ta.confirmations_count is not None) else 0,
+                "mfe_potencial_estimado": ta.mfe_potencial_estimado if (ta and hasattr(ta, "mfe_potencial_estimado") and ta.mfe_potencial_estimado is not None) else None
             }
                 
             # Build global workspace
@@ -3848,7 +3972,8 @@ def flow_repair_analysis_audits():
                 "trade_status": record.trade_status or None,
                 "edge_validation_price": record.edge_validation_price,
                 "structural_invalidation": record.structural_invalidation,
-                
+                "mark_price": record.mark_price,
+
                 "p0_dir": p0.direction if p0 else "Neutral",
                 "p0_str": p0.strength if p0 else "Weak",
                 "p0_thesis": p0.thesis if p0 else "",
@@ -4079,32 +4204,40 @@ def flow_repair_analysis_audits():
                             if_name = os.path.basename(p1_data.get("inverted_fractal", "nan"))
                             
                             edit_choices = [
-                                Choice("asset", name=f"Asset: {workspace['asset']}"),
-                                Choice("edge_description", name=f"Edge Description: {workspace['edge_description']}"),
-                                Choice("edge_validation_price", name=f"[Edit] Edge Validation Price: {workspace.get('edge_validation_price', 'N/A')}"),
-                                Choice("structural_invalidation", name=f"[Edit] Structural Invalidation Price: {workspace.get('structural_invalidation', 'N/A')}"),
-                                Choice("efficiency_timeframe", name=f"[Edit] Efficiency Timeframe: {workspace.get('efficiency_timeframe', '1H')}"),
-                                Choice("p4_hierarchy", name=f"P4 Hierarchy: {workspace['p4_hierarchy']}"),
-                                Choice("p1_timeframe", name=f"P1 Timeframe: {workspace['p1_timeframe']}"),
-                                Choice("p1_type", name=f"P1 Fractal Type: {workspace['p1_type']}"),
-                                Choice("nodes_l1", name=f"Nodes L1: {workspace['nodes_l1']}"),
-                                Choice("nodes_l2", name=f"Nodes L2: {workspace['nodes_l2']}"),
-                                Choice("tactical_classification", name=f"Tactical Classification: {workspace['tactical_classification']}"),
-                                Choice("p0_dir", name=f"P0 Direction: {workspace['p0_dir']}"),
-                                Choice("p0_str", name=f"P0 Strength: {workspace['p0_str']}"),
-                                Choice("p0_thesis", name=f"P0 Thesis: {workspace['p0_thesis'][:25]}..."),
-                                Choice("p2_dir", name=f"P2 Direction: {workspace['p2_dir']}"),
-                                Choice("p2_str", name=f"P2 Strength: {workspace['p2_str']}"),
-                                Choice("p2_thesis", name=f"P2 Thesis: {workspace['p2_thesis'][:25]}..."),
-                                Choice("p3_dir", name=f"P3 Direction: {workspace['p3_dir']}"),
-                                Choice("p3_str", name=f"P3 Strength: {workspace['p3_str']}"),
-                                Choice("p3_thesis", name=f"P3 Thesis: {workspace['p3_thesis'][:25]}..."),
-                                Choice("p4_dir", name=f"P4 Direction: {workspace['p4_dir']}"),
-                                Choice("p4_str", name=f"P4 Strength: {workspace['p4_str']}"),
-                                Choice("p4_thesis", name=f"P4 Thesis: {workspace['p4_thesis'][:25]}..."),
-                                Choice("p1_dir", name=f"P1 Direction: {workspace['p1_dir']}"),
-                                Choice("p1_str", name=f"P1 Strength: {workspace['p1_str']}"),
-                                Choice("p1_thesis", name=f"P1 Fractals -> Normal: {nf_name} | Inverted: {if_name}"),
+                                Choice("asset", name=f"⚙️  Asset: {workspace['asset']}"),
+                                Separator("── 🔵 P0 · Macro Vector ──"),
+                                Choice("p0_thesis", name=f"   P0 Thesis: {_preview(workspace['p0_thesis'])}"),
+                                Choice("p0_dir", name=f"   P0 Direction: {_dir_icon(workspace['p0_dir'])} {workspace['p0_dir']}"),
+                                Choice("p0_str", name=f"   P0 Strength: {_str_icon(workspace['p0_str'])} {workspace['p0_str']}"),
+                                Separator("── 🟣 P1 · Tactical Timing ──"),
+                                Choice("p1_thesis", name=f"   P1 Fractals -> Normal: {nf_name} | Inverted: {if_name}"),
+                                Choice("p1_dir", name=f"   P1 Direction: {_dir_icon(workspace['p1_dir'])} {workspace['p1_dir']}"),
+                                Choice("p1_str", name=f"   P1 Strength: {_str_icon(workspace['p1_str'])} {workspace['p1_str']}"),
+                                Choice("p1_timeframe", name=f"   P1 Timeframe: {workspace['p1_timeframe']}"),
+                                Choice("p1_type", name=f"   P1 Fractal Type: {workspace['p1_type']}"),
+                                Choice("nodes_l1", name=f"   Nodes L1: {workspace['nodes_l1']}"),
+                                Choice("nodes_l2", name=f"   Nodes L2: {workspace['nodes_l2']}"),
+                                Separator("── 🔵 P2 · Structure ──"),
+                                Choice("p2_thesis", name=f"   P2 Thesis: {_preview(workspace['p2_thesis'])}"),
+                                Choice("p2_dir", name=f"   P2 Direction: {_dir_icon(workspace['p2_dir'])} {workspace['p2_dir']}"),
+                                Choice("p2_str", name=f"   P2 Strength: {_str_icon(workspace['p2_str'])} {workspace['p2_str']}"),
+                                Separator("── 🔵 P3 · Trend ──"),
+                                Choice("p3_thesis", name=f"   P3 Thesis: {_preview(workspace['p3_thesis'])}"),
+                                Choice("p3_dir", name=f"   P3 Direction: {_dir_icon(workspace['p3_dir'])} {workspace['p3_dir']}"),
+                                Choice("p3_str", name=f"   P3 Strength: {_str_icon(workspace['p3_str'])} {workspace['p3_str']}"),
+                                Separator("── 🟣 P4 · Hierarchy ──"),
+                                Choice("p4_thesis", name=f"   P4 Thesis: {_preview(workspace['p4_thesis'])}"),
+                                Choice("p4_dir", name=f"   P4 Direction: {_dir_icon(workspace['p4_dir'])} {workspace['p4_dir']}"),
+                                Choice("p4_str", name=f"   P4 Strength: {_str_icon(workspace['p4_str'])} {workspace['p4_str']}"),
+                                Choice("p4_hierarchy", name=f"   P4 Hierarchy: {workspace['p4_hierarchy']}"),
+                                Separator("── 🟡 Edge / Meta ──"),
+                                Choice("edge_description", name=f"   Edge Description: {_preview(workspace['edge_description'])}"),
+                                Choice("mark_price", name=f"   🔵 Mark Price: {workspace.get('mark_price', 'N/A')}"),
+                                Choice("edge_validation_price", name=f"   🟢 Edge Validation Price: {workspace.get('edge_validation_price', 'N/A')}"),
+                                Choice("structural_invalidation", name=f"   🔴 Structural Invalidation Price: {workspace.get('structural_invalidation', 'N/A')}"),
+                                Choice("efficiency_timeframe", name=f"   Efficiency Timeframe: {workspace.get('efficiency_timeframe', '1H')}"),
+                                Choice("tactical_classification", name=f"   Tactical Classification: {workspace['tactical_classification']}"),
+                                Separator(),
                                 Choice("back", name="[<] Back")
                             ]
                             
@@ -4122,6 +4255,12 @@ def flow_repair_analysis_audits():
                                 workspace["asset"] = get_mandatory_text("Enter Asset Name (e.g. BTC/USDT)")
                             elif field == "edge_description":
                                 workspace["edge_description"] = get_mandatory_text("Enter Edge Description")
+                            elif field == "mark_price":
+                                try:
+                                    val = get_mandatory_text("Enter Mark Price [Leave empty for None]")
+                                    workspace["mark_price"] = Decimal(val) if val.strip() else None
+                                except Exception:
+                                    console.print("[bold red]Invalid decimal input. Aborting modification.[/bold red]")
                             elif field == "edge_validation_price":
                                 try:
                                     val = get_mandatory_text("Enter Edge Validation Price (Target Convergence) [Leave empty for None]")
@@ -4247,6 +4386,7 @@ def flow_repair_analysis_audits():
                                         
                                 record.edge_validation_price = workspace.get("edge_validation_price")
                                 record.structural_invalidation = workspace.get("structural_invalidation")
+                                record.mark_price = workspace.get("mark_price")
                                 if getattr(record, "efficiency_audit", None):
                                     record.efficiency_audit.efficiency_timeframe = workspace.get("efficiency_timeframe")
                                         
@@ -4300,15 +4440,20 @@ def flow_repair_analysis_audits():
                             break
                         elif action == "edit":
                             edit_choices = [
-                                Choice("bias_a", name=f"Bias A (Original): {workspace['bias_a']}"),
-                                Choice("real_bias_b", name=f"Real Bias B: {workspace['real_bias_b']}"),
-                                Choice("resolution_type", name=f"Resolution Type: {workspace['resolution_type']}"),
-                                Choice("structural_resolution", name=f"Structural Resolution: {workspace['structural_resolution']}"),
-                                Choice("failure_reason", name=f"Failure Reason: {workspace['failure_reason']}"),
-                                Choice("specific_bias_compliance", name=f"Specific Bias Compliance: {workspace['specific_bias_compliance']}"),
-                                Choice("false_regime_rate", name=f"False Regime Rate: {workspace['false_regime_rate']}"),
-                                Choice("efficiency_timeframe", name=f"Efficiency Timeframe: {workspace['efficiency_timeframe']}"),
-                                Choice("lesson_eff", name=f"Lesson Learned: {workspace['lesson_eff'][:25]}..."),
+                                Separator("── 🔵 Structural Bias ──"),
+                                Choice("bias_a", name=f"   Bias A (Original): {workspace['bias_a']}"),
+                                Choice("real_bias_b", name=f"   Real Bias B: {workspace['real_bias_b']}"),
+                                Separator("── 🟣 Resolution ──"),
+                                Choice("resolution_type", name=f"   Resolution Type: {workspace['resolution_type']}"),
+                                Choice("structural_resolution", name=f"   Structural Resolution: {workspace['structural_resolution']}"),
+                                Choice("failure_reason", name=f"   Failure Reason: {workspace['failure_reason']}"),
+                                Separator("── 🟡 Compliance & Metrics ──"),
+                                Choice("specific_bias_compliance", name=f"   Specific Bias Compliance: {workspace['specific_bias_compliance']}"),
+                                Choice("false_regime_rate", name=f"   False Regime Rate: {workspace['false_regime_rate']}"),
+                                Choice("efficiency_timeframe", name=f"   Efficiency Timeframe: {workspace['efficiency_timeframe']}"),
+                                Separator("── ⚪ Notes ──"),
+                                Choice("lesson_eff", name=f"   Lesson Learned: {_preview(workspace['lesson_eff'])}"),
+                                Separator(),
                                 Choice("back", name="[<] Back")
                             ]
                             
@@ -4464,9 +4609,59 @@ def flow_repair_analysis_audits():
                                 "captured_mfe": Decimal('0.0'),
                                 "captured_mae": Decimal('0.0')
                             })
-                        
+
+                    def recalculate_session(w):
+                        et = w.get("entry_time")
+                        if not et:
+                            return
+                        utc_check_time = et + datetime.timedelta(hours=6)
+                        hr = utc_check_time.hour
+                        if 13 <= hr < 16:
+                            w["session"] = "London/NY Overlap"
+                        elif 16 <= hr < 21:
+                            w["session"] = "New York"
+                        elif 8 <= hr < 13:
+                            w["session"] = "London"
+                        else:
+                            w["session"] = "Asia/Off"
+
+                    GATE_EDIT_LABELS = {
+                        "g1_trend_15m": "G1: P0 Trend 15m",
+                        "g2_fractal_trend": "G2: Trend Fractal (5m or 15m)",
+                        "g3_limit_order": "G3: Limit Order",
+                        "g4_breathing": "G4: Breathing - Mindfulness",
+                        "g5_manual_cooldown": "G5: Manual Cooldown",
+                        "g6_sl_validated": "G6: SL Validated",
+                        "g7_tp_validated": "G7: TP Validated",
+                    }
+                    CONF_EDIT_LABELS = {
+                        "c1_kl_support": "C1: KL as Support/Resistance",
+                        "c2_fractal_std": "C2: Standard Fractal Confirmation (5-15m)",
+                        "c3_fractal_1m": "C3: 1m Fractal Confirmation/Assistance",
+                        "c4_fractal_1h": "C4: 1h Fractal Continuation or Inflection",
+                        "c5_kl_target": "C5: KL as target",
+                        "c6_liquidity": "C6: Liquidity grabbed or to be grabbed",
+                        "c7_retracement": "C7: 0.4-0.6 Retracement in P015m",
+                        "c8_convergence_15m": "C8: Convergence with P015m",
+                    }
+
+                    def edit_gates(w):
+                        choices = [Choice(k, name=lbl, enabled=bool(w.get(k))) for k, lbl in GATE_EDIT_LABELS.items()]
+                        selected = bind_pause(inquirer.checkbox(message="Select fulfilled Gates >", choices=choices)).execute()
+                        for k in GATE_EDIT_LABELS:
+                            w[k] = k in selected
+                        w["gates_failed"] = 7 - len(selected)
+
+                    def edit_confirmations(w):
+                        choices = [Choice(k, name=lbl, enabled=bool(w.get(k))) for k, lbl in CONF_EDIT_LABELS.items()]
+                        selected = bind_pause(inquirer.checkbox(message="Select fulfilled Confirmations >", choices=choices)).execute()
+                        for k in CONF_EDIT_LABELS:
+                            w[k] = k in selected
+                        w["confirmations_count"] = len(selected)
+
                     # Run initial recalculation pass
                     recalculate_tactical_math(workspace, workspace["p0_dir"], workspace["p2_dir"], workspace["p4_dir"])
+                    recalculate_session(workspace)
                     
                     while True:
                         rev_text = Text()
@@ -4518,7 +4713,35 @@ def flow_repair_analysis_audits():
                         cp_params_list = workspace.get("confirmation_params") or []
                         conf_str = ", ".join([str(p.value if hasattr(p, 'value') else p) for p in cp_params_list]) if isinstance(cp_params_list, list) else str(cp_params_list)
                         rev_text.append(f"  Conf. Params:         {format_indented_block(conf_str, indent_spaces=24, first_line_flush=True)}\n", style="white")
-                        
+                        rev_text.append(f"Exit Type: {workspace.get('exit_type')}   Session: {workspace.get('session')}\n", style="white")
+
+                        # --- Motor B (Gates & Confirmations) ---
+                        rev_text.append("\n--- Motor B (Gates & Confirmations) ---\n", style="bold red")
+                        gates_failed_val = workspace.get("gates_failed", 0) or 0
+                        gf_style = "bold red" if gates_failed_val > 0 else "bold green"
+                        rev_text.append("  Gates Failed: ", style="dim")
+                        rev_text.append(f"{gates_failed_val}/7\n", style=gf_style)
+                        for k, lbl in GATE_EDIT_LABELS.items():
+                            icon = "✓" if workspace.get(k) else "✗"
+                            icon_style = "bold green" if workspace.get(k) else "bold red"
+                            rev_text.append("  [", style="white")
+                            rev_text.append(icon, style=icon_style)
+                            rev_text.append(f"] {lbl}\n", style="white")
+
+                        confs_count_val = workspace.get("confirmations_count", 0) or 0
+                        rev_text.append("  Confirmations: ", style="dim")
+                        rev_text.append(f"{confs_count_val}/8\n", style="bold cyan")
+                        for k, lbl in CONF_EDIT_LABELS.items():
+                            icon = "✓" if workspace.get(k) else "✗"
+                            icon_style = "bold green" if workspace.get(k) else "bold red"
+                            rev_text.append("  [", style="white")
+                            rev_text.append(icon, style=icon_style)
+                            rev_text.append(f"] {lbl}\n", style="white")
+
+                        if workspace.get("mfe_potencial_estimado") is not None:
+                            rev_text.append("  MFE Potencial Estimado (S6): ", style="dim")
+                            rev_text.append(f"{workspace.get('mfe_potencial_estimado')}R\n", style="bold yellow")
+
                         # --- Psychological & Cognitive Logging ---
                         rev_text.append("\n--- Psychological & Cognitive Logging ---\n", style="bold blue")
                         rev_text.append(f"Primary Emotion: {workspace.get('primary_emotion')}\n", style="white")
@@ -4528,14 +4751,24 @@ def flow_repair_analysis_audits():
                         rev_text.append(f"  Emotions:             {format_indented_block(emotions_str, indent_spaces=24, first_line_flush=True)}\n", style="white")
                         
                         be_list = workspace.get("behavioral_errors") or []
-                        be_str = ", ".join([str(b.value if hasattr(b, 'value') else b) for b in be_list]) if isinstance(be_list, list) else str(be_list)
+                        be_list_clean = [str(b.value if hasattr(b, 'value') else b) for b in be_list] if isinstance(be_list, list) else []
+                        be_str = ", ".join(be_list_clean) if be_list_clean else "N/A"
                         wrapped_be = format_indented_block(be_str, indent_spaces=24, first_line_flush=True)
                         rev_text.append(f"  Behavioral Errors:    {wrapped_be}\n", style="white")
-                        
-                        cp_list = workspace.get("cognitive_patterns") or []
-                        cp_str = ", ".join([str(c.value if hasattr(c, 'value') else c) for c in cp_list]) if isinstance(cp_list, list) else str(cp_list)
-                        wrapped_cp = format_indented_block(cp_str, indent_spaces=24, first_line_flush=True)
-                        rev_text.append(f"  Cognitive Patterns:   {wrapped_cp}\n", style="white")
+
+                        detected = compute_detected_patterns({
+                            "primary_emotion": workspace.get("primary_emotion"),
+                            "anxiety_level": workspace.get("anxiety_level"),
+                            "impatience_level": workspace.get("impatience_level"),
+                            "mental_clarity_level": workspace.get("mental_clarity_level"),
+                            "behavioral_errors": be_list_clean,
+                            "confirmation_status": workspace.get("confirmation_status"),
+                            "gates_failed": workspace.get("gates_failed"),
+                            "followed_plan": workspace.get("followed_plan"),
+                        })
+                        rev_text.append("  Detected Patterns:\n", style="dim")
+                        for label, color in detected:
+                            rev_text.append(f"    • {label}\n", style=color)
                         
                         pre_e = workspace.get("pre_trade_emotions")
                         mid_e = workspace.get("mid_trade_emotions")
@@ -4586,41 +4819,52 @@ def flow_repair_analysis_audits():
                         if action == "back":
                             break
                         elif action == "edit":
+                            gates_failed_disp = workspace.get("gates_failed", 0) or 0
+                            confs_count_disp = workspace.get("confirmations_count", 0) or 0
                             edit_choices = [
-                                Choice("trade_status", name=f"Trade Status: {workspace['trade_status']}"),
-                                Choice("compliance", name=f"Compliance: {workspace['compliance']}"),
-                                Choice("entry_price", name=f"Entry Price: {workspace['entry_price']}"),
-                                Choice("closing_price", name=f"Closing Price: {workspace['closing_price']}"),
-                                Choice("size", name=f"Size: {workspace['size']}"),
-                                Choice("stop_loss", name=f"Stop Loss: {workspace['stop_loss']}"),
-                                Choice("take_profit", name=f"Take Profit: {workspace['take_profit']}"),
-                                Choice("mae", name=f"MAE: {workspace['mae']}"),
-                                Choice("mfe", name=f"MFE: {workspace['mfe']}"),
-                                Choice("cost", name=f"Cost: {workspace.get('cost', 0.0)}"),
-                                Choice("could_hit_tp", name=f"Could Hit TP: {workspace['could_hit_tp']}"),
-                                Choice("entry_time", name=f"Entry Time: {workspace['entry_time']}"),
-                                Choice("exit_time", name=f"Exit Time: {workspace['exit_time']}"),
-                                Choice("tier_setup", name=f"Tier Setup: {workspace['tier_setup']}"),
-                                Choice("market_state", name=f"Market State: {workspace['market_state']}"),
-                                Choice("followed_plan", name=f"Followed Plan: {workspace['followed_plan']}"),
-                                Choice("primary_emotion", name=f"Primary Emotion: {workspace['primary_emotion']}"),
-                                Choice("setup_type", name=f"Setup Type: {workspace['setup_type']}"),
-                                Choice("htf_trend_context", name=f"HTF Trend: {workspace['htf_trend_context']}"),
-                                Choice("ltf_trend_context", name=f"LTF Trend: {workspace['ltf_trend_context']}"),
-                                Choice("confirmation_5m_15m", name=f"5m/15m Confirmation: {workspace['confirmation_5m_15m']}"),
-                                Choice("confirmation_status", name=f"Confirmation Status: {workspace['confirmation_status']}"),
-                                Choice("confirmation_params", name=f"Confirmation Params: {len(workspace['confirmation_params'])} chosen"),
-                                Choice("emotions", name=f"Emotions List: {len(workspace['emotions'])} chosen"),
-                                Choice("behav_errors", name=f"Behavioral Errors List: {len(workspace['behavioral_errors'])} chosen"),
-                                Choice("cog_patterns", name=f"Cognitive Patterns List: {len(workspace['cognitive_patterns'])} chosen"),
-                                Choice("anxiety_level", name=f"Anxiety Level: {workspace['anxiety_level']}"),
-                                Choice("impatience_level", name=f"Impatience Level: {workspace['impatience_level']}"),
-                                Choice("mental_clarity_level", name=f"Mental Clarity Level: {workspace['mental_clarity_level']}"),
-                                Choice("pre_trade_emotions", name=f"Pre Trade Emotions: {workspace['pre_trade_emotions'][:25] if workspace['pre_trade_emotions'] else 'N/A'}..."),
-                                Choice("mid_trade_emotions", name=f"Mid Trade Emotions: {workspace['mid_trade_emotions'][:25] if workspace['mid_trade_emotions'] else 'N/A'}..."),
-                                Choice("post_trade_emotions", name=f"Post Trade Emotions: {workspace['post_trade_emotions'][:25] if workspace['post_trade_emotions'] else 'N/A'}..."),
-                                Choice("lesson_tact", name=f"Lesson Learned: {workspace['lesson_tact'][:25]}..."),
-                                Choice("visual_lesson_path", name=f"Visual Lesson: {workspace.get('visual_lesson_path', 'nan')}"),
+                                Separator("── 🟢 Core Inputs ──"),
+                                Choice("trade_status", name=f"   Trade Status: {workspace['trade_status']}"),
+                                Choice("compliance", name=f"   Compliance: {workspace['compliance']}"),
+                                Choice("entry_price", name=f"   Entry Price: {workspace['entry_price']}"),
+                                Choice("closing_price", name=f"   Closing Price: {workspace['closing_price']}"),
+                                Choice("size", name=f"   Size: {workspace['size']}"),
+                                Choice("stop_loss", name=f"   Stop Loss: {workspace['stop_loss']}"),
+                                Choice("take_profit", name=f"   Take Profit: {workspace['take_profit']}"),
+                                Choice("mae", name=f"   MAE: {workspace['mae']}"),
+                                Choice("mfe", name=f"   MFE: {workspace['mfe']}"),
+                                Choice("cost", name=f"   Cost: {workspace.get('cost', 0.0)}"),
+                                Choice("could_hit_tp", name=f"   Could Hit TP: {workspace['could_hit_tp']}"),
+                                Choice("entry_time", name=f"   Entry Time: {workspace['entry_time']}"),
+                                Choice("exit_time", name=f"   Exit Time: {workspace['exit_time']}"),
+                                Choice("exit_type", name=f"   Exit Type: {workspace.get('exit_type')}"),
+                                Separator("── 🟣 Execution Framework / Motor B ──"),
+                                Choice("tier_setup", name=f"   Tier Setup: {workspace['tier_setup']}"),
+                                Choice("market_state", name=f"   Market State: {workspace['market_state']}"),
+                                Choice("followed_plan", name=f"   Followed Plan: {workspace['followed_plan']}"),
+                                Choice("setup_type", name=f"   Setup Type: {workspace['setup_type']}"),
+                                Choice("htf_trend_context", name=f"   HTF Trend: {workspace['htf_trend_context']}"),
+                                Choice("ltf_trend_context", name=f"   LTF Trend: {workspace['ltf_trend_context']}"),
+                                Choice("confirmation_5m_15m", name=f"   5m/15m Confirmation: {workspace['confirmation_5m_15m']}"),
+                                Choice("confirmation_status", name=f"   Confirmation Status: {workspace['confirmation_status']}"),
+                                Choice("confirmation_params", name=f"   Confirmation Params: {len(workspace['confirmation_params'])} chosen"),
+                                Choice("gates", name=f"   🚦 Gates: {7 - gates_failed_disp}/7 passed ({gates_failed_disp} failed)"),
+                                Choice("confirmations", name=f"   🚦 Confirmations: {confs_count_disp}/8 chosen"),
+                                Choice("mfe_potencial_estimado", name=f"   MFE Potencial Estimado: {workspace.get('mfe_potencial_estimado', 'N/A')}"),
+                                Separator("── 🔵 Psychological & Cognitive ──"),
+                                Choice("primary_emotion", name=f"   Primary Emotion: {workspace['primary_emotion']}"),
+                                Choice("emotions", name=f"   Emotions List: {len(workspace['emotions'])} chosen"),
+                                Choice("behav_errors", name=f"   Behavioral Errors List: {len(workspace['behavioral_errors'])} chosen"),
+                                Choice("pre_trade_emotions", name=f"   Pre Trade Emotions: {_preview(workspace['pre_trade_emotions']) if workspace['pre_trade_emotions'] else 'N/A'}"),
+                                Choice("mid_trade_emotions", name=f"   Mid Trade Emotions: {_preview(workspace['mid_trade_emotions']) if workspace['mid_trade_emotions'] else 'N/A'}"),
+                                Choice("post_trade_emotions", name=f"   Post Trade Emotions: {_preview(workspace['post_trade_emotions']) if workspace['post_trade_emotions'] else 'N/A'}"),
+                                Separator("── 🟠 Internal State Thresholds ──"),
+                                Choice("anxiety_level", name=f"   Anxiety Level: {workspace['anxiety_level']}"),
+                                Choice("impatience_level", name=f"   Impatience Level: {workspace['impatience_level']}"),
+                                Choice("mental_clarity_level", name=f"   Mental Clarity Level: {workspace['mental_clarity_level']}"),
+                                Separator("── ⚪ Notes ──"),
+                                Choice("lesson_tact", name=f"   Lesson Learned: {_preview(workspace['lesson_tact'])}"),
+                                Choice("visual_lesson_path", name=f"   Visual Lesson: {workspace.get('visual_lesson_path', 'nan')}"),
+                                Separator(),
                                 Choice("back", name="[<] Back")
                             ]
                             
@@ -4657,8 +4901,11 @@ def flow_repair_analysis_audits():
                                  ).execute()
                             elif field == "entry_time":
                                 workspace["entry_time"] = get_mandatory_datetime("Edit Entry Time")
+                                recalculate_session(workspace)
                             elif field == "exit_time":
                                 workspace["exit_time"] = get_mandatory_datetime("Edit Exit Time")
+                            elif field == "exit_type":
+                                workspace["exit_type"] = get_enum_choice("Edit Exit Type", ExitType).value
                             elif field == "tier_setup":
                                 workspace["tier_setup"] = get_enum_choice("Edit Tier Setup", TierSetup).value
                             elif field == "market_state":
@@ -4682,22 +4929,22 @@ def flow_repair_analysis_audits():
                                 ).execute()
                             elif field == "confirmation_status":
                                 workspace["confirmation_status"] = get_enum_choice("Edit Confirmation Status", ConfirmationStatus).value
-                            elif field == "confirmation_5m_15m":
-                                workspace["confirmation_5m_15m"] = inquirer.select(
-                                    message="Edit 5m/15m Confirmation >",
-                                    choices=[Choice("yes", name="yes"), Choice("no", name="no")],
-                                    pointer=">",
-                                    qmark=""
-                                ).execute()
-                                recalculate_tactical_math(workspace, workspace["p0_dir"], workspace["p2_dir"], workspace["p4_dir"])
                             elif field == "confirmation_params":
                                 workspace["confirmation_params"] = [p.value if hasattr(p, 'value') else p for p in get_multi_enum_choice("Edit Confirmation Params", ConfirmationParams)]
+                            elif field == "gates":
+                                edit_gates(workspace)
+                            elif field == "confirmations":
+                                edit_confirmations(workspace)
+                            elif field == "mfe_potencial_estimado":
+                                workspace["mfe_potencial_estimado"] = get_mandatory_float("Edit MFE Potencial Estimado")
                             elif field == "emotions":
-                                workspace["emotions"] = [e.value if hasattr(e, 'value') else e for e in get_multi_enum_choice("Edit Emotions", Emotions)]
+                                current_emotions = workspace.get("emotions") or []
+                                active_values = {e.value for e in ACTIVE_EMOTIONS}
+                                legacy_members = [e for e in Emotions if e.name != "SKIP" and e.value not in active_values and e.value in current_emotions]
+                                emotion_choices = list(ACTIVE_EMOTIONS) + legacy_members
+                                workspace["emotions"] = [e.value if hasattr(e, 'value') else e for e in get_multi_enum_choice("Edit Emotions", Emotions, choices=emotion_choices, preselected=current_emotions)]
                             elif field == "behav_errors":
                                 workspace["behavioral_errors"] = [b.value if hasattr(b, 'value') else b for b in get_multi_enum_choice("Edit Behavioral Errors", BehavioralErrors)]
-                            elif field == "cog_patterns":
-                                workspace["cognitive_patterns"] = [c.value if hasattr(c, 'value') else c for c in get_multi_enum_choice("Edit Cognitive Patterns", CognitivePatterns)]
                             elif field == "lesson_tact":
                                 workspace["lesson_tact"] = get_mandatory_text("Edit Tactical Lesson Learned", multiline=True)
                             elif field == "visual_lesson_path":
@@ -4720,7 +4967,7 @@ def flow_repair_analysis_audits():
                                 
                                 if exists:
                                     raw_conn.execute("""
-                                        UPDATE tactical_audit SET 
+                                        UPDATE tactical_audit SET
                                             compliance = ?,
                                             confirmation_5m_15m = ?,
                                             entry_price = ?,
@@ -4730,10 +4977,15 @@ def flow_repair_analysis_audits():
                                             take_profit = ?,
                                             mae_adverse = ?,
                                             mfe_favorable = ?,
+                                            captured_mae = ?,
+                                            r_multiple = ?,
+                                            captured_mfe = ?,
                                             could_hit_tp = ?,
                                             lesson_learned = ?,
                                             tier_setup = ?,
                                             market_state = ?,
+                                            session = ?,
+                                            exit_type = ?,
                                             followed_plan = ?,
                                             primary_emotion = ?,
                                             setup_type = ?,
@@ -4758,7 +5010,25 @@ def flow_repair_analysis_audits():
                                             post_trade_emotions = ?,
                                             confirmation_params = ?,
                                             entry_time = ?,
-                                            exit_time = ?
+                                            exit_time = ?,
+                                            g1_trend_15m = ?,
+                                            g2_fractal_trend = ?,
+                                            g3_limit_order = ?,
+                                            g4_breathing = ?,
+                                            g5_manual_cooldown = ?,
+                                            g6_sl_validated = ?,
+                                            g7_tp_validated = ?,
+                                            c1_kl_support = ?,
+                                            c2_fractal_std = ?,
+                                            c3_fractal_1m = ?,
+                                            c4_fractal_1h = ?,
+                                            c5_kl_target = ?,
+                                            c6_liquidity = ?,
+                                            c7_retracement = ?,
+                                            c8_convergence_15m = ?,
+                                            gates_failed = ?,
+                                            confirmations_count = ?,
+                                            mfe_potencial_estimado = ?
                                         WHERE id = ?
                                     """, (
                                         workspace["compliance"] or "nan",
@@ -4770,10 +5040,15 @@ def flow_repair_analysis_audits():
                                         float(workspace["take_profit"]),
                                         float(workspace["mae"]),
                                         float(workspace["mfe"]),
+                                        float(workspace.get("captured_mae", 0.0)),
+                                        float(workspace.get("r_multiple", 0.0)),
+                                        float(workspace.get("captured_mfe", 0.0)),
                                         workspace["could_hit_tp"],
                                         workspace["lesson_tact"],
                                         workspace["tier_setup"],
                                         workspace["market_state"],
+                                        workspace.get("session"),
+                                        workspace.get("exit_type"),
                                         workspace["followed_plan"],
                                         workspace["primary_emotion"],
                                         workspace["setup_type"],
@@ -4799,22 +5074,40 @@ def flow_repair_analysis_audits():
                                         json.dumps(workspace["confirmation_params"]) if workspace.get("confirmation_params") else None,
                                         workspace["entry_time"].isoformat() if hasattr(workspace.get("entry_time"), "isoformat") else workspace.get("entry_time"),
                                         workspace["exit_time"].isoformat() if hasattr(workspace.get("exit_time"), "isoformat") else workspace.get("exit_time"),
+                                        bool(workspace.get("g1_trend_15m")),
+                                        bool(workspace.get("g2_fractal_trend")),
+                                        bool(workspace.get("g3_limit_order")),
+                                        bool(workspace.get("g4_breathing")),
+                                        bool(workspace.get("g5_manual_cooldown")),
+                                        bool(workspace.get("g6_sl_validated")),
+                                        bool(workspace.get("g7_tp_validated")),
+                                        bool(workspace.get("c1_kl_support")),
+                                        bool(workspace.get("c2_fractal_std")),
+                                        bool(workspace.get("c3_fractal_1m")),
+                                        bool(workspace.get("c4_fractal_1h")),
+                                        bool(workspace.get("c5_kl_target")),
+                                        bool(workspace.get("c6_liquidity")),
+                                        bool(workspace.get("c7_retracement")),
+                                        bool(workspace.get("c8_convergence_15m")),
+                                        int(workspace.get("gates_failed", 0) or 0),
+                                        int(workspace.get("confirmations_count", 0) or 0),
+                                        float(workspace["mfe_potencial_estimado"]) if workspace.get("mfe_potencial_estimado") is not None else None,
                                         record.id
                                     ))
                                 else:
                                     raw_conn.execute("""
                                         INSERT INTO tactical_audit (
-                                            id, compliance, confirmation_5m_15m, entry_price, closing_price, size, stop_loss, take_profit, mae_adverse, mfe_favorable, could_hit_tp, lesson_learned,
-                                            tier_setup, market_state, followed_plan, primary_emotion, setup_type, htf_trend_context, ltf_trend_context, confirmation_status, anxiety_level, impatience_level, mental_clarity_level,
+                                            id, compliance, confirmation_5m_15m, entry_price, closing_price, size, stop_loss, take_profit, mae_adverse, mfe_favorable, captured_mae, r_multiple, captured_mfe, could_hit_tp, lesson_learned,
+                                            tier_setup, market_state, session, exit_type, followed_plan, primary_emotion, setup_type, htf_trend_context, ltf_trend_context, confirmation_status, anxiety_level, impatience_level, mental_clarity_level,
                                             risk_usd, r_r, pnl_and_cost, notional_size, capital_at_risk, trade_decision, emotions, behavioral_errors, cognitive_patterns, visual_lesson_path,
                                             pre_trade_emotions, mid_trade_emotions, post_trade_emotions, confirmation_params, entry_time, exit_time,
                                             g1_trend_15m, g2_fractal_trend, g3_limit_order, g4_breathing, g5_manual_cooldown, g6_sl_validated, g7_tp_validated,
                                             c1_kl_support, c2_fractal_std, c3_fractal_1m, c4_fractal_1h, c5_kl_target, c6_liquidity, c7_retracement, c8_convergence_15m,
                                             gates_failed, confirmations_count, mfe_potencial_estimado
-                                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                                                  0, 0, 0, 0, 0, 0, 0,
-                                                  0, 0, 0, 0, 0, 0, 0, 0,
-                                                  NULL, NULL, NULL)
+                                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                                  ?, ?, ?, ?, ?, ?, ?,
+                                                  ?, ?, ?, ?, ?, ?, ?, ?,
+                                                  ?, ?, ?)
                                     """, (
                                         record.id,
                                         workspace["compliance"] or "nan",
@@ -4826,10 +5119,15 @@ def flow_repair_analysis_audits():
                                         float(workspace["take_profit"]),
                                         float(workspace["mae"]),
                                         float(workspace["mfe"]),
+                                        float(workspace.get("captured_mae", 0.0)),
+                                        float(workspace.get("r_multiple", 0.0)),
+                                        float(workspace.get("captured_mfe", 0.0)),
                                         workspace["could_hit_tp"],
                                         workspace["lesson_tact"],
                                         workspace["tier_setup"],
                                         workspace["market_state"],
+                                        workspace.get("session"),
+                                        workspace.get("exit_type"),
                                         workspace["followed_plan"],
                                         workspace["primary_emotion"],
                                         workspace["setup_type"],
@@ -4854,7 +5152,25 @@ def flow_repair_analysis_audits():
                                         workspace.get("post_trade_emotions"),
                                         json.dumps(workspace["confirmation_params"]) if workspace.get("confirmation_params") else None,
                                         workspace["entry_time"].isoformat() if hasattr(workspace.get("entry_time"), "isoformat") else workspace.get("entry_time"),
-                                        workspace["exit_time"].isoformat() if hasattr(workspace.get("exit_time"), "isoformat") else workspace.get("exit_time")
+                                        workspace["exit_time"].isoformat() if hasattr(workspace.get("exit_time"), "isoformat") else workspace.get("exit_time"),
+                                        bool(workspace.get("g1_trend_15m")),
+                                        bool(workspace.get("g2_fractal_trend")),
+                                        bool(workspace.get("g3_limit_order")),
+                                        bool(workspace.get("g4_breathing")),
+                                        bool(workspace.get("g5_manual_cooldown")),
+                                        bool(workspace.get("g6_sl_validated")),
+                                        bool(workspace.get("g7_tp_validated")),
+                                        bool(workspace.get("c1_kl_support")),
+                                        bool(workspace.get("c2_fractal_std")),
+                                        bool(workspace.get("c3_fractal_1m")),
+                                        bool(workspace.get("c4_fractal_1h")),
+                                        bool(workspace.get("c5_kl_target")),
+                                        bool(workspace.get("c6_liquidity")),
+                                        bool(workspace.get("c7_retracement")),
+                                        bool(workspace.get("c8_convergence_15m")),
+                                        int(workspace.get("gates_failed", 0) or 0),
+                                        int(workspace.get("confirmations_count", 0) or 0),
+                                        float(workspace["mfe_potencial_estimado"]) if workspace.get("mfe_potencial_estimado") is not None else None
                                     ))
                                 db_session.commit()
                                 console.print("[green]Tactical Audit Repair saved successfully.[/green]")
@@ -4874,18 +5190,21 @@ def flow_repair_analysis_audits():
                         console.rule(f"[bold cyan]Date/Time Metadata Repair: {record.id[:8]}[/bold cyan]")
                         
                         dt_choices = []
-                        dt_choices.append(Choice("u_created_at", name=f"Unified Created At: {to_local_display(record.created_at)}"))
-                        dt_choices.append(Choice("u_updated_at", name=f"Unified Updated At: {to_local_display(record.updated_at)}"))
-                        
+                        dt_choices.append(Separator("── 🔵 Unified Department ──"))
+                        dt_choices.append(Choice("u_created_at", name=f"   Created At: {to_local_display(record.created_at)}"))
+                        dt_choices.append(Choice("u_updated_at", name=f"   Updated At: {to_local_display(record.updated_at)}"))
+
                         if record.efficiency_audit:
-                            dt_choices.append(Choice("ea_created_at", name=f"Efficiency Created At: {to_local_display(record.efficiency_audit.created_at)}"))
-                            dt_choices.append(Choice("ea_updated_at", name=f"Efficiency Updated At: {to_local_display(record.efficiency_audit.updated_at)}"))
-                            dt_choices.append(Choice("ea_res_time", name=f"Efficiency Res Time: {to_local_display(record.efficiency_audit.resolution_time)}"))
-                            
+                            dt_choices.append(Separator("── 🟡 Efficiency Audit ──"))
+                            dt_choices.append(Choice("ea_created_at", name=f"   Created At: {to_local_display(record.efficiency_audit.created_at)}"))
+                            dt_choices.append(Choice("ea_updated_at", name=f"   Updated At: {to_local_display(record.efficiency_audit.updated_at)}"))
+                            dt_choices.append(Choice("ea_res_time", name=f"   Resolution Time: {to_local_display(record.efficiency_audit.resolution_time)}"))
+
                         if record.tactical_audit:
-                            dt_choices.append(Choice("ta_entry", name=f"Tactical Entry Time: {to_local_display(record.tactical_audit.entry_time)}"))
-                            dt_choices.append(Choice("ta_exit", name=f"Tactical Exit Time: {to_local_display(record.tactical_audit.exit_time)}"))
-                            
+                            dt_choices.append(Separator("── 🟣 Tactical Audit ──"))
+                            dt_choices.append(Choice("ta_entry", name=f"   Entry Time: {to_local_display(record.tactical_audit.entry_time)}"))
+                            dt_choices.append(Choice("ta_exit", name=f"   Exit Time: {to_local_display(record.tactical_audit.exit_time)}"))
+
                         dt_choices.append(Separator())
                         dt_choices.append(Choice("save", name="[SAVE] Confirm & Commit Changes"))
                         dt_choices.append(Choice("back", name="[BACK] Cancel & Return"))

@@ -121,6 +121,7 @@ class UnifiedDepartment(Base):
     tactical_page_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     edge_validation_price: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
     structural_invalidation: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
+    mark_price: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
 
     analysis_layers: Mapped[List["AnalysisLayer"]] = relationship(back_populates="unified_department", cascade="all, delete-orphan")
     efficiency_audit: Mapped[Optional["EfficiencyAudit"]] = relationship(back_populates="unified_department", cascade="all, delete-orphan", single_parent=True)
@@ -215,6 +216,8 @@ class TacticalAudit(Base):
     pnl_and_cost: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
     mae_adverse: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
     captured_mae: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
+    r_multiple: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
+    captured_mfe: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
     mfe_favorable: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
     notional_size: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
     capital_at_risk: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
@@ -261,7 +264,9 @@ def init_db(db_url: str = "sqlite:///.data/flight_account_001_xauusd.db"):
                 conn.execute(text("ALTER TABLE unified_department ADD COLUMN edge_validation_price NUMERIC"))
             if 'structural_invalidation' not in ud_columns:
                 conn.execute(text("ALTER TABLE unified_department ADD COLUMN structural_invalidation NUMERIC"))
-                
+            if 'mark_price' not in ud_columns:
+                conn.execute(text("ALTER TABLE unified_department ADD COLUMN mark_price NUMERIC"))
+
         # Migrate TacticalAudit table
         if "tactical_audit" in inspector.get_table_names():
             columns = [col['name'] for col in inspector.get_columns('tactical_audit')]
@@ -303,6 +308,10 @@ def init_db(db_url: str = "sqlite:///.data/flight_account_001_xauusd.db"):
                 conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN confirmations_count INTEGER"))
             if 'mfe_potencial_estimado' not in columns:
                 conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN mfe_potencial_estimado NUMERIC"))
+            if 'r_multiple' not in columns:
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN r_multiple NUMERIC"))
+            if 'captured_mfe' not in columns:
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN captured_mfe NUMERIC"))
 
         # Migrate EfficiencyAudit table
         if "efficiency_audit" in inspector.get_table_names():
@@ -501,6 +510,7 @@ def get_records_by_state(state: LifecycleState | List[LifecycleState], engine=No
                     "Calc_edge": r.calc_edge,
                     "Edge_Validation_Price": r.edge_validation_price,
                     "Structural_Invalidation": r.structural_invalidation,
+                    "Mark_Price": r.mark_price,
                 },
                 "tactical": {
                     "tactical_classification": r.tactical_classification,

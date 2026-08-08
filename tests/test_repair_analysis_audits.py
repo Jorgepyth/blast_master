@@ -220,6 +220,8 @@ def test_flow_repair_analysis_audits_tactical_math_and_parameterized_updates(moc
         assert ta.risk_usd == 20.0
         assert ta.pnl_and_cost == 10.0
         assert ta.r_r == 1.5
+        assert ta.r_multiple == 0.5
+        assert ta.captured_mfe == 0.25
 
 @patch("tools.database.engine_default")
 @patch("InquirerPy.inquirer.select")

@@ -90,6 +90,7 @@ def test_backdated_and_exposure_db_persistence(test_engine):
         "compliance": "Edge_valid",
         "entry_price": 50000.0,
         "stop_loss": 49000.0,
+        "closing_price": 52000.0,
         "size": 0.5,
         "take_profit": 55000.0,
         "could_hit_tp": "yes",
@@ -122,3 +123,8 @@ def test_backdated_and_exposure_db_persistence(test_engine):
         assert record.tactical_audit.capital_at_risk == 500.0
         assert record.tactical_audit.mae_adverse == 1.0
         assert record.tactical_audit.mfe_favorable == 2.0
+        # Long trade: r_multiple = (closing_price - entry_price) / abs(entry_price - stop_loss)
+        #           = (52000 - 50000) / 1000 = 2.0
+        # captured_mfe = r_multiple / mfe = 2.0 / 2.0 = 1.0
+        assert record.tactical_audit.r_multiple == 2.0
+        assert record.tactical_audit.captured_mfe == 1.0

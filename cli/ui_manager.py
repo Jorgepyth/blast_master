@@ -45,6 +45,18 @@ blast_theme = Theme({
 
 console = Console(theme=blast_theme)
 
+# Shared status iconography — keep this the single vocabulary for "done / active /
+# paused / not-started yet" across the welcome dashboard, the wizard, and the
+# pending-audits tables so the same state always reads the same way everywhere.
+STATUS_ICONS = {
+    "online": "●",
+    "offline": "○",
+    "complete": "✓",
+    "paused": "‖",
+    "pending": " ",
+    "active": "▸",
+}
+
 KEY_LABELS = {
     "asset": "Asset Selector",
     "p0_thesis": "P0 Thesis",
@@ -113,10 +125,10 @@ def check_daemon_status():
     try:
         result = subprocess.run(["pgrep", "-f", "notion_sync.py"], capture_output=True, text=True)
         if result.returncode == 0 and result.stdout.strip():
-            return "[bold green]ONLINE[/bold green]"
+            return f"[bold green]{STATUS_ICONS['online']} ONLINE[/bold green]"
     except Exception:
         pass
-    return "[bold red]OFFLINE[/bold red]"
+    return f"[bold red]{STATUS_ICONS['offline']} OFFLINE[/bold red]"
 
 def get_total_records_count(engine=None):
     from sqlalchemy.orm import Session
@@ -202,8 +214,8 @@ def get_welcome_options(state: CLIState):
         ("5", "Configuration", "primary", "system"),
     ]
     if state.active_session:
-        options.append(("t", f"Flight Sessions ({state.active_session['name']})", "warning", "test_drive"))
-        options.append(("e", f"Restore Main Flight Account Connection", "warning", "exit_session"))
+        options.append(("t", f"Flight Sessions ({state.active_session['name']})", "warning", "session"))
+        options.append(("e", f"Restore Main Flight Account Connection", "warning", "session"))
     else:
         options.append(("t", "Flight Sessions Workspace", "primary", "system"))
     options.append(("x", "Exit", "danger", "exit"))
@@ -229,9 +241,10 @@ def build_welcome_body(state: CLIState) -> Panel:
                 menu_text.append("   -- CORE PIPELINE --\n", style="muted")
             elif category == "system":
                 menu_text.append("\n   -- SYSTEM --\n", style="muted")
-            elif category in ["test_drive", "exit_session", "exit"]:
-                if current_category not in ["test_drive", "exit_session", "exit"]:
-                    menu_text.append("\n   --\n", style="muted")
+            elif category == "session":
+                menu_text.append("\n   -- SESSION --\n", style="muted")
+            elif category == "exit":
+                menu_text.append("\n   -- EXIT --\n", style="muted")
             current_category = category
             
         is_active = (idx == state.active_idx)
@@ -268,10 +281,10 @@ def build_welcome_body(state: CLIState) -> Panel:
     db_name = f"{state.active_session.get('db_name', state.active_session['id']+'.db')}" if state.active_session else "flight_account_001_xauusd.db"
     state_table.add_row("Active DB", f"{db_name} ({'Flight Session' if state.active_session else 'Main Account'})")
     state_table.add_row("Total records", f"{state.total_records:,}")
-    state_table.add_row("Pending Audits", f"{len(state.pending_records)} [bold warning]")
-    
+    state_table.add_row("Pending Audits", f"[bold warning]{len(state.pending_records)}[/bold warning]")
+
     daemon_on = "ONLINE" in state.daemon_status
-    state_table.add_row("Notion Sync", f"{'ACTIVE [success]' if daemon_on else 'INACTIVE [danger]'}")
+    state_table.add_row("Notion Sync", f"[success]{STATUS_ICONS['online']} ONLINE[/success]" if daemon_on else f"[danger]{STATUS_ICONS['offline']} OFFLINE[/danger]")
     
     state_panel = Panel(
         state_table,
@@ -316,6 +329,14 @@ def build_welcome_body(state: CLIState) -> Panel:
         box=box.ROUNDED
     )
 
+def _format_audit_status_badge(is_complete: bool, is_paused: bool, label: str) -> str:
+    if is_complete:
+        return f"[success][{STATUS_ICONS['complete']}] {label}[/success]"
+    elif is_paused:
+        return f"[warning][{STATUS_ICONS['paused']}] {label}[/warning]"
+    else:
+        return f"[muted][{STATUS_ICONS['pending']}] {label}[/muted]"
+
 def render_pending_audits_table(records) -> Panel:
     table = Table(box=box.SIMPLE, border_style="muted", expand=True)
     table.add_column("ID", justify="center", style="dim")
@@ -331,14 +352,9 @@ def render_pending_audits_table(records) -> Panel:
         is_eff_paused = has_paused_state(r["id"], "eff")
         is_tac_paused = has_paused_state(r["id"], "tac")
         
-        if has_eff: eff_status = "[success][✓] Eff[/success]"
-        elif is_eff_paused: eff_status = "[warning][✗] Eff[/warning]"
-        else: eff_status = "[danger][ ] Eff[/danger]"
-        
-        if has_tac: tac_status = "[success][✓] Tac[/success]"
-        elif is_tac_paused: tac_status = "[warning][✗] Tac[/warning]"
-        else: tac_status = "[danger][ ] Tac[/danger]"
-        
+        eff_status = _format_audit_status_badge(has_eff, is_eff_paused, "Eff")
+        tac_status = _format_audit_status_badge(has_tac, is_tac_paused, "Tac")
+
         status_str = f"{eff_status} | {tac_status}"
         date_str = to_local_display(r["created_at"])
         table.add_row(short_id, asset, status_str, date_str)
@@ -407,16 +423,18 @@ def render_wizard_layout(step_num, step_title, session, active_key, state: CLISt
         Layout(name="pending_queue", ratio=1)
     )
     
-    form_text = Text()
-    form_text.append("\n")
-    
     step_keys = STEP1_KEYS if step_num == 1 else STEP2_KEYS
+    completed_count = sum(1 for k in step_keys if k in session.state)
+
+    form_text = Text()
+    form_text.append(f"\n  Progress: {completed_count}/{len(step_keys)} fields completed\n\n", style="muted")
+
     for k in step_keys:
         label = KEY_LABELS.get(k, k)
         if k == active_key:
             form_text.append(" ➔ ", style="highlight")
-            form_text.append(f"[ ] {label}: ", style="highlight")
-            form_text.append("<Active Input>\n", style="bold white")
+            form_text.append(f"[{STATUS_ICONS['active']}] {label}: ", style="highlight")
+            form_text.append("awaiting input…\n", style="bold white italic")
         elif k in session.state:
             val = session.state[k]
             if isinstance(val, Enum):
@@ -455,14 +473,9 @@ def render_wizard_layout(step_num, step_title, session, active_key, state: CLISt
         is_eff_paused = has_paused_state(r["id"], "eff")
         is_tac_paused = has_paused_state(r["id"], "tac")
         
-        if has_eff: eff_status = "[success][✓] Eff[/success]"
-        elif is_eff_paused: eff_status = "[warning][✗] Eff[/warning]"
-        else: eff_status = "[danger][ ] Eff[/danger]"
-        
-        if has_tac: tac_status = "[success][✓] Tac[/success]"
-        elif is_tac_paused: tac_status = "[warning][✗] Tac[/warning]"
-        else: tac_status = "[danger][ ] Tac[/danger]"
-        
+        eff_status = _format_audit_status_badge(has_eff, is_eff_paused, "Eff")
+        tac_status = _format_audit_status_badge(has_tac, is_tac_paused, "Tac")
+
         status_str = f"{eff_status} | {tac_status}"
         queue_table.add_row(short_id, asset, status_str)
         
