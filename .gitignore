@@ -25,6 +25,10 @@ env/
 */.ipynb_checkpoints/*
 checkpoint_*.ipynb
 
+# Reportes regenerables (se generan corriendo jupyter/data_analysis.ipynb)
+jupyter/data_analysis_report.html
+jupyter/data_analysis_llm_report.md
+
 # --- IDEs (VS Code / PyCharm) ---
 .vscode/
 prompt_de_analisis.txt
