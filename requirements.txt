@@ -11,3 +11,5 @@ requests-mock==1.11.0
 InquirerPy==0.3.4
 pandas==2.2.3
 numpy==2.2.2
+matplotlib==3.9.2
+seaborn==0.13.2
