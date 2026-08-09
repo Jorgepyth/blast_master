@@ -72,8 +72,11 @@ def plot_equity_curves(
     _set_trade_xaxis(ax_eq, n_trades)
     fig_equity.tight_layout()
 
+    dd_values = curve[drawdown_col].to_numpy(dtype=float)
     fig_dd, ax_dd = plt.subplots()
-    ax_dd.plot(x_trades, curve[drawdown_col].to_numpy(dtype=float), color=color)
+    ax_dd.plot(x_trades, dd_values, color=color)
+    ax_dd.fill_between(x_trades, dd_values, 0, alpha=0.3, color=color)
+    ax_dd.axhline(0, color="0.3", linewidth=0.8)
     ax_dd.set_title(f"Drawdown {label_suffix}")
     ax_dd.set_xlabel("Trade # (orden cronológico)")
     ax_dd.set_ylabel(f"Drawdown {label_suffix}")
@@ -148,10 +151,26 @@ def plot_mfe_vs_mae(
     return fig
 
 
-def _show_heatmap(mat: pd.DataFrame, title: str, seg_rows: str, seg_cols: str) -> plt.Figure:
+def _show_heatmap(
+    mat: pd.DataFrame,
+    title: str,
+    seg_rows: str,
+    seg_cols: str,
+    cmap: str = "Blues",
+    center: Optional[float] = None,
+) -> plt.Figure:
     fig, ax = plt.subplots()
     arr = mat.to_numpy(dtype=float)
-    ax.imshow(arr, aspect="auto")
+
+    vmin = vmax = None
+    if center is not None:
+        finite = arr[np.isfinite(arr)]
+        max_abs = float(np.abs(finite - center).max()) if finite.size else 1.0
+        max_abs = max_abs if max_abs > 0 else 1.0
+        vmin, vmax = center - max_abs, center + max_abs
+
+    im = ax.imshow(arr, aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
+    fig.colorbar(im, ax=ax)
 
     ax.set_title(title)
     ax.set_xlabel(seg_cols)
@@ -188,6 +207,12 @@ def plot_segment_heatmaps(
     """
     Heatmaps de conteo y de R promedio por (seg_rows x seg_cols). Devuelve
     None si faltan columnas — caso válido, no error.
+
+    El heatmap de conteo usa un colormap secuencial ("Blues": los conteos no
+    tienen signo, solo magnitud). El de R promedio usa uno divergente
+    ("RdYlGn") centrado en 0, porque el R promedio sí tiene signo y un
+    colormap secuencial no comunicaría la diferencia entre una celda
+    ganadora y una perdedora.
     """
     if seg_rows not in df.columns or seg_cols not in df.columns:
         return None
@@ -199,6 +224,10 @@ def plot_segment_heatmaps(
         df, index=seg_rows, columns=seg_cols, values=r_col, aggfunc="mean"
     )
 
-    fig_count = _show_heatmap(pivot_count, f"Heatmap Conteo: {seg_rows} x {seg_cols}", seg_rows, seg_cols)
-    fig_avg_r = _show_heatmap(pivot_mean_r, f"Heatmap Avg R: {seg_rows} x {seg_cols}", seg_rows, seg_cols)
+    fig_count = _show_heatmap(
+        pivot_count, f"Heatmap Conteo: {seg_rows} x {seg_cols}", seg_rows, seg_cols, cmap="Blues"
+    )
+    fig_avg_r = _show_heatmap(
+        pivot_mean_r, f"Heatmap Avg R: {seg_rows} x {seg_cols}", seg_rows, seg_cols, cmap="RdYlGn", center=0.0
+    )
     return fig_count, fig_avg_r

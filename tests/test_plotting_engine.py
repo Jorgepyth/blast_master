@@ -35,6 +35,14 @@ def test_plot_equity_curves_plots_exact_series():
     assert ax_dd.lines[0].get_ydata().tolist() == [0.0, 0.0, -1.0, 0.0]
 
 
+def test_plot_equity_curves_drawdown_has_shading_and_zero_line():
+    curve = pd.DataFrame({"equity": [1.0, 2.0], "drawdown": [0.0, -1.0]})
+    _, fig_dd = plot_equity_curves(curve)
+    ax_dd = fig_dd.axes[0]
+    assert len(ax_dd.collections) == 1  # fill_between del drawdown
+    assert len(ax_dd.lines) == 2  # la serie de drawdown + la línea horizontal en 0
+
+
 def test_plot_equity_curves_respects_r_columns_and_suffix():
     curve = pd.DataFrame({
         "equity": [1.0, 2.0],
@@ -103,3 +111,21 @@ def test_plot_segment_heatmaps_counts_and_avg_r():
 def test_plot_segment_heatmaps_returns_none_when_columns_missing():
     df = pd.DataFrame({"r_multiple": [1.0, 2.0]})
     assert plot_segment_heatmaps(df) is None
+
+
+def test_plot_segment_heatmaps_have_colorbar_and_r_heatmap_is_centered_on_zero():
+    df = pd.DataFrame({
+        "market_state": ["Range", "Trend"],
+        "setup_type": ["A", "B"],
+        "r_multiple": [3.0, -1.0],
+    })
+    fig_count, fig_avg_r = plot_segment_heatmaps(df)
+
+    # Cada figura tiene 2 Axes: el heatmap y el colorbar que le agrega fig.colorbar.
+    assert len(fig_count.axes) == 2
+    assert len(fig_avg_r.axes) == 2
+
+    im = fig_avg_r.axes[0].images[0]
+    vmin, vmax = im.get_clim()
+    assert vmin == pytest.approx(-3.0)  # centrado en 0, max|valor|=3.0 (Range/A)
+    assert vmax == pytest.approx(3.0)
