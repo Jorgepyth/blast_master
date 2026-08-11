@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 import pytest
 from datetime import datetime
 from cli.schemas.audit_efficiency import (
@@ -62,3 +64,33 @@ def test_false_positive_logic():
     )
     assert audit.specific_bias_compliance == "Invalid"
     assert audit.false_regime_rate == "False Positive"
+
+
+def test_structural_mae_mfe_default_to_none_when_omitted():
+    audit = EfficiencyAudit(
+        efficiency_id="test-5",
+        bias_a=StructuralBias.BOS,
+        resolution_type=ResolutionType.CONFIRMED,
+        real_bias_b=StructuralBias.BOS,
+        structural_resolution=StructuralResolution.NA,
+        failure_reason=FailureReason.NA,
+        resolution_time=datetime.now()
+    )
+    assert audit.structural_mae is None
+    assert audit.structural_mfe is None
+
+
+def test_structural_mae_mfe_accept_decimal_values():
+    audit = EfficiencyAudit(
+        efficiency_id="test-6",
+        bias_a=StructuralBias.BOS,
+        resolution_type=ResolutionType.CONFIRMED,
+        real_bias_b=StructuralBias.BOS,
+        structural_resolution=StructuralResolution.NA,
+        failure_reason=FailureReason.NA,
+        resolution_time=datetime.now(),
+        structural_mae=Decimal("3950"),
+        structural_mfe=Decimal("4550")
+    )
+    assert audit.structural_mae == Decimal("3950")
+    assert audit.structural_mfe == Decimal("4550")

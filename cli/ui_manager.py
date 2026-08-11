@@ -212,6 +212,7 @@ def get_welcome_options(state: CLIState):
         ("3", "Review History (Last 10)", "primary", "core"),
         ("4", "Force Notion Sync", "primary", "system"),
         ("5", "Configuration", "primary", "system"),
+        ("6", "Generate Reports", "primary", "system"),
     ]
     if state.active_session:
         options.append(("t", f"Flight Sessions ({state.active_session['name']})", "warning", "session"))

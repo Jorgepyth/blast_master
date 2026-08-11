@@ -58,6 +58,26 @@ def calculate_probabilities(calc_edge) -> Probabilities:
     
     return Probabilities(long_prob=long_prob, short_prob=short_prob, no_trade_prob=no_trade_prob)
 
+def calculate_edge_score(x0, x1, x2, x3, x4) -> float:
+    """Índice compuesto direccional (i_cd), ponderado por capa estructural P0-P4."""
+    return (0.30 * x0 + 0.25 * x1 + 0.15 * x2 + 0.10 * x3 + 0.20 * x4) / 2.0
+
+def calculate_structural_entry(validation_price, invalidation_price) -> Decimal:
+    """Precio de entrada estructural para un R:R objetivo fijo (planeado, no realizado).
+
+    E = (TP + RR·SL) / (1 + RR), con TP=validation_price y SL=invalidation_price.
+    Fórmula simétrica: no requiere distinguir Long/Short, ya que risk/reward se
+    definen siempre como distancias absolutas a SL/TP respectivamente.
+    """
+    try:
+        target_rr = Decimal(str(os.getenv("STRUCTURAL_TARGET_RR", "2.2")))
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"Configuración de riesgo inválida en .env: {e}")
+
+    dvp = Decimal(str(validation_price))
+    dip = Decimal(str(invalidation_price))
+    return (dvp + target_rr * dip) / (Decimal('1') + target_rr)
+
 # Funciones heredadas (No modificar)
 def calculate_algebraic_metrics(direction: str, ep: float, sl: float, cp: float, tp: float, size: float, mae: float, mfe: float, cost: float = 0.0):
     dep = Decimal(str(ep))

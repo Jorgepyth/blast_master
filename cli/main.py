@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 from decimal import Decimal, getcontext
 from sqlalchemy import text
-from core.math_engine import calculate_probabilities, calculate_algebraic_metrics
+from core.math_engine import calculate_probabilities, calculate_algebraic_metrics, calculate_structural_entry, calculate_edge_score
 
 getcontext().prec = 18
 
@@ -390,7 +390,7 @@ def get_keypress():
                     return 'left'
         elif ch in ['\r', '\n']:
             return 'enter'
-        elif ch.lower() in ['1', '2', '3', '4', '5', 't', 'e', 'x']:
+        elif ch.lower() in ['1', '2', '3', '4', '5', '6', 't', 'e', 'x']:
             return ch.lower()
     except Exception:
         pass
@@ -941,6 +941,27 @@ def start():
                                     flow_assets_configuration()
                                 except Exception as e:
                                     console.print(f"[bold red]Error in assets configuration: {e}[/bold red]")
+                        elif selected_choice == "6":
+                            scope_choice = inquirer.select(
+                                message="Generate Reports >",
+                                choices=[
+                                    Choice("both", name="[1] Both (HTML + LLM Markdown)"),
+                                    Choice("html", name="[2] HTML only (human)"),
+                                    Choice("llm", name="[3] Markdown+JSON only (LLM)"),
+                                    Choice("back", name="[4] Back to Main Menu")
+                                ],
+                                pointer=">",
+                                qmark=""
+                            ).execute()
+                            if scope_choice != "back":
+                                try:
+                                    generate_reports(
+                                        html_only=(scope_choice == "html"),
+                                        llm_only=(scope_choice == "llm"),
+                                    )
+                                except Exception as e:
+                                    console.print(f"[bold red]Error generating reports: {e}[/bold red]")
+                                input("Press Enter to continue...")
                         elif selected_choice == "t":
                             flow_flight_sessions()
                         elif selected_choice == "e":
@@ -970,6 +991,168 @@ def start():
             raise
         finally:
             live.stop()
+
+def generate_reports(output_dir="jupyter", html_only=False, llm_only=False):
+    """Genera los reportes de analisis (HTML humano + Markdown para LLM) sin abrir Jupyter.
+
+    Reusa las mismas funciones de core/ que jupyter/data_analysis.ipynb; la
+    carga/preparacion de datos vive en tools/report_data.py (compartida,
+    no duplicada) — ver ese modulo para el detalle de que replica que celdas
+    del notebook. Llamada tanto por el comando de terminal `report` como por
+    la opcion "Generate Reports" del menu interactivo (start).
+    """
+    if html_only and llm_only:
+        console.print("[bold red]--html-only y --llm-only son mutuamente excluyentes.[/bold red]")
+        return
+
+    import matplotlib
+    matplotlib.use("Agg")
+
+    from core.analytics_engine import compute_trade_kpis_extended
+    from core.backtest_engine import (
+        baseline_legacy_metrics, run_department_confluence_backtest,
+        run_icd_backtest, sweep_icd_thresholds,
+    )
+    from core.edge_analysis import analisis_edge
+    from core.llm_report_export import (
+        MarkdownSection, build_trade_records, render_llm_markdown_report, save_markdown_report,
+    )
+    from core.plotting_engine import (
+        plot_equity_curves, plot_mfe_vs_mae, plot_return_distribution, plot_segment_heatmaps,
+    )
+    from core.report_export import ReportSection, render_html_report, save_html_report
+    from core.report_formatting import dict_to_metrics_frame, style_signed_column
+    from tools.report_data import load_report_data
+
+    engine = get_active_engine()
+    console.print("[cyan]Cargando datos de la base de datos...[/cyan]")
+    data = load_report_data(engine)
+
+    if data.merged.empty:
+        console.print("[yellow]No hay analisis cerrados en la base de datos activa. Nada que reportar.[/yellow]")
+        return
+
+    kpis, curve, segments = compute_trade_kpis_extended(data.tactical_df)
+    edge_metrics = analisis_edge(data.merged)
+
+    baseline = baseline_legacy_metrics(data.merged)
+    thresholds = [0.20, 0.25, 0.26, 0.27, 0.28, 0.29, 0.30, 0.31, 0.32, 0.33, 0.34,
+                  0.35, 0.36, 0.37, 0.38, 0.39, 0.40]
+    sweep = sweep_icd_thresholds(data.merged, thresholds=thresholds)
+    confluence_detail, confluence_summary = run_department_confluence_backtest(data.merged)
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    if not llm_only:
+        console.print("[cyan]Generando reporte HTML...[/cyan]")
+        fig_equity_usd, fig_drawdown_usd = plot_equity_curves(curve)
+        fig_equity_r, fig_drawdown_r = plot_equity_curves(
+            curve, equity_col="equity_r", drawdown_col="drawdown_r", label_suffix="(R)"
+        )
+        fig_dist_pnl = plot_return_distribution(
+            data.tactical_df["pnl_and_cost"], "Distribución de PnL (neto) vs Normal teórica", "PnL neto"
+        )
+        fig_dist_r = plot_return_distribution(
+            data.tactical_df["r_multiple"], "Distribución de R-multiples vs Normal teórica", "R multiple"
+        )
+        fig_mfe_mae = plot_mfe_vs_mae(data.tactical_df)
+        fig_heatmap_count, fig_heatmap_avg_r = plot_segment_heatmaps(data.tactical_df) or (None, None)
+
+        html_sections = [
+            ReportSection(
+                title="Fase 1 — KPIs de ejecución",
+                narrative="Motor de KPIs sobre tactical_audit — usa r_multiple (realizado), no r_r (planeado).",
+                tables=[dict_to_metrics_frame(kpis)] + [tbl for tbl in segments.values() if not tbl.empty],
+                source_functions=[compute_trade_kpis_extended],
+            ),
+            ReportSection(
+                title="Fase 2 — Validación del edge predictivo",
+                narrative="Por cada parámetro P0-P4, ¿su score predijo la dirección real del mercado?",
+                tables=[style_signed_column(edge_metrics, "Profit Factor", center=1.0)],
+                source_functions=[analisis_edge],
+            ),
+            ReportSection(
+                title="Fase 3 — Backtesting",
+                narrative=(
+                    "Baseline (sistema real, sin threshold) vs. grid-search de threshold sobre el ICD, "
+                    "y sistema alternativo de confluencia por departamentos."
+                ),
+                tables=[
+                    dict_to_metrics_frame(baseline),
+                    style_signed_column(sweep, "profit_factor_escalado", center=1.0),
+                    dict_to_metrics_frame(confluence_summary),
+                ],
+                source_functions=[
+                    run_icd_backtest, sweep_icd_thresholds, baseline_legacy_metrics,
+                    run_department_confluence_backtest,
+                ],
+            ),
+            ReportSection(
+                title="Fase 5 — Visualización integrada",
+                narrative="Equity curve, drawdown, distribución de retornos, MFE vs MAE, heatmaps por segmento.",
+                figures=[
+                    f for f in [
+                        fig_equity_usd, fig_drawdown_usd, fig_equity_r, fig_drawdown_r,
+                        fig_dist_pnl, fig_dist_r, fig_mfe_mae, fig_heatmap_count, fig_heatmap_avg_r,
+                    ] if f is not None
+                ],
+                source_functions=[plot_equity_curves, plot_return_distribution, plot_mfe_vs_mae, plot_segment_heatmaps],
+            ),
+        ]
+        html = render_html_report(html_sections, title="Blast Master — Reporte de Análisis (XAUUSD)")
+        html_path = save_html_report(html, output_path / "data_analysis_report.html")
+        console.print(f"[green]Reporte HTML: {html_path.resolve()}[/green]")
+
+    if not html_only:
+        console.print("[cyan]Generando reporte para LLM...[/cyan]")
+        llm_context = (
+            "Journal de trading XAUUSD (blast_master). r_multiple es el R-multiple REALIZADO "
+            "(usar siempre esto, nunca r_r, que es solo el R:R planeado). compliance mide la "
+            "EJECUCION del trade; specific_bias_compliance mide el SESGO ESTRUCTURAL — son cosas "
+            "distintas. Muestra chica: tratar hallazgos como hipotesis, no certezas."
+        )
+        llm_sections = [
+            MarkdownSection(
+                title="Fase 1 — KPIs de ejecución",
+                narrative="KPIs de ejecucion sobre tactical_audit (r_multiple, no r_r).",
+                tables=[dict_to_metrics_frame(kpis)] + [tbl for tbl in segments.values() if not tbl.empty],
+                source_functions=[compute_trade_kpis_extended],
+            ),
+            MarkdownSection(
+                title="Fase 2 — Validación del edge predictivo",
+                narrative="Profit factor/win rate/correlacion por parametro P0-P4.",
+                tables=[edge_metrics],
+                source_functions=[analisis_edge],
+            ),
+            MarkdownSection(
+                title="Fase 3 — Backtesting",
+                narrative="Baseline vs. grid-search de threshold sobre el ICD y confluencia por departamentos.",
+                tables=[dict_to_metrics_frame(baseline), sweep, dict_to_metrics_frame(confluence_summary)],
+                source_functions=[
+                    run_icd_backtest, sweep_icd_thresholds, baseline_legacy_metrics,
+                    run_department_confluence_backtest,
+                ],
+            ),
+        ]
+        trade_records = build_trade_records(data.llm_df)
+        llm_markdown = render_llm_markdown_report(
+            llm_context, llm_sections, trade_records,
+            title="Blast Master — Reporte para análisis por LLM (XAUUSD)",
+        )
+        llm_path = save_markdown_report(llm_markdown, output_path / "data_analysis_llm_report.md")
+        console.print(f"[green]Reporte LLM: {llm_path.resolve()}[/green]")
+
+
+@cli.command()
+@click.option("--output-dir", default="jupyter", show_default=True,
+              help="Carpeta donde guardar los reportes generados.")
+@click.option("--html-only", is_flag=True, help="Generar solo el reporte HTML (para humanos).")
+@click.option("--llm-only", is_flag=True, help="Generar solo el reporte Markdown+JSON (para LLM).")
+def report(output_dir, html_only, llm_only):
+    """Genera los reportes de analisis (HTML humano + Markdown para LLM) sin abrir Jupyter."""
+    generate_reports(output_dir=output_dir, html_only=html_only, llm_only=llm_only)
+
 
 def format_percentage(value):
     return f"{value * 100:.3f}%"
@@ -1122,6 +1305,9 @@ def flow_review_analysis():
             return render_bar(probability, 1.0, width) + f"  {pct:5.1f}%"
 
         def render_edge_gauge(edge_val, width=44):
+            """Devuelve una lista de segmentos (char, style) lista para volcar a un Text.
+            Threshold ┊: rojo (-0.26, umbral Bearish) / verde (+0.26, umbral Bullish).
+            Punto ●: color según el resultado del I_CD (verde Bullish / rojo Bearish / amarillo Choppy)."""
             e = float(edge_val)
             norm = (e + 1.0) / 2.0
             pos = int(norm * (width - 1))
@@ -1129,12 +1315,47 @@ def flow_review_analysis():
             mark_low = int((-0.26 + 1.0) / 2.0 * (width - 1))
             mark_high = int((0.26 + 1.0) / 2.0 * (width - 1))
             gauge = list("─" * width)
+            styles = ["dim"] * width
             gauge[mark_low] = "┊"
+            styles[mark_low] = "bold red"
             gauge[mark_high] = "┊"
+            styles[mark_high] = "bold green"
             gauge[width // 2] = "┃"
             gauge[pos] = "●"
-            label = f"  [{'+' if e >= 0 else ''}{e:.2f}]"
-            return "".join(gauge) + label
+            styles[pos] = "bold green" if e >= 0.26 else "bold red" if e <= -0.26 else "bold yellow"
+            return list(zip(gauge, styles))
+
+        def render_structural_gauge(low, high, mark_price, entry_price, mae_price=None, reached=None, width=44):
+            """Barra estructural: extremos = validation/invalidation price (low/high),
+            marca mark_price y structural_entry_price, y (si existe) el precio real
+            structural_mae, para ver si habria alcanzado el structural_entry_price.
+            `reached` (bool|None) decide el color del marcador de structural_mae; la
+            direccion (Long/Short) que determina `reached` se calcula fuera, a partir
+            de market_bias.
+            Devuelve una lista de segmentos (char, style) lista para volcar a un Text."""
+            low_f, high_f = float(low), float(high)
+            span = high_f - low_f
+            def pos_of(v):
+                if span == 0:
+                    return 0
+                norm = (float(v) - low_f) / span
+                return max(0, min(int(round(norm * (width - 1))), width - 1))
+
+            gauge = list("─" * width)
+            styles = ["blue"] * width
+            mark_pos = pos_of(mark_price)
+            entry_pos = pos_of(entry_price)
+            gauge[mark_pos] = "┊"
+            styles[mark_pos] = "bold cyan"
+            gauge[entry_pos] = "┃"
+            styles[entry_pos] = "bold white"
+
+            if mae_price is not None:
+                mae_pos = pos_of(mae_price)
+                gauge[mae_pos] = "●"
+                styles[mae_pos] = "bold green" if reached else "bold red"
+
+            return list(zip(gauge, styles))
 
         GATE_LABELS = {
             "g1": "15m Trend Alignment",
@@ -1174,6 +1395,7 @@ def flow_review_analysis():
                u.long_prob, u.short_prob, u.no_trade_prob, u.is_backdated, u.edge_validation_price, u.structural_invalidation, u.mark_price,
                e.bias_a, e.resolution_type, e.real_bias_b, e.structural_resolution, e.failure_reason,
                e.specific_bias_compliance, e.false_regime_rate, e.lesson_learned as e_lesson, e.efficiency_timeframe,
+               e.structural_mae, e.structural_mfe,
                t.compliance, t.entry_time, t.exit_time, t.tier_setup, t.market_state, t.exit_type,
                t.followed_plan, t.primary_emotion, t.setup_type, t.htf_trend_context, t.ltf_trend_context,
                t.confirmation_status, t.anxiety_level, t.impatience_level, t.mental_clarity_level,
@@ -1208,6 +1430,7 @@ def flow_review_analysis():
             "long_prob", "short_prob", "no_trade_prob", "is_backdated", "edge_validation_price", "structural_invalidation", "mark_price",
             "bias_a", "resolution_type", "real_bias_b", "structural_resolution", "failure_reason",
             "specific_bias_compliance", "false_regime_rate", "e_lesson", "efficiency_timeframe",
+            "structural_mae", "structural_mfe",
             "compliance", "entry_time", "exit_time", "tier_setup", "market_state", "exit_type",
             "followed_plan", "primary_emotion", "setup_type", "htf_trend_context", "ltf_trend_context",
             "confirmation_status", "anxiety_level", "impatience_level", "mental_clarity_level",
@@ -1370,8 +1593,10 @@ def flow_review_analysis():
         edge_style = "bold green" if edge_val >= 0.26 else "bold red" if edge_val <= -0.26 else "bold yellow"
         struct_text.append("          I_CD (Edge): ", style="dim")
         struct_text.append(f"{edge_val:+.4f}\n", style=edge_style)
-        gauge = render_edge_gauge(edge_val, width=44)
-        struct_text.append(f"                              {gauge}\n", style="dim")
+        struct_text.append("                              ", style="dim")
+        for ch, seg_style in render_edge_gauge(edge_val, width=44):
+            struct_text.append(ch, style=seg_style)
+        struct_text.append(f"  [{'+' if edge_val >= 0 else ''}{edge_val:.2f}]\n", style="dim")
         struct_text.append("                          -1.0   -0.26  0  +0.26   +1.0\n\n", style="dim")
 
         # P-Layer Table
@@ -1532,6 +1757,72 @@ def flow_review_analysis():
             rr_val = str(record['false_regime_rate'])
             rr_style = "bold green" if "True Positive" in rr_val or "True Negative" in rr_val else "bold red" if "False" in rr_val else "bold yellow"
             eff_text.append(f"{rr_val}\n", style=rr_style)
+
+            # Mark Price / Structural MAE / Structural MFE
+            mark_price_raw = record.get('mark_price')
+            structural_mae_raw = record.get('structural_mae')
+            structural_mfe_raw = record.get('structural_mfe')
+            evp_raw = record.get('edge_validation_price')
+            si_raw = record.get('structural_invalidation')
+
+            eff_text.append("\n  Mark Price:     ", style="dim")
+            eff_text.append(f"{mark_price_raw if mark_price_raw is not None else 'N/A'}", style="bold cyan")
+            eff_text.append("     Structural MAE: ", style="dim")
+            eff_text.append(f"{structural_mae_raw if structural_mae_raw is not None else 'N/A'}", style="bold red")
+            eff_text.append("     Structural MFE: ", style="dim")
+            eff_text.append(f"{structural_mfe_raw if structural_mfe_raw is not None else 'N/A'}\n", style="bold green")
+
+            # Structural Entry Simulation: entrada calculada para un R:R fijo
+            # (STRUCTURAL_TARGET_RR) usando SL=structural_invalidation, TP=edge_validation_price.
+            if mark_price_raw is not None and evp_raw is not None and si_raw is not None:
+                mark_price_dec = Decimal(str(mark_price_raw))
+                evp_dec = Decimal(str(evp_raw))
+                si_dec = Decimal(str(si_raw))
+                try:
+                    structural_entry_price = calculate_structural_entry(evp_dec, si_dec)
+                except (ValueError, ZeroDivisionError):
+                    structural_entry_price = None
+
+                if structural_entry_price is not None:
+                    target_rr = os.getenv("STRUCTURAL_TARGET_RR", "2.2")
+                    eff_text.append(f"\n  ── Structural Entry Simulation (Target R:R 1:{target_rr}) ──\n", style="bold cyan")
+                    eff_text.append("  Structural Entry Price: ", style="dim")
+                    eff_text.append(f"{structural_entry_price:.2f}\n", style="bold white")
+
+                    market_bias_val = record['market_bias']
+                    direction = "Long" if market_bias_val == "Bullish" else "Short" if market_bias_val == "Bearish" else None
+                    structural_mae_dec = Decimal(str(structural_mae_raw)) if structural_mae_raw is not None else None
+
+                    reached = None
+                    if direction is not None and structural_mae_dec is not None:
+                        reached = (structural_mae_dec >= structural_entry_price) if direction == "Short" else (structural_mae_dec <= structural_entry_price)
+
+                    low = min(evp_dec, si_dec)
+                    high = max(evp_dec, si_dec)
+                    low_label = "Validation" if low == evp_dec else "Invalidation"
+                    high_label = "Invalidation" if high == si_dec else "Validation"
+
+                    segments = render_structural_gauge(low, high, mark_price_dec, structural_entry_price, mae_price=structural_mae_dec, reached=reached)
+                    eff_text.append("  ")
+                    for ch, seg_style in segments:
+                        eff_text.append(ch, style=seg_style)
+                    eff_text.append(f"  [{structural_entry_price:.2f}]\n")
+                    low_caption_style = "bold red" if low_label == "Invalidation" else "bold green"
+                    high_caption_style = "bold red" if high_label == "Invalidation" else "bold green"
+                    eff_text.append(f"  {low:.2f} ({low_label})", style=low_caption_style)
+                    eff_text.append(" " * 20, style="dim")
+                    eff_text.append(f"{high:.2f} ({high_label})\n", style=high_caption_style)
+
+                    if direction is None:
+                        status_text, status_style = "Pending (market_bias no es Bullish/Bearish)", "dim"
+                    elif structural_mae_dec is None:
+                        status_text, status_style = "Pending (sin Structural MAE registrado)", "dim"
+                    elif reached:
+                        status_text, status_style = "REACHED", "bold green"
+                    else:
+                        status_text, status_style = "NOT REACHED", "bold yellow"
+                    eff_text.append("  Structural Entry: ", style="dim")
+                    eff_text.append(f"{status_text}\n", style=status_style)
 
             if record['e_lesson']:
                 indented_lesson = format_indented_block(record['e_lesson'], indent_spaces=4, first_line_flush=False, wrap_width=80)
@@ -1771,11 +2062,11 @@ def flow_review_analysis():
         except TypeError:
             console.clear()
 
-        console.print(dashboard)
-        console.print(eff_panel)
-        console.print(tact_panel)
-        console.print(fw_panel)
         console.print(psych_panel)
+        console.print(fw_panel)
+        console.print(tact_panel)
+        console.print(eff_panel)
+        console.print(dashboard)
         action_prompt = inquirer.select(
             message="Select action (or Ctrl+F to open all linked image assets) >",
             choices=[
@@ -2114,6 +2405,43 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
             p4_str = session.prompt("p4_str", get_enum_choice, "P4 Strength", Strength)
             p4_hier = session.prompt("p4_hier", get_enum_choice, "P4 Hierarchy", Hierarchy)
 
+            # --- Edge Bias & Probabilities Preview (calculado apenas P0-P4 están completos,
+            # antes de pedir Efficiency Timeframe / Mark Price / Validation / Invalidation) ---
+            def get_dir_val(d): return 1 if d == Direction.LONG else -1 if d == Direction.SHORT else 0
+            def get_str_val(s): return 2 if s == Strength.STRONG else 1 if s == Strength.MID else 0
+
+            preview_x0 = get_dir_val(session.state.get("p0_dir")) * get_str_val(session.state.get("p0_str"))
+            preview_x1 = get_dir_val(session.state.get("p1_dir")) * get_str_val(session.state.get("p1_str"))
+            preview_x2 = get_dir_val(session.state.get("p2_dir")) * get_str_val(session.state.get("p2_str"))
+            preview_x3 = get_dir_val(session.state.get("p3_dir")) * get_str_val(session.state.get("p3_str"))
+            preview_x4 = get_dir_val(session.state.get("p4_dir")) * get_str_val(session.state.get("p4_str"))
+
+            preview_i_cd = calculate_edge_score(preview_x0, preview_x1, preview_x2, preview_x3, preview_x4)
+            preview_bias = determine_market_bias(preview_i_cd)
+            preview_long_prob, preview_short_prob, preview_no_trade_prob = calculate_probabilities(preview_i_cd)
+
+            preview_bias_color = "success" if preview_bias == "Bullish" else "danger" if preview_bias == "Bearish" else "warning"
+
+            preview_text = Text()
+            preview_text.append("--- Real-Time Metrics & Probability Dashboard ---\n", style="bold cyan")
+            preview_text.append("Market Bias: ", style="dim")
+            preview_text.append(f"{preview_bias}\n", style=preview_bias_color)
+            preview_text.append("Directional Probabilities:\n", style="dim")
+            preview_text.append("  Long Prob:      ", style="dim")
+            preview_text.append(f"{preview_long_prob * 100:.1f}%\n", style="success")
+            preview_text.append("  Short Prob:     ", style="dim")
+            preview_text.append(f"{preview_short_prob * 100:.1f}%\n", style="danger")
+            preview_text.append("  No-Trade Prob:  ", style="dim")
+            preview_text.append(f"{preview_no_trade_prob * 100:.1f}%\n", style="warning")
+
+            console.print(Panel(
+                preview_text,
+                title="[bold primary]Edge Bias & Probabilities Preview[/bold primary]",
+                border_style="primary",
+                box=box.ROUNDED
+            ))
+            console.print()
+
             efficiency_timeframe = session.prompt("efficiency_timeframe", lambda: bind_pause(inquirer.select(
                 message="Select Efficiency Timeframe [15M/1H/4H] >",
                 choices=[Choice("15M", name="15M"), Choice("1H", name="1H"), Choice("4H", name="4H")],
@@ -2151,51 +2479,11 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
                     except Exception:
                         previous_edge = "No previous asset history found."
 
-                # Invoke real-time math metrics subroutines using locked staging memory parameters
-                p0_dir = session.state.get("p0_dir")
-                p0_str = session.state.get("p0_str")
-                p1_dir = session.state.get("p1_dir")
-                p1_str = session.state.get("p1_str")
-                p2_dir = session.state.get("p2_dir")
-                p2_str = session.state.get("p2_str")
-                p3_dir = session.state.get("p3_dir")
-                p3_str = session.state.get("p3_str")
-                p4_dir = session.state.get("p4_dir")
-                p4_str = session.state.get("p4_str")
-
-                def get_dir_val(d): return 1 if d == Direction.LONG else -1 if d == Direction.SHORT else 0
-                def get_str_val(s): return 2 if s == Strength.STRONG else 1 if s == Strength.MID else 0
-
-                x0 = get_dir_val(p0_dir) * get_str_val(p0_str)
-                x1 = get_dir_val(p1_dir) * get_str_val(p1_str)
-                x2 = get_dir_val(p2_dir) * get_str_val(p2_str)
-                x3 = get_dir_val(p3_dir) * get_str_val(p3_str)
-                x4 = get_dir_val(p4_dir) * get_str_val(p4_str)
-
-                i_cd = (0.30 * x0 + 0.25 * x1 + 0.15 * x2 + 0.10 * x3 + 0.20 * x4) / 2.0
-                
-                market_bias = determine_market_bias(i_cd)
-                long_prob, short_prob, no_trade_prob = calculate_probabilities(i_cd)
-
-                # Render dashboard
-                bias_color = "success" if market_bias == "Bullish" else "danger" if market_bias == "Bearish" else "warning"
-                
                 indented_prev_edge = format_indented_block(previous_edge, indent_spaces=11, first_line_flush=False, wrap_width=60)
 
                 dashboard_text = Text()
                 dashboard_text.append("--- Previous Session Edge Description Reference ---\n", style="bold cyan")
-                dashboard_text.append(f"{indented_prev_edge}\n\n", style="italic white")
-                
-                dashboard_text.append("--- Real-Time Metrics & Probability Dashboard ---\n", style="bold cyan")
-                dashboard_text.append("Market Bias: ", style="dim")
-                dashboard_text.append(f"{market_bias}\n", style=bias_color)
-                dashboard_text.append("Directional Probabilities:\n", style="dim")
-                dashboard_text.append("  Long Prob:      ", style="dim")
-                dashboard_text.append(f"{long_prob * 100:.1f}%\n", style="success")
-                dashboard_text.append("  Short Prob:     ", style="dim")
-                dashboard_text.append(f"{short_prob * 100:.1f}%\n", style="danger")
-                dashboard_text.append("  No-Trade Prob:  ", style="dim")
-                dashboard_text.append(f"{no_trade_prob * 100:.1f}%\n", style="warning")
+                dashboard_text.append(f"{indented_prev_edge}\n", style="italic white")
 
                 dashboard_panel = Panel(
                     dashboard_text,
@@ -2257,14 +2545,8 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
                 x3 = get_dir_val(p3_dir) * get_str_val(p3_str)
                 x4 = get_dir_val(p4_dir) * get_str_val(p4_str)
 
-                i_cd = (0.30 * x0 + 0.25 * x1 + 0.15 * x2 + 0.10 * x3 + 0.20 * x4) / 2.0
-
-                if abs(i_cd) < 0.26:
-                    market_bias = "Choppy / Neutral"
-                elif i_cd >= 0.26:
-                    market_bias = "Bullish"
-                else:
-                    market_bias = "Bearish"
+                i_cd = calculate_edge_score(x0, x1, x2, x3, x4)
+                market_bias = determine_market_bias(i_cd)
 
                 # Validation & Instantiation
                 try:
@@ -2708,6 +2990,22 @@ def flow_pending_audits():
                 fail_reason = session.prompt("fail_reason", get_enum_choice, "Failure Reason", FailureReason)
                 lesson_eff = session.prompt("lesson_eff", get_optional_text, "Efficiency Lesson Learned")
 
+                structural_mae_raw = session.prompt("structural_mae_raw", lambda: bind_pause(inquirer.text(
+                    message="Structural MAE (peor precio alcanzado en contra de la tesis) [Optional] >",
+                    style=INQUIRER_STYLE
+                )).execute())
+                structural_mfe_raw = session.prompt("structural_mfe_raw", lambda: bind_pause(inquirer.text(
+                    message="Structural MFE (mejor precio alcanzado a favor de la tesis) [Optional] >",
+                    style=INQUIRER_STYLE
+                )).execute())
+                try:
+                    structural_mae_val = Decimal(str(structural_mae_raw)) if structural_mae_raw.strip() else None
+                    structural_mfe_val = Decimal(str(structural_mfe_raw)) if structural_mfe_raw.strip() else None
+                except Exception:
+                    console.print("[bold red]Invalid decimal input for Structural MAE/MFE. Setting to None.[/bold red]")
+                    structural_mae_val = None
+                    structural_mfe_val = None
+
                 audit_eff = EfficiencyAudit(
                     efficiency_id=trade_id,
                     bias_a=bias_a,
@@ -2716,9 +3014,11 @@ def flow_pending_audits():
                     structural_resolution=struct_res,
                     failure_reason=fail_reason,
                     resolution_time=datetime.datetime.now(),
-                    lesson_learned=lesson_eff
+                    lesson_learned=lesson_eff,
+                    structural_mae=structural_mae_val,
+                    structural_mfe=structural_mfe_val
                 )
-                
+
                 # Review Panel
                 rev_text = Text()
                 rev_text.append(f"Original Bias (Bias A): {bias_a.value if hasattr(bias_a, 'value') else bias_a}\n")
@@ -2728,7 +3028,9 @@ def flow_pending_audits():
                 rev_text.append(f"Structural Resolution: {struct_res.value if hasattr(struct_res, 'value') else struct_res}\n")
                 rev_text.append(f"Failure Reason: {fail_reason.value if hasattr(fail_reason, 'value') else fail_reason}\n")
                 rev_text.append(f"Lesson Learned: {lesson_eff or ''}\n")
-                
+                rev_text.append(f"Structural MAE: {structural_mae_val if structural_mae_val is not None else 'N/A'}\n")
+                rev_text.append(f"Structural MFE: {structural_mfe_val if structural_mfe_val is not None else 'N/A'}\n")
+
                 try:
                     console.clear(home=True)
                 except TypeError:
@@ -2761,6 +3063,8 @@ def flow_pending_audits():
                         Choice("struct_res", name=f"Structural Resolution: {struct_res.value}"),
                         Choice("fail_reason", name=f"Failure Reason: {fail_reason.value}"),
                         Choice("lesson_eff", name=f"Lesson Learned: {lesson_eff or ''}"),
+                        Choice("structural_mae_raw", name=f"Structural MAE: {structural_mae_val if structural_mae_val is not None else 'N/A'}"),
+                        Choice("structural_mfe_raw", name=f"Structural MFE: {structural_mfe_val if structural_mfe_val is not None else 'N/A'}"),
                         Choice("back", name="[<] Back to Review")
                     ]
                     field_to_edit = inquirer.select(
@@ -2781,6 +3085,16 @@ def flow_pending_audits():
                         session.state["fail_reason"] = get_enum_choice("Edit Failure Reason", FailureReason)
                     elif field_to_edit == "lesson_eff":
                         session.state["lesson_eff"] = get_optional_text("Edit Efficiency Lesson Learned")
+                    elif field_to_edit == "structural_mae_raw":
+                        session.state["structural_mae_raw"] = bind_pause(inquirer.text(
+                            message="Structural MAE (peor precio alcanzado en contra de la tesis) [Optional] >",
+                            style=INQUIRER_STYLE
+                        )).execute()
+                    elif field_to_edit == "structural_mfe_raw":
+                        session.state["structural_mfe_raw"] = bind_pause(inquirer.text(
+                            message="Structural MFE (mejor precio alcanzado a favor de la tesis) [Optional] >",
+                            style=INQUIRER_STYLE
+                        )).execute()
             except RestartFlowException:
                 continue
             except PauseAuditException:
@@ -3887,7 +4201,9 @@ def flow_repair_analysis_audits():
                 "false_regime_rate": ea.false_regime_rate if (ea and hasattr(ea, "false_regime_rate") and ea.false_regime_rate) else "N/A",
                 "lesson_learned": ea.lesson_learned if (ea and hasattr(ea, "lesson_learned") and ea.lesson_learned) else "",
                 "lesson_eff": ea.lesson_learned if (ea and hasattr(ea, "lesson_learned") and ea.lesson_learned) else "",
-                "efficiency_timeframe": ea.efficiency_timeframe if (ea and hasattr(ea, "efficiency_timeframe") and ea.efficiency_timeframe) else "1H"
+                "efficiency_timeframe": ea.efficiency_timeframe if (ea and hasattr(ea, "efficiency_timeframe") and ea.efficiency_timeframe) else "1H",
+                "structural_mae": ea.structural_mae if (ea and hasattr(ea, "structural_mae") and ea.structural_mae is not None) else None,
+                "structural_mfe": ea.structural_mfe if (ea and hasattr(ea, "structural_mfe") and ea.structural_mfe is not None) else None
             }
             
             ta_defaults = {
@@ -4409,6 +4725,8 @@ def flow_repair_analysis_audits():
                         rev_text.append(f"Specific Bias Compliance: {workspace['specific_bias_compliance']}\n", style="white")
                         rev_text.append(f"False Regime Rate: {workspace['false_regime_rate']}\n", style="white")
                         rev_text.append(f"Efficiency Timeframe: {workspace['efficiency_timeframe']}\n", style="white")
+                        rev_text.append(f"Structural MAE: {workspace['structural_mae'] if workspace['structural_mae'] is not None else 'N/A'}\n", style="white")
+                        rev_text.append(f"Structural MFE: {workspace['structural_mfe'] if workspace['structural_mfe'] is not None else 'N/A'}\n", style="white")
                         if workspace["lesson_eff"] and workspace["lesson_eff"] != "nan":
                             indented_lesson = format_indented_block(workspace["lesson_eff"], indent_spaces=11, wrap_width=38)
                             rev_text.append(f"Lesson Learned:\n  {indented_lesson}\n", style="dim italic")
@@ -4451,6 +4769,8 @@ def flow_repair_analysis_audits():
                                 Choice("specific_bias_compliance", name=f"   Specific Bias Compliance: {workspace['specific_bias_compliance']}"),
                                 Choice("false_regime_rate", name=f"   False Regime Rate: {workspace['false_regime_rate']}"),
                                 Choice("efficiency_timeframe", name=f"   Efficiency Timeframe: {workspace['efficiency_timeframe']}"),
+                                Choice("structural_mae", name=f"   Structural MAE: {workspace['structural_mae'] if workspace['structural_mae'] is not None else 'N/A'}"),
+                                Choice("structural_mfe", name=f"   Structural MFE: {workspace['structural_mfe'] if workspace['structural_mfe'] is not None else 'N/A'}"),
                                 Separator("── ⚪ Notes ──"),
                                 Choice("lesson_eff", name=f"   Lesson Learned: {_preview(workspace['lesson_eff'])}"),
                                 Separator(),
@@ -4498,6 +4818,20 @@ def flow_repair_analysis_audits():
                                     pointer=">",
                                     qmark=""
                                 ).execute()
+                            elif field == "structural_mae":
+                                raw = get_optional_text("Edit Structural MAE (peor precio alcanzado en contra de la tesis)")
+                                try:
+                                    workspace["structural_mae"] = Decimal(str(raw)) if raw else None
+                                except Exception:
+                                    console.print("[bold red]Invalid decimal input for Structural MAE. Setting to None.[/bold red]")
+                                    workspace["structural_mae"] = None
+                            elif field == "structural_mfe":
+                                raw = get_optional_text("Edit Structural MFE (mejor precio alcanzado a favor de la tesis)")
+                                try:
+                                    workspace["structural_mfe"] = Decimal(str(raw)) if raw else None
+                                except Exception:
+                                    console.print("[bold red]Invalid decimal input for Structural MFE. Setting to None.[/bold red]")
+                                    workspace["structural_mfe"] = None
                             elif field == "lesson_eff":
                                 workspace["lesson_eff"] = get_optional_text("Edit Efficiency Lesson Learned")
                                 
@@ -4509,7 +4843,7 @@ def flow_repair_analysis_audits():
                                 now_ts = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
                                 if exists:
                                     raw_conn.execute("""
-                                        UPDATE efficiency_audit SET 
+                                        UPDATE efficiency_audit SET
                                             bias_a = ?,
                                             resolution_type = ?,
                                             real_bias_b = ?,
@@ -4518,6 +4852,8 @@ def flow_repair_analysis_audits():
                                             specific_bias_compliance = ?,
                                             false_regime_rate = ?,
                                             efficiency_timeframe = ?,
+                                            structural_mae = ?,
+                                            structural_mfe = ?,
                                             lesson_learned = ?,
                                             updated_at = ?
                                         WHERE id = ?
@@ -4530,14 +4866,16 @@ def flow_repair_analysis_audits():
                                         workspace["specific_bias_compliance"],
                                         workspace["false_regime_rate"],
                                         workspace["efficiency_timeframe"],
+                                        float(workspace["structural_mae"]) if workspace.get("structural_mae") is not None else None,
+                                        float(workspace["structural_mfe"]) if workspace.get("structural_mfe") is not None else None,
                                         workspace["lesson_eff"],
                                         now_ts,
                                         record.id
                                     ))
                                 else:
                                     raw_conn.execute("""
-                                        INSERT INTO efficiency_audit (id, bias_a, resolution_type, real_bias_b, structural_resolution, failure_reason, specific_bias_compliance, false_regime_rate, efficiency_timeframe, lesson_learned, created_at, updated_at)
-                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        INSERT INTO efficiency_audit (id, bias_a, resolution_type, real_bias_b, structural_resolution, failure_reason, specific_bias_compliance, false_regime_rate, efficiency_timeframe, structural_mae, structural_mfe, lesson_learned, created_at, updated_at)
+                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                     """, (
                                         record.id,
                                         workspace["bias_a"],
@@ -4548,6 +4886,8 @@ def flow_repair_analysis_audits():
                                         workspace["specific_bias_compliance"],
                                         workspace["false_regime_rate"],
                                         workspace["efficiency_timeframe"],
+                                        float(workspace["structural_mae"]) if workspace.get("structural_mae") is not None else None,
+                                        float(workspace["structural_mfe"]) if workspace.get("structural_mfe") is not None else None,
                                         workspace["lesson_eff"],
                                         now_ts,
                                         now_ts

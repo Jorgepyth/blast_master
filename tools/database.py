@@ -142,6 +142,14 @@ class EfficiencyAudit(Base):
     resolution_time: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
     
     lesson_learned: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Structural_MAE/MFE: entrada MANUAL (no hay feed de precio en el sistema —
+    # evaluado explícitamente, ver commit). Precio real (no score 0-10), igual
+    # convención que mark_price/edge_validation_price/structural_invalidation
+    # en UnifiedDepartment. Se capturan en el wizard de RESOLUCIÓN del audit
+    # (cli/main.py, rama audit_choice == "eff"), no en el de creación, porque
+    # solo se conocen en retrospectiva.
+    structural_mae: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
+    structural_mfe: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-6))).replace(tzinfo=None))
     updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-6))).replace(tzinfo=None), onupdate=lambda: datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-6))).replace(tzinfo=None))
 
@@ -320,6 +328,10 @@ def init_db(db_url: str = "sqlite:///.data/flight_account_001_xauusd.db"):
                 pass
             if 'efficiency_timeframe' not in columns:
                 conn.execute(text("ALTER TABLE efficiency_audit ADD COLUMN efficiency_timeframe VARCHAR"))
+            if 'structural_mae' not in columns:
+                conn.execute(text("ALTER TABLE efficiency_audit ADD COLUMN structural_mae NUMERIC"))
+            if 'structural_mfe' not in columns:
+                conn.execute(text("ALTER TABLE efficiency_audit ADD COLUMN structural_mfe NUMERIC"))
 
         # Migrate UnifiedDepartment table
         if "unified_department" in inspector.get_table_names():

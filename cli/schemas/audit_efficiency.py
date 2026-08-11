@@ -1,3 +1,4 @@
+from decimal import Decimal
 from enum import Enum
 from pydantic import BaseModel, model_validator
 from datetime import datetime
@@ -48,6 +49,13 @@ class EfficiencyAudit(BaseModel):
     notes: Optional[str] = None
     lesson_learned: Optional[str] = None
     edge_description: Optional[str] = None
+
+    # Structural_MAE/MFE: precio real alcanzado en contra/a favor de la tesis
+    # entre la creación del análisis y su resolución. Entrada manual (no hay
+    # feed de precio en el sistema) — mismo criterio que mark_price/
+    # edge_validation_price/structural_invalidation en UnifiedDepartment.
+    structural_mae: Optional[Decimal] = None
+    structural_mfe: Optional[Decimal] = None
 
     @model_validator(mode='after')
     def calculate_audit_metrics(self) -> 'EfficiencyAudit':

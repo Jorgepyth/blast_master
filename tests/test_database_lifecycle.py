@@ -142,3 +142,45 @@ def test_r_multiple_and_captured_mfe_persist_via_update_record_state(test_engine
         assert record.tactical_audit.r_multiple == 2.0
         assert record.tactical_audit.captured_mfe == 1.0
 
+
+def test_structural_mae_and_structural_mfe_persist_via_update_record_state(test_engine):
+    # Regression test mirroring test_r_multiple_and_captured_mfe_persist_via_update_record_state:
+    # confirma que structural_mae/structural_mfe (agregados a EfficiencyAudit)
+    # no queden silenciosamente descartados por el filtro valid_keys de
+    # update_record_state() — mismo gap de Fase 0, ahora en efficiency_audit.
+    record_id = "test-structural-mae-mfe-persist"
+    with Session(test_engine) as session:
+        session.add(UnifiedDepartment(
+            id=record_id,
+            state=LifecycleState.ANALYSIS.value,
+            asset="XAU/USD",
+            market_bias="Bullish",
+            calc_edge=2.0,
+            p4_hierarchy="Hard_Level (Daily,Weekly,Monthly)",
+            p1_timeframe="15M",
+            p1_type="1st_iteration",
+            nodes_l1=2,
+            nodes_l2=1,
+            tactical_classification="Continuation_Pressure",
+            long_prob=0.80,
+            short_prob=0.20,
+            no_trade_prob=0.0
+        ))
+        session.commit()
+
+    update_record_state(record_id, LifecycleState.READY_FOR_NOTION, append_payload={
+        "audit_efficiency": {
+            "bias_a": "BOS",
+            "real_bias_b": "BOS",
+            "resolution_type": "Confirmed (A equal to B)",
+            "structural_mae": 3950.0,
+            "structural_mfe": 4550.0,
+        }
+    }, engine=test_engine)
+
+    with Session(test_engine) as session:
+        record = session.get(UnifiedDepartment, record_id)
+        assert record.efficiency_audit is not None
+        assert float(record.efficiency_audit.structural_mae) == 3950.0
+        assert float(record.efficiency_audit.structural_mfe) == 4550.0
+
