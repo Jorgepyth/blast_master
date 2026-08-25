@@ -32,6 +32,17 @@ import pandas as pd
 # Helpers privados (matemática pura, sin nombres de columna)
 # =========================
 
+def _win_rate_margin_of_error_95(win_rate: float, n: int) -> float:
+    """
+    Margen de error del win_rate a 95% de confianza (error estándar de
+    proporción: 1.96 * sqrt(p*(1-p)/n)). NaN si n==0 o win_rate es NaN —
+    no hay manera de reportar confianza sin muestra.
+    """
+    if not n or pd.isna(win_rate):
+        return np.nan
+    return float(1.96 * np.sqrt(win_rate * (1 - win_rate) / n))
+
+
 def _max_consecutive_runs(flags: pd.Series) -> Tuple[int, int]:
     """flags: Series booleana donde True=win. Retorna (max_win_streak, max_loss_streak)."""
     max_w = max_l = 0
@@ -174,6 +185,10 @@ def segment_kpis(
         "wins": grp.apply(lambda g: int((g[pnl_col] > 0).sum()), include_groups=False),
         "losses": grp.apply(lambda g: int((g[pnl_col] < 0).sum()), include_groups=False),
         "win_rate": grp.apply(lambda g: float((g[pnl_col] > 0).mean()), include_groups=False),
+        "win_rate_moe_95": grp.apply(
+            lambda g: _win_rate_margin_of_error_95(float((g[pnl_col] > 0).mean()), len(g)),
+            include_groups=False,
+        ),
         "pnl_sum": grp[pnl_col].sum(),
         "pnl_avg": grp[pnl_col].mean(),
         "r_sum": grp[r_col].sum(),
@@ -341,6 +356,7 @@ def compute_trade_kpis_extended(
         "losses": losses,
         "breakeven": breakeven,
         "win_rate": win_rate,
+        "win_rate_moe_95": _win_rate_margin_of_error_95(win_rate, n),
 
         "pnl_total_net": pnl_total,
         "pnl_avg_net": pnl_mean,
