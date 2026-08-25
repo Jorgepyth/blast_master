@@ -64,7 +64,8 @@ blast_master/
 │   ├── notion_sync.py           Sync a Notion (proceso separado), payloads + retry
 │   ├── notion_handshake.py      Script standalone de diagnóstico de conexión (sin uso por otros .py)
 │   ├── migrate_keff_v2.py       Script de migración manual (recalcula probabilidades)
-│   └── migrate_tactical_legacy.py  Script de migración manual (backfill gates_failed)
+│   ├── migrate_tactical_legacy.py  Script de migración manual (backfill gates_failed)
+│   └── migrate_tactical_audit_1n.py  Script de migración manual (nuevo, sin trackear en git al 2026-08-25) — reconstruye `tactical_audit` para el cambio 1:1→1:many (ver §5). NO ejecutado todavía contra ninguna DB real.
 ├── jupyter/
 │   ├── iterations.ipynb         Contiene el DDL destructivo verificado en Fase 2c
 │   └── data_analysis.ipynb      Sin hallazgos relevantes verificados
@@ -91,11 +92,14 @@ blast_master/
 - `flow_flight_sessions()` — `cli/main.py:700` — selección/creación de cuenta al arrancar.
 - `start()` — `cli/main.py:802` — `@cli.command()`, menú principal.
 - `flow_review_analysis()` — `cli/main.py:935` — revisión de análisis existentes.
-- `flow_new_analysis()` — `cli/main.py:1974` — wizard de nueva operación; contiene el sitio #1 y #2 de la fórmula `i_cd` duplicada (líneas 2100 y 2196).
-- `flow_pending_audits()` — `cli/main.py:2549` — wizard de auditorías pendientes; contiene el sitio #3 de la fórmula duplicada (`recalculate_unified_metrics`, línea 3972) y la promoción de estado `PENDING_AUDITS → READY_FOR_NOTION` (línea 3285-3291).
-- `render_final_review_layout()` — `cli/main.py:3294`.
-- `flow_assets_configuration()` — `cli/main.py:3590`, `flow_add_whitelisted_asset()` — `cli/main.py:3659`.
-- `flow_repair_analysis_audits()` — `cli/main.py:3688`.
+- `flow_new_analysis()` — `cli/main.py:2346` — wizard de nueva operación. Al terminar de guardar (`:2808-2832`, actualización 2026-08-25) pregunta si se quiere alimentar un Tactical Audit de una vez, saltando directo a `flow_pending_audits()` con parámetros `preselected_*`.
+- `flow_pending_audits()` — `cli/main.py:2948` — wizard de auditorías pendientes. Actualización 2026-08-25: ganó `preselected_trade_id`/`preselected_payload`/`preselected_choice`/`state_rule`/`force_new_tactical` para que tanto el prompt de `flow_new_analysis()` como `flow_add_tactical_execution()` puedan reusarlo sin pasar por el picker de `PENDING_AUDITS`; `state_rule="preserve"` evita degradar un registro que ya llegó a `READY_FOR_NOTION`/`SYNCED`/`COMPLETED`.
+- `flow_add_tactical_execution()` — `cli/main.py:3954` — **nueva (2026-08-25)**, opción "7" del menú principal (`cli/ui_manager.py:213`). Agrega una ejecución táctica a cualquier análisis pasado, sin importar su estado actual.
+- `render_final_review_layout()` — `cli/main.py:4025`.
+- `flow_assets_configuration()` — `cli/main.py:4334`, `flow_add_whitelisted_asset()` — `cli/main.py:4403`.
+- `flow_repair_analysis_audits()` — `cli/main.py:4432` — actualización 2026-08-25: si el análisis tiene 2+ filas `tactical_audit`, pregunta cuál ejecución reparar (`:4521-4533`) antes de mostrar el menú de edición.
+
+`[NO VERIFICADO — hipótesis]` Los números de línea de este documento fueron verificados en la fecha de cada actualización citada; el resto de la sección (fórmula `i_cd` duplicada en 3 sitios, `cli()`/`get_active_engine()`/etc.) no se re-verificó al escribir esta actualización — el archivo creció de 4935 a 5954 líneas desde la última pasada de verificación completa, así que cualquier línea sin fecha de actualización explícita puede haber corrido.
 
 ### `cli/ui_manager.py` — capa de presentación
 - `CLIState` — `cli/main.py` → `cli/ui_manager.py:143` — estado de UI persistente.
@@ -127,14 +131,16 @@ blast_master/
 - `LifecycleState(str, Enum)` — `:10` — 8 valores (ver §5/§9 para cuáles tienen transición verificada).
 - `Base(DeclarativeBase)` — `:47`, y 7 clases ORM: `AssetBalance` `:51`, `EmotionCatalog` `:58`, `AssetConfig` `:63`, `AnalysisLayer` `:73`, `UnifiedDepartment` `:87`, `EfficiencyAudit` `:122`, `TacticalAudit` `:142`.
 - `init_db(db_url="sqlite:///.data/flight_account_001_xauusd.db")` — `:227` — nótese el default hardcodeado a la cuenta 001, mismo patrón que el guard de migración de `cli/main.py`.
-- `update_record_state()` — `:376` — único setter genérico de `LifecycleState`; en la práctica tiene **un solo call site** en todo `cli/main.py` (línea 3291).
-- `get_records_by_state()` — `:477`, `get_assets()` — `:348`, `add_asset()` — `:353`.
+- `update_record_state()` — `:413` — único setter genérico de `LifecycleState`. Actualización 2026-08-25: ganó el parámetro `tactical_audit_id` (edita una fila táctica específica en vez de siempre insertar una nueva) — ya **no** tiene un único call site, `cli/main.py` lo invoca tanto desde `flow_pending_audits()` como (indirectamente, vía ese mismo flujo) desde `flow_new_analysis()` y `flow_add_tactical_execution()`.
+- `get_records_by_state()` — `:514` — mantiene su contrato de "un payload por análisis" tras la actualización 2026-08-25: toma deliberadamente solo la fila táctica más reciente, no enumera todas las ejecuciones (documentado en su propio código). `get_assets()` — `:385`, `add_asset()` — `:390`.
+- `get_tactical_audit_sync_targets()` — `:627` — **nueva (2026-08-25)**. Un dict por `(unified_department, tactical_audit)` sin `notion_page_id`, incluyendo ejecuciones agregadas a un análisis ya `SYNCED` — la usa la segunda pasada de `tools/notion_sync.py:sync_records()`.
 
 ### `tools/notion_sync.py`
 - `NotionAPIError`/`RateLimitError` — `:20`/`:23`.
 - `map_efficiency_payload()` — `:34`, `map_tactical_payload()` — `:58`.
 - `post_to_notion()` — `:80` — con retry vía `tenacity` (verificado por test en Fase 2f).
-- `sync_records()` — `:89` — orquestador; setea `LifecycleState.SYNCED` (`:147`) o `LifecycleState.FAILED` (`:162`).
+- `sync_records()` — `:95` — actualización 2026-08-25: ahora es de **dos pasadas**, no una. Pasada 1 (`:109-180`): analises `READY_FOR_NOTION`/`FAILED` — crea la página Efficiency solo si no existe, y sincroniza cada fila `tactical_audit` sin `notion_page_id` de forma independiente; solo promueve a `SYNCED` (`:163`) si **todas** las filas quedaron sincronizadas, si no `FAILED` (`:167`). Pasada 2 (`:182-202`): usa `get_tactical_audit_sync_targets()` (`tools/database.py:627`) para sincronizar ejecuciones agregadas después a un análisis que ya estaba `SYNCED`, sin recrear ni tocar la página Efficiency.
+- Bug encontrado y arreglado 2026-08-25 (preexistente, sin relación con el cambio 1:many): `map_tactical_payload()` (`:62`) pasaba `calc_edge` (columna `Numeric`, se lee como `Decimal`) directo al JSON sin convertir — cualquier sync de un Tactical Audit habría fallado con `TypeError: Object of type Decimal is not JSON serializable`. Arreglado con `safe_float()`, igual que ya hacía el payload de Efficiency. Nunca antes tuvo cobertura de test que lo detectara — `sync_records()` en sí no tenía ningún test hasta `tests/test_notion_sync_two_pass.py` (2026-08-25).
 - Se ejecuta como **proceso separado** (ver §2), no como import directo desde `cli/main.py` en producción (sí se importa directamente en tests, ej. `scratch/test_sync_idempotency.py:10`).
 
 ### `tools/notion_handshake.py`
@@ -149,11 +155,13 @@ blast_master/
 
 > **Actualización 2026-08-12 (retiro de `compliance`/`trade_status`):** `unified_department.trade_status` y `tactical_audit.compliance` fueron eliminados de las 3 DBs de cuenta (DROP COLUMN, con backup previo) y del código. Ambos eran señales de ejecución redundantes/potencialmente divergentes de la realidad (`trade_status` era informativo puro sin uso analítico; `compliance` alimentaba el motor de KPIs pero mezclaba "¿se llenó la orden?" con un juicio subjetivo de calidad de ejecución). `tactical_audit.order_filled` (booleano) es ahora la única señal de ejecución, derivada al momento de guardar la auditoría táctica y usada como gate binario en `core/analytics_engine.py:filter_executed_trades` y `core/backtest_engine.py:reconstruct_execution_outcome` (este último usa el signo de `r_multiple`, no una etiqueta manual, para el acierto direccional). `efficiency_audit.specific_bias_compliance` no fue tocado — sigue siendo un campo distinto (validez del sesgo estructural, no de ejecución).
 
+> **Actualización 2026-08-25 (`tactical_audit` 1:1 → 1:many) — CÓDIGO SIN COMMITEAR, MIGRACIÓN YA APLICADA A LAS 3 DBs REALES.** `TacticalAudit.id` dejó de ser la PK compartida con `unified_department.id` (`tools/database.py:159`, antes `ForeignKey(..., primary_key=True)`) y pasó a ser un UUID propio; el vínculo con el análisis ahora es `trade_id` (`:160`, FK normal no-única, mismo patrón que `AnalysisLayer.trade_id`), permitiendo varias ejecuciones reales por análisis (escalar el mismo edge, retomarlo días después) sin crear un nuevo Unified Analysis cada vez. `efficiency_audit` no se tocó — sigue 1:1. Nuevas columnas en `TacticalAudit`: `created_at`/`updated_at`/`notion_page_id` (`:161-163`); `UnifiedDepartment.tactical_page_id` se eliminó (su valor se traslada al `notion_page_id` de la primera fila durante la migración). El diagrama ER de abajo ya refleja el esquema nuevo — las 3 DBs reales (`.data/flight_account_*.db`) ya lo tienen aplicado con autorización explícita del usuario (`tools/migrate_tactical_audit_1n.py --confirm --i-understand-this-is-production`, verificado: conteos sin cambio, 0 filas con `trade_id` huérfano en las 3 cuentas). Backup previo: snapshot manual por `VACUUM INTO` en `.data/archives/pre_tactical_audit_1n_<cuenta>_20260825_085521.db` (`tools/backup.py` no se pudo usar — sin USB montado ni credenciales B2 en este entorno). Detalle completo (CLI, Notion sync de dos pasadas, `report_data.py`, tests, notebooks) en "Antes de tocar código en este repo" de `CLAUDE.md`; diseño original en `/home/jorgecg/.claude/plans/actualmente-quiero-que-hagamos-robust-giraffe.md`. **El código sigue sin commitear a git** — la migración de datos ya corrió, pero eso es independiente de si el código que la acompaña está integrado a la rama principal.
+
 ```mermaid
 erDiagram
     UNIFIED_DEPARTMENT ||--o{ ANALYSIS_LAYER : "trade_id → id, CASCADE"
     UNIFIED_DEPARTMENT ||--o| EFFICIENCY_AUDIT : "id → id (PK compartida), CASCADE"
-    UNIFIED_DEPARTMENT ||--o| TACTICAL_AUDIT : "id → id (PK compartida), CASCADE"
+    UNIFIED_DEPARTMENT ||--o{ TACTICAL_AUDIT : "trade_id → id, CASCADE"
 
     UNIFIED_DEPARTMENT {
         varchar id PK
@@ -178,7 +186,11 @@ erDiagram
         varchar resolution_type
     }
     TACTICAL_AUDIT {
-        varchar id PK_FK
+        varchar id PK
+        varchar trade_id FK
+        datetime created_at
+        datetime updated_at
+        varchar notion_page_id
         varchar tier_setup
         boolean order_filled
         int gates_failed
@@ -208,11 +220,12 @@ erDiagram
 ```mermaid
 stateDiagram-v2
     [*] --> ANALYSIS: default al crear registro (tools/database.py:91)
-    ANALYSIS --> PENDING_AUDITS: cli/main.py:2377
-    PENDING_AUDITS --> READY_FOR_NOTION: cli/main.py:3285 (ambas auditorías completas)
-    READY_FOR_NOTION --> SYNCED: tools/notion_sync.py:147
-    READY_FOR_NOTION --> FAILED: tools/notion_sync.py:162 (fallo parcial de POST)
+    ANALYSIS --> PENDING_AUDITS: cli/main.py:2745
+    PENDING_AUDITS --> READY_FOR_NOTION: cli/main.py:3945 (ambas auditorías completas)
+    READY_FOR_NOTION --> SYNCED: tools/notion_sync.py:163
+    READY_FOR_NOTION --> FAILED: tools/notion_sync.py:167 (al menos una fila táctica falló al sincronizar)
     FAILED --> SYNCED: resume idempotente (verificado por test en Fase 2f)
+    SYNCED --> SYNCED: cli/main.py:3939-3940 (2026-08-25) -- flow_add_tactical_execution()/state_rule="preserve" agrega una ejecución táctica sin salir de SYNCED/READY_FOR_NOTION/COMPLETED
 
     state "PENDING_TACTICS (sin transición encontrada)" as PT
     state "OPEN (sin transición encontrada)" as OP
@@ -224,14 +237,15 @@ stateDiagram-v2
 ## 6. Flujo de datos end-to-end
 
 1. Usuario arranca `cli()` → `get_active_engine()` resuelve/crea la DB de la sesión activa (`FlightSessionManager`).
-2. `flow_new_analysis()` (`cli/main.py:1974`) recolecta inputs direccionales (`p0`...`p4`) → calcula `i_cd` in-line (fórmula duplicada, sitio #1 o #2 según el punto del wizard) → `determine_market_bias(i_cd)` + `core.math_engine.calculate_probabilities(i_cd)`.
+2. `flow_new_analysis()` (`cli/main.py:2346`) recolecta inputs direccionales (`p0`...`p4`) → calcula `i_cd` in-line (fórmula duplicada, sitio #1 o #2 según el punto del wizard) → `determine_market_bias(i_cd)` + `core.math_engine.calculate_probabilities(i_cd)`.
 3. Los datos se validan/enriquecen vía `cli/schemas/tactical.py` (`TacticalAnalysis.calculate_derived_tactics()`, que **sí** reutiliza `calculate_probabilities` como función compartida, a diferencia del cálculo de `i_cd`) y `cli/schemas/efficiency.py`.
-4. Persistencia inicial vía `tools/database.py`: se crea `UnifiedDepartment` (estado inicial `ANALYSIS`) + filas `AnalysisLayer` asociadas.
-5. `flow_pending_audits()` (`cli/main.py:2549`) recolecta las auditorías de eficiencia/táctica (`EfficiencyAudit`/`TacticalAudit`, con su propio recálculo de `i_cd` — sitio #3, `recalculate_unified_metrics`) → al completarse ambas, `update_record_state()` promueve `PENDING_AUDITS → READY_FOR_NOTION`.
-6. El usuario (u otro disparador manual) invoca la sincronización → `cli/main.py:859` lanza `tools/notion_sync.py` como **proceso de sistema operativo separado** (`subprocess.Popen`), no una llamada de función in-process.
-7. `sync_records()` lee registros en `READY_FOR_NOTION`, arma payloads (`map_efficiency_payload`/`map_tactical_payload`) y hace `POST` a la API de Notion (`post_to_notion`, con retry vía `tenacity`) → estado final `SYNCED` o `FAILED` (con posibilidad de resume idempotente, verificado en Fase 2f).
+4. Persistencia inicial vía `tools/database.py`: se crea `UnifiedDepartment` (estado inicial `ANALYSIS`, transiciona a `PENDING_AUDITS` en el mismo flujo) + filas `AnalysisLayer` asociadas.
+5. **Actualización 2026-08-25:** justo después de guardar, `flow_new_analysis()` pregunta si se quiere alimentar un Tactical Audit de una vez (`:2808-2832`) — si el usuario acepta, salta directo al paso 6 para ese mismo registro sin volver al menú.
+6. `flow_pending_audits()` (`cli/main.py:2948`) recolecta las auditorías de eficiencia/táctica (`EfficiencyAudit`/`TacticalAudit`, con su propio recálculo de `i_cd` — sitio #3, `recalculate_unified_metrics`) → al completarse ambas, `update_record_state()` promueve `PENDING_AUDITS → READY_FOR_NOTION`. Desde 2026-08-25, `tactical_audit` es 1:many (ver §5) — este mismo flujo, reinvocado más tarde vía la nueva `flow_add_tactical_execution()` (`:3954`) sobre un análisis que ya llegó a `READY_FOR_NOTION`/`SYNCED`/`COMPLETED`, agrega una ejecución adicional sin degradar ese estado (`state_rule="preserve"`).
+7. El usuario (u otro disparador manual) invoca la sincronización → `cli/main.py:859` lanza `tools/notion_sync.py` como **proceso de sistema operativo separado** (`subprocess.Popen`), no una llamada de función in-process.
+8. `sync_records()` (actualización 2026-08-25: dos pasadas, ver §4) lee registros en `READY_FOR_NOTION`/`FAILED`, arma payloads (`map_efficiency_payload`/`map_tactical_payload`) y hace `POST` a la API de Notion (`post_to_notion`, con retry vía `tenacity`) una vez por cada fila `tactical_audit` sin sincronizar → estado final `SYNCED` o `FAILED` (con posibilidad de resume idempotente, verificado en Fase 2f). Una segunda pasada cubre ejecuciones agregadas después a un análisis ya `SYNCED` (paso 6), sin reabrir ni recrear su página Efficiency.
 
-`[VERIFICADO]` cada paso cita archivo:línea arriba. `[NO VERIFICADO — hipótesis]` qué dispara el paso 6 en la práctica (¿comando manual del usuario, cron, o botón en el wizard?) — no se rastreó el disparador exacto de esa línea de `subprocess.Popen`.
+`[VERIFICADO]` cada paso cita archivo:línea arriba (pasos 1-4, 7 re-verificados solo donde el número de línea cambió; pasos 5-6-8 verificados en la actualización 2026-08-25). `[NO VERIFICADO — hipótesis]` qué dispara el paso 7 en la práctica (¿comando manual del usuario, cron, o botón en el wizard?) — no se rastreó el disparador exacto de esa línea de `subprocess.Popen`.
 
 ## 7. Dependencias externas
 

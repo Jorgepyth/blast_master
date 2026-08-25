@@ -71,42 +71,40 @@ def test_flow_repair_analysis_audits_on_the_fly_initialization_and_save(mock_sel
         
     # Mock inquirer prompts to select the trade, edit Efficiency Audit, and then confirm & save
     # Let's mock a sequence of selections:
-    # 1. Select trade: "trade-1234"
+    # 1. Select record #: "1" (via get_mandatory_text, patched below)
     # 2. Select Component to Inspect/Repair: "efficiency"
     # 3. Action inside efficiency: "save" (confirm & save default initialized staging dict)
     # 4. Select Component to Inspect/Repair: "tactical"
     # 5. Action inside tactical: "save" (confirm & save default initialized staging dict)
     # 6. Select Component to Inspect/Repair: "back"
     # 7. Select Trade to Inspect and Repair: "back"
-    
+
     mock_prompt = MagicMock()
     mock_select.return_value = mock_prompt
-    
+
     mock_prompt.execute.side_effect = [
-        "trade-1234",  # Selected trade ID
         "efficiency",  # Selected Efficiency Audit component
         "save",        # Saved Efficiency Audit (trigger on-the-fly SQL insert)
         "tactical",    # Selected Tactical Audit component
         "save",        # Saved Tactical Audit (trigger on-the-fly SQL insert)
-        "back",        # Back to main selection
-        "back"         # Back to configuration menu
+        "back",        # Back to main selection (component menu)
     ]
-    
-    with patch("builtins.input", return_value=""):
+
+    with patch("cli.main.get_mandatory_text", side_effect=["1", "b"]), \
+         patch("builtins.input", return_value=""):
         flow_repair_analysis_audits()
         
     # Verify that the databases rows now exist!
     with Session(in_memory_db) as session:
         ea = session.get(EfficiencyAudit, "trade-1234")
-        ta = session.get(TacticalAudit, "trade-1234")
-        
+        ta = session.execute(select(TacticalAudit).where(TacticalAudit.trade_id == "trade-1234")).scalar()
+
         assert ea is not None
         assert ea.bias_a == "Choppy / Neutral"
         assert ea.resolution_type == "Open"  # ORM default is 'Open' (not None)
         assert ea.real_bias_b is None or ea.real_bias_b == "Choppy / Neutral"  # Initialized from resolved bias
-        
+
         assert ta is not None
-        assert ta.compliance == "Invalid_edge"  # Workspace default for unset compliance
         assert float(ta.entry_price) == 0.0  # Safe numerical 0.0 fallback (Amendment 1)
         assert float(ta.stop_loss) == 0.0     # Safe numerical 0.0 fallback (Amendment 1)
         assert ta.lesson_learned == ""    # Safe text empty string fallback (Amendment 1)
@@ -153,8 +151,8 @@ def test_flow_repair_analysis_audits_tactical_math_and_parameterized_updates(moc
         ))
         
         session.add(TacticalAudit(
-            id="trade-5678",
-            compliance="Edge_valid",
+            trade_id="trade-5678",
+            order_filled=True,
             entry_price=100.0,
             closing_price=110.0,
             size=2.0,
@@ -195,24 +193,23 @@ def test_flow_repair_analysis_audits_tactical_math_and_parameterized_updates(moc
     
     mock_prompt = MagicMock()
     mock_select.return_value = mock_prompt
-    
+
     mock_prompt.execute.side_effect = [
-        "trade-5678",  # Selected trade ID
         "tactical",    # Selected Tactical Audit component
         "edit",        # Edit a field
         "entry_price", # Selected entry_price to edit
         "save",        # Confirm & Save Tactical Audit
-        "back",        # Back to main selection
-        "back"         # Back to configuration menu
+        "back",        # Back to main selection (component menu)
     ]
-    
-    with patch("cli.main.get_mandatory_float", return_value=105.0), \
+
+    with patch("cli.main.get_mandatory_text", side_effect=["1", "b"]), \
+         patch("cli.main.get_mandatory_float", return_value=105.0), \
          patch("builtins.input", return_value=""):
         flow_repair_analysis_audits()
         
     # Verify that the mathematical values were recalculated and persisted perfectly!
     with Session(in_memory_db) as session:
-        ta = session.get(TacticalAudit, "trade-5678")
+        ta = session.execute(select(TacticalAudit).where(TacticalAudit.trade_id == "trade-5678")).scalar()
         assert ta is not None
         assert ta.entry_price == 105.0
         assert ta.notional_size == 210.0
@@ -266,20 +263,19 @@ def test_flow_repair_analysis_audits_unified_recalculation_and_singular_sql_save
         
     mock_prompt = MagicMock()
     mock_select.return_value = mock_prompt
-    
+
     mock_prompt.execute.side_effect = [
-        "trade-999",   # Selected trade ID
         "unified",     # Select Unified Analysis component
         "edit",        # Edit a field
         "p0_dir",      # Select P0 Direction field to edit
         "save",        # Confirm & Save Repair
-        "back",        # Back to main selection
-        "back"         # Back to configuration menu
+        "back",        # Back to main selection (component menu)
     ]
-    
+
     from cli.schemas.efficiency import Direction
-    
-    with patch("cli.main.get_enum_choice") as mock_enum, \
+
+    with patch("cli.main.get_mandatory_text", side_effect=["1", "b"]), \
+         patch("cli.main.get_enum_choice") as mock_enum, \
          patch("builtins.input", return_value=""):
         
         # Mock P0 direction input to change to Long
@@ -302,4 +298,95 @@ def test_flow_repair_analysis_audits_unified_recalculation_and_singular_sql_save
         assert p0_layer is not None
         assert p0_layer.direction == "Long"
         assert p0_layer.score == 2 # Long Strong = 1 * 2 = 2
+
+@patch("tools.database.engine_default")
+@patch("InquirerPy.inquirer.select")
+def test_flow_repair_analysis_audits_prompts_for_which_tactical_row(mock_select, mock_engine_default, in_memory_db):
+    # An analysis with 2+ tactical_audit rows (1:many) must ask which execution to repair,
+    # and repairing one must never touch the other.
+    mock_engine_default.return_value = in_memory_db
+    tools.database.engine_default = in_memory_db
+
+    with Session(in_memory_db) as session:
+        record = UnifiedDepartment(
+            id="trade-multi",
+            asset="XAU/USD",
+            market_bias="Bullish",
+            calc_edge=0.30,
+            edge_description="Scaled into the same edge twice",
+            p4_hierarchy="Psych Level",
+            p1_timeframe="15M",
+            p1_type="1st_iteration",
+            nodes_l1=2,
+            nodes_l2=4,
+            tactical_classification="Continuation_Pressure",
+            long_prob=0.70,
+            short_prob=0.20,
+            no_trade_prob=0.10,
+            created_at=datetime.datetime.utcnow(),
+            updated_at=datetime.datetime.utcnow()
+        )
+        session.add(record)
+
+        for layer_name in ["P0", "P2", "P3", "P4", "P1"]:
+            dept = "EFFICIENCY" if layer_name in ["P0", "P2", "P3"] else "TACTICAL"
+            session.add(AnalysisLayer(
+                trade_id="trade-multi",
+                department=dept,
+                layer_name=layer_name,
+                direction="Long",
+                strength="Strong",
+                thesis="thesis"
+            ))
+
+        session.add(TacticalAudit(
+            id="ta-first",
+            trade_id="trade-multi",
+            order_filled=True,
+            entry_price=100.0,
+            closing_price=110.0,
+            size=1.0,
+            stop_loss=95.0,
+            take_profit=120.0,
+            trade_decision="Long",
+            lesson_learned="first execution",
+            created_at=datetime.datetime(2026, 8, 1, 12, 0, 0),
+        ))
+        session.add(TacticalAudit(
+            id="ta-second",
+            trade_id="trade-multi",
+            order_filled=True,
+            entry_price=200.0,
+            closing_price=210.0,
+            size=1.0,
+            stop_loss=195.0,
+            take_profit=220.0,
+            trade_decision="Long",
+            lesson_learned="second execution",
+            created_at=datetime.datetime(2026, 8, 10, 12, 0, 0),
+        ))
+        session.commit()
+
+    mock_prompt = MagicMock()
+    mock_select.return_value = mock_prompt
+
+    mock_prompt.execute.side_effect = [
+        "ta-second",   # Which tactical execution to repair
+        "tactical",    # Select Component: Tactical Audit
+        "edit",        # Edit a field
+        "entry_price", # Selected entry_price to edit
+        "save",        # Confirm & Save Tactical Audit
+        "back",        # Back to main selection (component menu)
+    ]
+
+    with patch("cli.main.get_mandatory_text", side_effect=["1", "b"]), \
+         patch("cli.main.get_mandatory_float", return_value=205.0), \
+         patch("builtins.input", return_value=""):
+        flow_repair_analysis_audits()
+
+    with Session(in_memory_db) as session:
+        ta1 = session.get(TacticalAudit, "ta-first")
+        ta2 = session.get(TacticalAudit, "ta-second")
+        assert ta1.entry_price == 100.0  # untouched
+        assert ta2.entry_price == 205.0  # the one that was actually selected and edited
 

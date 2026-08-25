@@ -210,6 +210,7 @@ def get_welcome_options(state: CLIState):
         ("1", "New Unified Analysis", "primary", "core"),
         ("2", "Execute Audits", "primary", "core"),
         ("3", "Review History (Last 10)", "primary", "core"),
+        ("7", "Add Tactical Audit to Existing Analysis", "primary", "core"),
         ("4", "Force Notion Sync", "primary", "system"),
         ("5", "Configuration", "primary", "system"),
         ("6", "Generate Reports", "primary", "system"),
@@ -340,26 +341,27 @@ def _format_audit_status_badge(is_complete: bool, is_paused: bool, label: str) -
 
 def render_pending_audits_table(records) -> Panel:
     table = Table(box=box.SIMPLE, border_style="muted", expand=True)
+    table.add_column("#", justify="center", style="bold yellow")
     table.add_column("ID", justify="center", style="dim")
     table.add_column("Asset", justify="center", style="bold white")
     table.add_column("Status Indicators", justify="center")
     table.add_column("Created Date", justify="center", style="dim")
-    
-    for r in records:
+
+    for idx, r in enumerate(records):
         short_id = r["id"][:8]
         asset = r["payload"].get("asset", "Unknown")
         has_eff = r["payload"].get("audit_efficiency", {}).get("real_bias_b") is not None
         has_tac = "audit_tactical" in r["payload"]
         is_eff_paused = has_paused_state(r["id"], "eff")
         is_tac_paused = has_paused_state(r["id"], "tac")
-        
+
         eff_status = _format_audit_status_badge(has_eff, is_eff_paused, "Eff")
         tac_status = _format_audit_status_badge(has_tac, is_tac_paused, "Tac")
 
         status_str = f"{eff_status} | {tac_status}"
         date_str = to_local_display(r["created_at"])
-        table.add_row(short_id, asset, status_str, date_str)
-        
+        table.add_row(f"\\[{idx + 1}]", short_id, asset, status_str, date_str)
+
     return Panel(table, title="[bold secondary]Pending Audits Queue[/bold secondary]", border_style="secondary", box=box.ROUNDED)
 
 def get_latest_analysis_record(engine=None):
@@ -423,43 +425,84 @@ def render_wizard_layout(step_num, step_title, session, active_key, state: CLISt
         Layout(name="form_wizard", ratio=3),
         Layout(name="pending_queue", ratio=1)
     )
-    
+
     step_keys = STEP1_KEYS if step_num == 1 else STEP2_KEYS
     completed_count = sum(1 for k in step_keys if k in session.state)
 
-    form_text = Text()
-    form_text.append(f"\n  Progress: {completed_count}/{len(step_keys)} fields completed\n\n", style="muted")
+    if step_num == 1:
+        field_groups = [
+            ("P0 (Macro)", "cyan", ["p0_thesis", "p0_dir", "p0_str"]),
+            ("P2 (Struc)", "cyan", ["p2_thesis", "p2_dir", "p2_str"]),
+            ("P3 (Trend)", "cyan", ["p3_thesis", "p3_dir", "p3_str"]),
+        ]
+    else:
+        field_groups = [
+            ("P1 (Timef)", "magenta", ["p1_thesis", "p1_dir", "p1_str", "p1_tf", "p1_type", "nodes_l1", "nodes_l2"]),
+            ("P4 (Hier)", "magenta", ["p4_thesis", "p4_dir", "p4_str", "p4_hier"]),
+            ("Meta", "warning", ["edge_desc", "bias_a", "tact_class"]),
+        ]
 
-    for k in step_keys:
-        label = KEY_LABELS.get(k, k)
-        if k == active_key:
-            form_text.append(" ➔ ", style="highlight")
-            form_text.append(f"[{STATUS_ICONS['active']}] {label}: ", style="highlight")
-            form_text.append("awaiting input…\n", style="bold white italic")
-        elif k in session.state:
-            val = session.state[k]
-            if isinstance(val, Enum):
-                display_val = val.value
-            elif isinstance(val, str):
-                if "\n" in val:
-                    display_val = "\n" + format_indented_block(val, indent_spaces=10, first_line_flush=False)
+    def build_field_lines(keys):
+        text = Text()
+        for k in keys:
+            label = KEY_LABELS.get(k, k)
+            if k == active_key:
+                text.append(" ➔ ", style="highlight")
+                text.append(f"[{STATUS_ICONS['active']}] {label}: ", style="highlight")
+                text.append("awaiting input…\n", style="bold white italic")
+            elif k in session.state:
+                val = session.state[k]
+                if isinstance(val, Enum):
+                    display_val = val.value
+                elif isinstance(val, str):
+                    if "\n" in val:
+                        display_val = "\n" + format_indented_block(val, indent_spaces=10, first_line_flush=False)
+                    else:
+                        display_val = val
                 else:
-                    display_val = val
+                    display_val = str(val)
+                text.append(" [✓] ", style="success")
+                text.append(f"{label}: ", style="success")
+                text.append(f"{display_val}\n", style="success")
             else:
-                display_val = str(val)
-            form_text.append("    [✓] ", style="success")
-            form_text.append(f"{label}: ", style="success")
-            form_text.append(f"{display_val}\n", style="success")
+                text.append(f" [ ] {label}: ...\n", style="muted")
+        return text
+
+    progress_text = Text()
+    progress_text.append(f"Progress: {completed_count}/{len(step_keys)} fields completed\n", style="muted")
+    if step_num == 1:
+        if "asset" in session.state:
+            progress_text.append("Asset: ", style="muted")
+            progress_text.append(f"{session.state['asset']}\n", style="success")
+        elif active_key == "asset":
+            progress_text.append(" ➔ [▸] Asset: awaiting input…\n", style="highlight")
         else:
-            form_text.append(f"    [ ] {label}: ...\n", style="muted")
-    
-    form_panel = Panel(
-        Align.left(form_text),
+            progress_text.append("Asset: ...\n", style="muted")
+
+    progress_panel = Panel(
+        Align.left(progress_text),
         title=f"[bold primary]{step_title}[/bold primary]",
         border_style="primary",
         box=box.ROUNDED
     )
-    left_layout["form_wizard"].update(form_panel)
+
+    form_inner = Layout()
+    form_inner.split_column(
+        Layout(name="progress", size=4),
+        *[Layout(name=f"group_{i}", ratio=1) for i in range(len(field_groups))]
+    )
+    form_inner["progress"].update(progress_panel)
+
+    for i, (group_label, group_style, group_keys) in enumerate(field_groups):
+        group_panel = Panel(
+            Align.left(build_field_lines(group_keys)),
+            title=f"[bold {group_style}]{group_label}[/bold {group_style}]",
+            border_style=group_style,
+            box=box.ROUNDED
+        )
+        form_inner[f"group_{i}"].update(group_panel)
+
+    left_layout["form_wizard"].update(form_inner)
     
     queue_table = Table(box=box.SIMPLE, border_style="muted", expand=True)
     queue_table.add_column("ID", justify="center", style="dim")

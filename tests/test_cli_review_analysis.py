@@ -117,8 +117,8 @@ def test_flow_review_analysis_with_tactical_fields(mock_select, mock_engine_defa
         session.add(record)
         
         session.add(TacticalAudit(
-            id="test-uuid-2",
-            compliance="Edge_valid",
+            trade_id="test-uuid-2",
+            order_filled=True,
             entry_price=100.0,
             closing_price=110.0,
             size=2.0,

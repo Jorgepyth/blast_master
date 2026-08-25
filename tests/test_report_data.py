@@ -45,8 +45,8 @@ def _seed_one_closed_trade(engine, record_id="trade-1"):
             specific_bias_compliance="Valid",
         ))
         session.add(TacticalAudit(
-            id=record_id,
-            compliance="Edge_valid",
+            trade_id=record_id,
+            order_filled=True,
             r_multiple=1.5,
             entry_time=datetime.datetime(2026, 1, 1, 10, 0),
             exit_time=datetime.datetime(2026, 1, 1, 11, 0),
@@ -75,7 +75,7 @@ def test_load_report_data_shapes_all_dataframes(test_engine):
     assert data.merged.loc[0, "r_multiple"] == 1.5
 
     assert len(data.llm_df) == 1
-    assert data.llm_df.loc[0, "compliance"] == "Edge_valid"
+    assert bool(data.llm_df.loc[0, "order_filled"]) is True
     assert data.llm_df.loc[0, "p0_direction"] == "Long"
 
 

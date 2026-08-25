@@ -34,12 +34,6 @@ class TacticalClassification(str, Enum):
     NA = "N/A"
     SKIP = "Skip"
 
-class TradeStatus(str, Enum):
-    GOOD_EXECUTION = "Trade_taken_good_execution"
-    BAD_EXECUTION = "Trade_taken_bad_execution"
-    NO_TAKEN = "Trade_no_taken"
-    SKIP = "Skip"
-
 class TacticalAnalysis(BaseModel):
     p4_direction: Direction
     p4_strength: Strength
@@ -54,7 +48,6 @@ class TacticalAnalysis(BaseModel):
     nodes_l1: int
     nodes_l2: int
     tactical_classification: TacticalClassification
-    trade_status: Optional[TradeStatus] = None
 
     calc_edge: float
     long_prob: float = 0.0

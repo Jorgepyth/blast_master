@@ -27,7 +27,7 @@ def _seed_one_closed_trade(engine):
             real_bias_b="BOS", specific_bias_compliance="Valid",
         ))
         session.add(TacticalAudit(
-            id="trade-1", compliance="Edge_valid", r_multiple=1.5,
+            trade_id="trade-1", order_filled=True, r_multiple=1.5,
             entry_time=datetime.datetime(2026, 1, 1, 10, 0),
             exit_time=datetime.datetime(2026, 1, 1, 11, 0), pnl_and_cost=10.0,
         ))

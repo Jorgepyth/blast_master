@@ -3,11 +3,12 @@ from typing import Optional, List, Any
 from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel, Field, model_serializer, model_validator
 
-class ComplianceState(str, Enum):
-    INVALID_EDGE = "Invalid_edge"
-    NO_EDGE = "No_edge"
-    EDGE_VALID = "Edge_valid"
-    BIAS_BAD_ENTRY = "Bias_but_bad_entry"
+class SkipReason(str, Enum):
+    PRECIO_NUNCA_LLEGO = "precio_nunca_llego"
+    DISCRECIONAL_NO_TOMADO = "discrecional_no_tomado"
+    FALLO_TECNICO = "fallo_tecnico"
+    INVALIDADA_ANTES_DE_LLENAR = "invalidada_antes_de_llenar"
+    SIN_SETUP_IDENTIFICADO = "sin_setup_identificado"
     SKIP = "Skip"
 
 class TierSetup(str, Enum):
@@ -182,7 +183,9 @@ class CognitivePatterns(str, Enum):
 
 class TacticalAudit(BaseModel):
     tactical_id: str
-    compliance: ComplianceState
+    tactical_row_id: Optional[str] = None  # existing tactical_audit.id being edited; None = create a new row
+    order_filled: bool = True
+    skip_reason: Optional[SkipReason] = None
     entry_time: Optional[datetime] = None
     exit_time: Optional[datetime] = None
 

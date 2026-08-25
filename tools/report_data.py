@@ -27,9 +27,9 @@ P_LAYER_COLUMNS = [
 ]
 
 MERGED_COLUMNS = [
-    "id", "long_prob", "short_prob", "no_trade_prob", "calc_edge", "market_bias", "efficiency_timeframe",
+    "id", "tactical_audit_id", "long_prob", "short_prob", "no_trade_prob", "calc_edge", "market_bias", "efficiency_timeframe",
     "edge_validation_price", "structural_invalidation", "bias_a", "real_bias_b", "resolution_type",
-    "specific_bias_compliance", "false_regime_rate", "compliance", "r_multiple", "trade_status", "size",
+    "specific_bias_compliance", "false_regime_rate", "order_filled", "r_multiple", "size",
     "pnl_and_cost", "created_at", "entry_time", "exit_time", "trade_decision", "edge_description",
     "p0_direction", "p1_direction", "p2_direction", "p3_direction", "p4_direction",
     "p0_strength", "p1_strength", "p2_strength", "p3_strength", "p4_strength",
@@ -91,37 +91,46 @@ def load_report_data(engine: Engine) -> ReportData:
 
     filt_unified = unified_df[[c for c in [
         "id", "calc_edge", "market_bias", "long_prob", "short_prob", "no_trade_prob",
-        "edge_validation_price", "structural_invalidation", "trade_status", "edge_description",
+        "edge_validation_price", "structural_invalidation", "edge_description",
     ] if c in unified_df.columns]]
     filt_eff = efficiency_df[[c for c in [
         "id", "resolution_type", "false_regime_rate", "specific_bias_compliance",
         "created_at", "bias_a", "real_bias_b", "efficiency_timeframe",
     ] if c in efficiency_df.columns]].sort_values(by="created_at")
+    # tactical_audit is 1:many under unified_department: its own "id" (the
+    # execution's row id) is no longer the shared analysis id -- select
+    # "trade_id" (the FK) as the join key and keep the row's own id under a
+    # distinct name so it survives the merge instead of colliding with
+    # unified/efficiency's "id".
     filt_tact = tactical_df[[c for c in [
-        "id", "compliance", "r_multiple", "entry_time", "exit_time", "trade_decision",
+        "id", "trade_id", "order_filled", "r_multiple", "entry_time", "exit_time", "trade_decision",
         "pnl_and_cost", "size", "mae_adverse", "mfe_favorable", "session",
-    ] if c in tactical_df.columns]]
+    ] if c in tactical_df.columns]].rename(columns={"id": "tactical_audit_id"})
 
     merged = (
         filt_unified.merge(filt_eff, on="id", how="left")
-        .merge(filt_tact, on="id", how="left")
+        .merge(filt_tact, left_on="id", right_on="trade_id", how="left")
         .merge(wide, on="id", how="left")
     )
     merged = merged[[c for c in MERGED_COLUMNS if c in merged.columns]]
     if "resolution_type" in merged.columns:
         merged = merged[merged["resolution_type"] != "Open"]
 
+    # tactical_df keeps its own "id" (one row = one execution, now the natural
+    # row identity for the LLM report); the other frames' "id" is renamed to
+    # "trade_id" before merging so the join collapses onto tactical_df's
+    # existing "trade_id" FK column instead of colliding with tactical_df's "id".
     llm_df = (
         tactical_df
         .merge(
-            unified_df[[c for c in ["id", "calc_edge", "market_bias", "long_prob", "short_prob"] if c in unified_df.columns]],
-            on="id", how="left",
+            unified_df[[c for c in ["id", "calc_edge", "market_bias", "long_prob", "short_prob"] if c in unified_df.columns]].rename(columns={"id": "trade_id"}),
+            on="trade_id", how="left",
         )
         .merge(
-            efficiency_df[[c for c in ["id", "specific_bias_compliance", "bias_a", "real_bias_b", "resolution_type"] if c in efficiency_df.columns]],
-            on="id", how="left",
+            efficiency_df[[c for c in ["id", "specific_bias_compliance", "bias_a", "real_bias_b", "resolution_type"] if c in efficiency_df.columns]].rename(columns={"id": "trade_id"}),
+            on="trade_id", how="left",
         )
-        .merge(wide, on="id", how="left")
+        .merge(wide.rename(columns={"id": "trade_id"}), on="trade_id", how="left")
     )
     if "resolution_type" in llm_df.columns:
         llm_df = llm_df[llm_df["resolution_type"] != "Open"]

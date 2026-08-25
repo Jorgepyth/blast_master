@@ -104,9 +104,8 @@ class UnifiedDepartment(Base):
     market_bias: Mapped[str] = mapped_column(String)
     calc_edge: Mapped[float] = mapped_column(Numeric(18, 8))
     edge_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    
+
     # Tactical fields merged in
-    trade_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     p4_hierarchy: Mapped[str] = mapped_column(String)
     p1_timeframe: Mapped[str] = mapped_column(String)
     p1_type: Mapped[str] = mapped_column(String)
@@ -118,14 +117,13 @@ class UnifiedDepartment(Base):
     no_trade_prob: Mapped[float] = mapped_column(Numeric(18, 8))
     is_backdated: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     efficiency_page_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    tactical_page_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     edge_validation_price: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
     structural_invalidation: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
     mark_price: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
 
     analysis_layers: Mapped[List["AnalysisLayer"]] = relationship(back_populates="unified_department", cascade="all, delete-orphan")
     efficiency_audit: Mapped[Optional["EfficiencyAudit"]] = relationship(back_populates="unified_department", cascade="all, delete-orphan", single_parent=True)
-    tactical_audit: Mapped[Optional["TacticalAudit"]] = relationship(back_populates="unified_department", cascade="all, delete-orphan", single_parent=True)
+    tactical_audits: Mapped[List["TacticalAudit"]] = relationship(back_populates="unified_department", cascade="all, delete-orphan", order_by="TacticalAudit.created_at")
 
 class EfficiencyAudit(Base):
     __tablename__ = "efficiency_audit"
@@ -157,9 +155,12 @@ class EfficiencyAudit(Base):
 
 class TacticalAudit(Base):
     __tablename__ = "tactical_audit"
-    
-    id: Mapped[str] = mapped_column(String, ForeignKey("unified_department.id", ondelete="CASCADE"), primary_key=True)
-    compliance: Mapped[str] = mapped_column(String)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    trade_id: Mapped[str] = mapped_column(String, ForeignKey("unified_department.id", ondelete="CASCADE"))
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-6))).replace(tzinfo=None))
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-6))).replace(tzinfo=None), onupdate=lambda: datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-6))).replace(tzinfo=None))
+    notion_page_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     entry_time: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
     exit_time: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
 
@@ -229,7 +230,9 @@ class TacticalAudit(Base):
     mfe_favorable: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
     notional_size: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
     capital_at_risk: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
-    
+    order_filled: Mapped[bool] = mapped_column(Boolean, default=True)
+    skip_reason: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
     # Text blocks
     lesson_learned: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     visual_lesson_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -238,7 +241,7 @@ class TacticalAudit(Base):
     post_trade_emotions: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     confirmation_params: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
 
-    unified_department: Mapped["UnifiedDepartment"] = relationship(back_populates="tactical_audit")
+    unified_department: Mapped["UnifiedDepartment"] = relationship(back_populates="tactical_audits")
 
 engine_default = None
 
@@ -276,6 +279,10 @@ def init_db(db_url: str = "sqlite:///.data/flight_account_001_xauusd.db"):
                 conn.execute(text("ALTER TABLE unified_department ADD COLUMN mark_price NUMERIC"))
 
         # Migrate TacticalAudit table
+        # NOTE: the 1:1 -> 1:many restructuring (surrogate `id` PK, new `trade_id` FK,
+        # `created_at`/`updated_at`/`notion_page_id` columns) is NOT handled by this
+        # additive-only shim -- it requires a table rebuild (PK change) with a backup,
+        # done by the dedicated, explicitly-gated tools/migrate_tactical_audit_1n.py.
         if "tactical_audit" in inspector.get_table_names():
             columns = [col['name'] for col in inspector.get_columns('tactical_audit')]
             if 'could_hit_tp' not in columns:
@@ -320,6 +327,10 @@ def init_db(db_url: str = "sqlite:///.data/flight_account_001_xauusd.db"):
                 conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN r_multiple NUMERIC"))
             if 'captured_mfe' not in columns:
                 conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN captured_mfe NUMERIC"))
+            if 'order_filled' not in columns:
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN order_filled BOOLEAN DEFAULT 1"))
+            if 'skip_reason' not in columns:
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN skip_reason VARCHAR"))
 
         # Migrate EfficiencyAudit table
         if "efficiency_audit" in inspector.get_table_names():
@@ -338,8 +349,6 @@ def init_db(db_url: str = "sqlite:///.data/flight_account_001_xauusd.db"):
             columns = [col['name'] for col in inspector.get_columns('unified_department')]
             if 'efficiency_page_id' not in columns:
                 conn.execute(text("ALTER TABLE unified_department ADD COLUMN efficiency_page_id VARCHAR"))
-            if 'tactical_page_id' not in columns:
-                conn.execute(text("ALTER TABLE unified_department ADD COLUMN tactical_page_id VARCHAR"))
             if 'is_backdated' not in columns:
                 conn.execute(text("ALTER TABLE unified_department ADD COLUMN is_backdated BOOLEAN DEFAULT 0"))
                 
@@ -401,7 +410,7 @@ def _to_primitives(model: Any) -> dict:
         return {}
     return {k: v.value if hasattr(v, 'value') else v for k, v in d.items()}
 
-def update_record_state(record_id: str, new_state: LifecycleState, append_payload: dict = None, engine=None):
+def update_record_state(record_id: str, new_state: LifecycleState, append_payload: dict = None, tactical_audit_id: Optional[str] = None, engine=None):
     from rich.console import Console
     console = Console()
     eng = engine or engine_default
@@ -415,10 +424,6 @@ def update_record_state(record_id: str, new_state: LifecycleState, append_payloa
                 
             record.state = new_state.value
 
-            if 'trade_status' in append_payload:
-                ts_val = append_payload['trade_status']
-                record.trade_status = ts_val
-            
             if 'audit_efficiency' in append_payload:
                 ae_dict = append_payload['audit_efficiency']
                 valid_keys = {c.key for c in EfficiencyAudit.__table__.columns}
@@ -487,11 +492,15 @@ def update_record_state(record_id: str, new_state: LifecycleState, append_payloa
                         else:
                             filtered_at[k] = v
                 
-                if record.tactical_audit:
+                if tactical_audit_id:
+                    target_ta = next((ta for ta in record.tactical_audits if ta.id == tactical_audit_id), None)
+                    if target_ta is None:
+                        raise ValueError(f"tactical_audit_id={tactical_audit_id!r} not found under record {record_id!r}")
                     for k, v in filtered_at.items():
-                        setattr(record.tactical_audit, k, v)
+                        setattr(target_ta, k, v)
+                    target_ta.updated_at = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-6))).replace(tzinfo=None)
                 else:
-                    new_at = TacticalAudit(id=record_id, **filtered_at)
+                    new_at = TacticalAudit(trade_id=record_id, **filtered_at)
                     session.add(new_at)
 
             record.updated_at = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-6))).replace(tzinfo=None)
@@ -550,51 +559,61 @@ def get_records_by_state(state: LifecycleState | List[LifecycleState], engine=No
                     "resolution_time": r.efficiency_audit.resolution_time,
                     "lesson_learned": r.efficiency_audit.lesson_learned
                 }
-            if r.tactical_audit:
+            # NOTE: a UnifiedDepartment can now have multiple tactical_audit rows
+            # (1:many). This function intentionally keeps its "one payload per
+            # analysis" contract for its existing callers (the PENDING_AUDITS
+            # picker in flow_pending_audits(), and cli/ui_manager.py's pending
+            # count/table) -- both only ever deal with the single in-flight
+            # tactical draft of a still-open analysis. It surfaces only the most
+            # recently created row here; it is NOT the place to enumerate every
+            # execution of an analysis -- use TacticalAudit / get_tactical_audit_sync_targets()
+            # directly for that.
+            latest_ta = max(r.tactical_audits, key=lambda ta: ta.created_at) if r.tactical_audits else None
+            if latest_ta:
                 payload["audit_tactical"] = {
-                    "compliance": r.tactical_audit.compliance,
-                    "trade_status": r.trade_status,
-                    "could_hit_tp": r.tactical_audit.could_hit_tp,
-                    "entry_time": r.tactical_audit.entry_time,
-                    "exit_time": r.tactical_audit.exit_time,
-                    "tier_setup": r.tactical_audit.tier_setup,
-                    "market_state": r.tactical_audit.market_state,
-                    "session": r.tactical_audit.session,
-                    "exit_type": r.tactical_audit.exit_type,
-                    "trade_decision": r.tactical_audit.trade_decision,
-                    "followed_plan": r.tactical_audit.followed_plan,
-                    "primary_emotion": r.tactical_audit.primary_emotion,
-                    "setup_type": r.tactical_audit.setup_type,
-                    "htf_trend_context": r.tactical_audit.htf_trend_context,
-                    "ltf_trend_context": r.tactical_audit.ltf_trend_context,
-                    "confirmation_5m_15m": r.tactical_audit.confirmation_5m_15m,
-                    "confirmation_status": r.tactical_audit.confirmation_status,
-                    "anxiety_level": r.tactical_audit.anxiety_level,
-                    "impatience_level": r.tactical_audit.impatience_level,
-                    "mental_clarity_level": r.tactical_audit.mental_clarity_level,
-                    "emotions": r.tactical_audit.emotions or [],
-                    "behavioral_errors": r.tactical_audit.behavioral_errors or [],
-                    "cognitive_patterns": r.tactical_audit.cognitive_patterns or [],
-                    "risk_usd": r.tactical_audit.risk_usd,
-                    "size": r.tactical_audit.size,
-                    "r_r": r.tactical_audit.r_r,
-                    "entry_price": r.tactical_audit.entry_price,
-                    "closing_price": r.tactical_audit.closing_price,
-                    "take_profit": r.tactical_audit.take_profit,
-                    "stop_loss": r.tactical_audit.stop_loss,
-                    "pnl_and_cost": r.tactical_audit.pnl_and_cost,
-                    "mae": r.tactical_audit.mae_adverse,
-                    "mfe": r.tactical_audit.mfe_favorable,
-                    "notional_size": r.tactical_audit.notional_size,
-                    "capital_at_risk": r.tactical_audit.capital_at_risk,
-                    "lesson_tact": r.tactical_audit.lesson_learned,
-                    "visual_lesson_path": r.tactical_audit.visual_lesson_path,
-                    "pre_trade_emotions": r.tactical_audit.pre_trade_emotions,
-                    "mid_trade_emotions": r.tactical_audit.mid_trade_emotions,
-                    "post_trade_emotions": r.tactical_audit.post_trade_emotions,
-                    "confirmation_params": r.tactical_audit.confirmation_params or []
+                    "id": latest_ta.id,
+                    "order_filled": latest_ta.order_filled,
+                    "could_hit_tp": latest_ta.could_hit_tp,
+                    "entry_time": latest_ta.entry_time,
+                    "exit_time": latest_ta.exit_time,
+                    "tier_setup": latest_ta.tier_setup,
+                    "market_state": latest_ta.market_state,
+                    "session": latest_ta.session,
+                    "exit_type": latest_ta.exit_type,
+                    "trade_decision": latest_ta.trade_decision,
+                    "followed_plan": latest_ta.followed_plan,
+                    "primary_emotion": latest_ta.primary_emotion,
+                    "setup_type": latest_ta.setup_type,
+                    "htf_trend_context": latest_ta.htf_trend_context,
+                    "ltf_trend_context": latest_ta.ltf_trend_context,
+                    "confirmation_5m_15m": latest_ta.confirmation_5m_15m,
+                    "confirmation_status": latest_ta.confirmation_status,
+                    "anxiety_level": latest_ta.anxiety_level,
+                    "impatience_level": latest_ta.impatience_level,
+                    "mental_clarity_level": latest_ta.mental_clarity_level,
+                    "emotions": latest_ta.emotions or [],
+                    "behavioral_errors": latest_ta.behavioral_errors or [],
+                    "cognitive_patterns": latest_ta.cognitive_patterns or [],
+                    "risk_usd": latest_ta.risk_usd,
+                    "size": latest_ta.size,
+                    "r_r": latest_ta.r_r,
+                    "entry_price": latest_ta.entry_price,
+                    "closing_price": latest_ta.closing_price,
+                    "take_profit": latest_ta.take_profit,
+                    "stop_loss": latest_ta.stop_loss,
+                    "pnl_and_cost": latest_ta.pnl_and_cost,
+                    "mae": latest_ta.mae_adverse,
+                    "mfe": latest_ta.mfe_favorable,
+                    "notional_size": latest_ta.notional_size,
+                    "capital_at_risk": latest_ta.capital_at_risk,
+                    "lesson_tact": latest_ta.lesson_learned,
+                    "visual_lesson_path": latest_ta.visual_lesson_path,
+                    "pre_trade_emotions": latest_ta.pre_trade_emotions,
+                    "mid_trade_emotions": latest_ta.mid_trade_emotions,
+                    "post_trade_emotions": latest_ta.post_trade_emotions,
+                    "confirmation_params": latest_ta.confirmation_params or []
                 }
-                
+
             results.append({
                 "id": r.id,
                 "state": r.state,
@@ -602,5 +621,40 @@ def get_records_by_state(state: LifecycleState | List[LifecycleState], engine=No
                 "updated_at": r.updated_at,
                 "payload": payload
             })
-            
+
+        return results
+
+def get_tactical_audit_sync_targets(engine=None) -> List[dict]:
+    """One dict per (unified_department, tactical_audit) pairing still missing
+    a Notion Tactical page, across analyses in READY_FOR_NOTION, FAILED, or
+    already-SYNCED state -- lets tools/notion_sync.py sync each execution of
+    an analysis independently, including new ones added after the parent
+    analysis was already SYNCED."""
+    eng = engine or engine_default
+    with Session(eng) as session:
+        state_vals = [LifecycleState.READY_FOR_NOTION.value, LifecycleState.FAILED.value, LifecycleState.SYNCED.value]
+        stmt = select(UnifiedDepartment).where(UnifiedDepartment.state.in_(state_vals))
+        records = session.scalars(stmt).all()
+
+        results = []
+        for r in records:
+            for ta in r.tactical_audits:
+                if ta.notion_page_id:
+                    continue
+                results.append({
+                    "trade_id": r.id,
+                    "tactical_audit_id": ta.id,
+                    "asset": r.asset,
+                    "tactical": {
+                        "tactical_classification": r.tactical_classification,
+                        "calc_edge": r.calc_edge,
+                    },
+                    "audit_tactical": {
+                        "order_filled": ta.order_filled,
+                        "entry_time": ta.entry_time,
+                        "exit_time": ta.exit_time,
+                    },
+                    "created_at": ta.created_at,
+                    "eff_page_id": r.efficiency_page_id,
+                })
         return results

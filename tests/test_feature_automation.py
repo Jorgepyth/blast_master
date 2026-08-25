@@ -118,13 +118,14 @@ def test_backdated_and_exposure_db_persistence(test_engine):
     with Session(test_engine) as session:
         record = session.get(UnifiedDepartment, record_id)
         assert record.state == LifecycleState.READY_FOR_NOTION.value
-        assert record.tactical_audit is not None
-        assert record.tactical_audit.notional_size == 25000.0
-        assert record.tactical_audit.capital_at_risk == 500.0
-        assert record.tactical_audit.mae_adverse == 1.0
-        assert record.tactical_audit.mfe_favorable == 2.0
+        assert len(record.tactical_audits) == 1
+        ta = record.tactical_audits[0]
+        assert ta.notional_size == 25000.0
+        assert ta.capital_at_risk == 500.0
+        assert ta.mae_adverse == 1.0
+        assert ta.mfe_favorable == 2.0
         # Long trade: r_multiple = (closing_price - entry_price) / abs(entry_price - stop_loss)
         #           = (52000 - 50000) / 1000 = 2.0
         # captured_mfe = r_multiple / mfe = 2.0 / 2.0 = 1.0
-        assert record.tactical_audit.r_multiple == 2.0
-        assert record.tactical_audit.captured_mfe == 1.0
+        assert ta.r_multiple == 2.0
+        assert ta.captured_mfe == 1.0

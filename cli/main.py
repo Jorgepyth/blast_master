@@ -37,8 +37,8 @@ from InquirerPy.utils import get_style
 
 from cli.schemas.efficiency import EfficiencyAnalysis, Direction, Strength
 from cli.schemas.audit_efficiency import EfficiencyAudit, StructuralBias, ResolutionType, StructuralResolution, FailureReason
-from cli.schemas.tactical import TacticalAnalysis, Hierarchy, Timeframe, FractalType, TacticalClassification, TradeStatus
-from cli.schemas.audit_tactical import TacticalAudit, ComplianceState, TierSetup, MarketState, Session, ExitType, TradeDecision, FollowedPlan, PrimaryEmotion, SetupType, HTFTrendContext, TrendContext, ConfirmationStatus, ConfirmationParams, Emotions, ACTIVE_EMOTIONS, BehavioralErrors
+from cli.schemas.tactical import TacticalAnalysis, Hierarchy, Timeframe, FractalType, TacticalClassification
+from cli.schemas.audit_tactical import TacticalAudit, TierSetup, MarketState, Session, ExitType, TradeDecision, FollowedPlan, PrimaryEmotion, SetupType, HTFTrendContext, TrendContext, ConfirmationStatus, ConfirmationParams, Emotions, ACTIVE_EMOTIONS, BehavioralErrors, SkipReason
 from tools.database import (
     init_db, update_record_state, get_records_by_state,
     LifecycleState, add_asset, get_assets, to_local_display
@@ -893,6 +893,8 @@ def start():
                             flow_pending_audits()
                         elif selected_choice == "3":
                             flow_review_analysis()
+                        elif selected_choice == "7":
+                            flow_add_tactical_execution()
                         elif selected_choice == "4":
                             console.print("[cyan]Starting background Notion Sync daemon...[/cyan]")
                             active_db_file = ACTIVE_SESSION["db_name"] if ACTIVE_SESSION else "flight_account_001_xauusd.db"
@@ -1108,9 +1110,9 @@ def generate_reports(output_dir="jupyter", html_only=False, llm_only=False):
         console.print("[cyan]Generando reporte para LLM...[/cyan]")
         llm_context = (
             "Journal de trading XAUUSD (blast_master). r_multiple es el R-multiple REALIZADO "
-            "(usar siempre esto, nunca r_r, que es solo el R:R planeado). compliance mide la "
-            "EJECUCION del trade; specific_bias_compliance mide el SESGO ESTRUCTURAL — son cosas "
-            "distintas. Muestra chica: tratar hallazgos como hipotesis, no certezas."
+            "(usar siempre esto, nunca r_r, que es solo el R:R planeado). order_filled indica "
+            "si la orden se llenó (binario); specific_bias_compliance mide el SESGO ESTRUCTURAL "
+            "— son cosas distintas. Muestra chica: tratar hallazgos como hipotesis, no certezas."
         )
         llm_sections = [
             MarkdownSection(
@@ -1164,17 +1166,20 @@ def flow_review_analysis():
     
     # Unify Table Generation via LEFT JOINs
     # Rolling 10 items grid query
+    # Fans out to one row per tactical_audit execution (an analysis can now have
+    # several). Ordered by the most recent activity (either a new execution or
+    # the analysis itself) so a trade added later to an older analysis resurfaces.
     rolling_query = """
-    SELECT u.id, u.asset, u.market_bias, u.calc_edge, u.created_at, 
-           e.bias_a, e.real_bias_b, e.resolution_type, 
-           t.compliance, u.trade_status, u.is_backdated
+    SELECT u.id, u.asset, u.market_bias, u.calc_edge, u.created_at,
+           e.bias_a, e.real_bias_b, e.resolution_type,
+           t.order_filled, u.is_backdated
     FROM unified_department u
     LEFT JOIN efficiency_audit e ON u.id = e.id
-    LEFT JOIN tactical_audit t ON u.id = t.id
-    ORDER BY u.created_at DESC LIMIT 10;
+    LEFT JOIN tactical_audit t ON t.trade_id = u.id
+    ORDER BY COALESCE(t.created_at, u.created_at) DESC LIMIT 10;
     """
 
-    def format_row_value(val, is_bias=False, is_compliance=False, is_status=False, is_edge=False):
+    def format_row_value(val, is_bias=False, is_filled=False, is_edge=False):
         if val is None or val == "":
             return "[yellow]Pending[/yellow]"
         val_str = str(val)
@@ -1193,12 +1198,11 @@ def flow_review_analysis():
             else:
                 bias_style = "bold yellow"
             return f"[{bias_style}]{val_str}[/{bias_style}]"
-        if is_compliance:
-            comp_style = "bold green" if "Edge_valid" in val_str else "bold red" if val_str in ["Invalid_edge", "No_edge"] else "bold yellow"
-            return f"[{comp_style}]{val_str}[/{comp_style}]"
-        if is_status:
-            status_style = "bold green" if "good" in val_str.lower() else "bold red" if "bad" in val_str.lower() else "bold yellow"
-            return f"[{status_style}]{val_str}[/{status_style}]"
+        if is_filled:
+            filled_bool = val_str.lower() in ("true", "1")
+            filled_style = "bold green" if filled_bool else "bold red"
+            filled_label = "Filled" if filled_bool else "No Fill"
+            return f"[{filled_style}]{filled_label}[/{filled_style}]"
         return val_str
 
     def render_ledger_table(rows):
@@ -1207,9 +1211,6 @@ def flow_review_analysis():
             "Confirmed (A equal to B)": "Conf (A=B)",
             "Invalidated (B not equal to A)": "Inval (B!=A)",
             "Overlap Invalidated (New Bias before resolution)": "Overlap Inval",
-            "Trade_taken_bad_execution": "Taken (Bad Ex)",
-            "Trade_taken_good_execution": "Taken (Good Ex)",
-            "Trade_not_taken_valid_edge": "Not Taken (Valid)"
         }
 
         # Configuración inmutable de geometría de tabla
@@ -1233,19 +1234,16 @@ def flow_review_analysis():
         table.add_column("Bias A", justify="center", width=11, no_wrap=True)
         table.add_column("Real Bias B", justify="center", width=11, no_wrap=True)
         table.add_column("Resolution Type", justify="center", width=14, no_wrap=True)
-        table.add_column("Compliance", justify="center", width=13, no_wrap=True)
-        table.add_column("Trade Status", justify="center", width=14, no_wrap=True)
-        
+        table.add_column("Order Filled", justify="center", width=13, no_wrap=True)
+
         for idx, row in enumerate(rows):
-            r_id, asset, market_bias, calc_edge, created_at, bias_a, real_bias_b, resolution_type, compliance, trade_status, is_backdated = row
-            
+            r_id, asset, market_bias, calc_edge, created_at, bias_a, real_bias_b, resolution_type, order_filled, is_backdated = row
+
             market_bias = SHORTHANDS.get(market_bias, market_bias)
             bias_a = SHORTHANDS.get(bias_a, bias_a)
             real_bias_b = SHORTHANDS.get(real_bias_b, real_bias_b)
             resolution_type = SHORTHANDS.get(resolution_type, resolution_type)
-            compliance = SHORTHANDS.get(compliance, compliance)
-            trade_status = SHORTHANDS.get(trade_status, trade_status)
-            
+
             if isinstance(created_at, datetime.datetime):
                 created_display = to_local_display(created_at, '%m/%d %H:%M')
             else:
@@ -1263,8 +1261,7 @@ def flow_review_analysis():
                 format_row_value(bias_a, is_bias=True),
                 format_row_value(real_bias_b, is_bias=True),
                 format_row_value(resolution_type, is_bias=True),
-                format_row_value(compliance, is_compliance=True),
-                format_row_value(trade_status, is_status=True)
+                format_row_value(order_filled, is_filled=True),
             )
         return table
 
@@ -1390,13 +1387,13 @@ def flow_review_analysis():
 
         # ── Extended Detail Query ──
         detail_query = """
-        SELECT u.id, u.asset, u.market_bias, u.calc_edge, u.created_at, u.updated_at, u.edge_description, u.trade_status,
+        SELECT u.id, u.asset, u.market_bias, u.calc_edge, u.created_at, u.updated_at, u.edge_description,
                u.p4_hierarchy, u.p1_timeframe, u.p1_type, u.nodes_l1, u.nodes_l2, u.tactical_classification,
                u.long_prob, u.short_prob, u.no_trade_prob, u.is_backdated, u.edge_validation_price, u.structural_invalidation, u.mark_price,
                e.bias_a, e.resolution_type, e.real_bias_b, e.structural_resolution, e.failure_reason,
                e.specific_bias_compliance, e.false_regime_rate, e.lesson_learned as e_lesson, e.efficiency_timeframe,
                e.structural_mae, e.structural_mfe,
-               t.compliance, t.entry_time, t.exit_time, t.tier_setup, t.market_state, t.exit_type,
+               t.order_filled, t.entry_time, t.exit_time, t.tier_setup, t.market_state, t.exit_type,
                t.followed_plan, t.primary_emotion, t.setup_type, t.htf_trend_context, t.ltf_trend_context,
                t.confirmation_status, t.anxiety_level, t.impatience_level, t.mental_clarity_level,
                t.emotions, t.behavioral_errors, t.cognitive_patterns, t.size, t.entry_price,
@@ -1412,26 +1409,38 @@ def flow_review_analysis():
                al.department, al.layer_name, al.direction, al.strength, al.thesis
         FROM unified_department u
         LEFT JOIN efficiency_audit e ON u.id = e.id
-        LEFT JOIN tactical_audit t ON u.id = t.id
+        LEFT JOIN tactical_audit t ON t.id = (
+            SELECT id FROM tactical_audit WHERE trade_id = u.id ORDER BY created_at DESC LIMIT 1
+        )
         LEFT JOIN analysis_layer al ON u.id = al.trade_id
         WHERE u.id = :selected_id;
         """
         cursor = db_session.execute(text(detail_query), {"selected_id": selected_id})
         detail_rows = cursor.fetchall()
-        
+
         if not detail_rows:
             console.print("[bold red]Analysis record not found![/bold red]")
             input("Press Enter to continue...")
             return
+
+        # An analysis can now have several tactical_audit rows (executions); the
+        # query above only joins the most recent one to keep this detail panel's
+        # rendering logic (below) untouched. List the rest here so they're not
+        # silently hidden -- edit a specific one via "Repair Analysis Audits".
+        executions_cursor = db_session.execute(
+            text("SELECT id, created_at, entry_time, exit_time, order_filled FROM tactical_audit WHERE trade_id = :selected_id ORDER BY created_at DESC"),
+            {"selected_id": selected_id}
+        )
+        execution_rows = executions_cursor.fetchall()
             
         cols = [
-            "id", "asset", "market_bias", "calc_edge", "created_at", "updated_at", "edge_description", "trade_status",
+            "id", "asset", "market_bias", "calc_edge", "created_at", "updated_at", "edge_description",
             "p4_hierarchy", "p1_timeframe", "p1_type", "nodes_l1", "nodes_l2", "tactical_classification",
             "long_prob", "short_prob", "no_trade_prob", "is_backdated", "edge_validation_price", "structural_invalidation", "mark_price",
             "bias_a", "resolution_type", "real_bias_b", "structural_resolution", "failure_reason",
             "specific_bias_compliance", "false_regime_rate", "e_lesson", "efficiency_timeframe",
             "structural_mae", "structural_mfe",
-            "compliance", "entry_time", "exit_time", "tier_setup", "market_state", "exit_type",
+            "order_filled", "entry_time", "exit_time", "tier_setup", "market_state", "exit_type",
             "followed_plan", "primary_emotion", "setup_type", "htf_trend_context", "ltf_trend_context",
             "confirmation_status", "anxiety_level", "impatience_level", "mental_clarity_level",
             "emotions", "behavioral_errors", "cognitive_patterns", "size", "entry_price",
@@ -1837,7 +1846,7 @@ def flow_review_analysis():
 
         # ── Panel 3: Tactical Execution ──
         tact_text = Text()
-        if record["compliance"] is None:
+        if record["order_filled"] is None:
             tact_text.append("\n  [ Pending Audit ]\n\n", style="bold yellow")
         else:
             def fmt_f(val, p=2):
@@ -1853,10 +1862,8 @@ def flow_review_analysis():
             td_style = "bold green" if td == "Long" else "bold red" if td == "Short" else "bold white"
             tact_text.append("  Decision: ", style="dim")
             tact_text.append(f"{td}", style=td_style)
-            tact_text.append("    │  Compliance: ", style="dim")
-            tact_text.append(Text.from_markup(f"{format_row_value(record['compliance'], is_compliance=True)}"))
-            tact_text.append("    │  Status: ", style="dim")
-            tact_text.append(Text.from_markup(f"{format_row_value(record['trade_status'], is_status=True)}\n\n"))
+            tact_text.append("    │  Order Filled: ", style="dim")
+            tact_text.append(Text.from_markup(f"{format_row_value(record['order_filled'], is_filled=True)}\n\n"))
 
             # Trade Timing
             tact_text.append("  ── Trade Timing ──\n", style="bold white")
@@ -1924,7 +1931,7 @@ def flow_review_analysis():
 
         # ── Panel 4: Execution Framework (Motor B) ──
         fw_text = Text()
-        if record["compliance"] is None:
+        if record["order_filled"] is None:
             fw_text.append("\n  [ Pending Audit ]\n\n", style="bold yellow")
         else:
             gates_failed_val = record.get("gates_failed", 0) or 0
@@ -1984,7 +1991,7 @@ def flow_review_analysis():
 
         # ── Panel 5: Psychological & Cognitive Profile ──
         psych_text = Text()
-        if record["compliance"] is None:
+        if record["order_filled"] is None:
             psych_text.append("\n  [ Pending Audit ]\n\n", style="bold yellow")
         else:
             psych_text.append("  Primary Emotion: ", style="dim")
@@ -2067,6 +2074,18 @@ def flow_review_analysis():
         console.print(tact_panel)
         console.print(eff_panel)
         console.print(dashboard)
+
+        if len(execution_rows) > 1:
+            exec_text = Text()
+            exec_text.append(f"{len(execution_rows)} ejecuciones registradas para este análisis (arriba se muestra la más reciente):\n\n")
+            for ex_id, ex_created, ex_entry, ex_exit, ex_filled in execution_rows:
+                created_str = to_local_display(ex_created, '%Y-%m-%d %H:%M') if ex_created else "N/A"
+                entry_str = to_local_display(ex_entry, '%Y-%m-%d %H:%M') if ex_entry else "sin entry"
+                fill_str = "Filled" if ex_filled else "No Fill"
+                exec_text.append(f"  • {ex_id[:8]} | creado {created_str} | entry {entry_str} | {fill_str}\n")
+            exec_text.append("\nEdita una ejecución específica desde Configuration > Repair Analysis Audits.", style="dim")
+            console.print(Panel(exec_text, title="[bold cyan]Ejecuciones (Tactical Audits)[/bold cyan]", border_style="cyan", box=box.ROUNDED))
+
         action_prompt = inquirer.select(
             message="Select action (or Ctrl+F to open all linked image assets) >",
             choices=[
@@ -2253,12 +2272,12 @@ def flow_review_analysis():
                     
                     # Executing month search with LEFT JOINs
                     month_query = """
-                    SELECT u.id, u.asset, u.market_bias, u.calc_edge, u.created_at, 
-                           e.bias_a, e.real_bias_b, e.resolution_type, 
-                           t.compliance, u.trade_status, u.is_backdated
+                    SELECT u.id, u.asset, u.market_bias, u.calc_edge, u.created_at,
+                           e.bias_a, e.real_bias_b, e.resolution_type,
+                           t.order_filled, u.is_backdated
                     FROM unified_department u
                     LEFT JOIN efficiency_audit e ON u.id = e.id
-                    LEFT JOIN tactical_audit t ON u.id = t.id
+                    LEFT JOIN tactical_audit t ON t.trade_id = u.id
                     WHERE u.created_at BETWEEN :start_str AND :end_str
                     ORDER BY u.created_at DESC;
                     """
@@ -2728,7 +2747,6 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
                                 market_bias=market_bias,
                                 calc_edge=i_cd,
                                 edge_description=edge_desc,
-                                trade_status=None,
                                 p4_hierarchy=tactical.p4_hierarchy.value,
                                 p1_timeframe=tactical.p1_timeframe.value,
                                 p1_type=tactical.p1_type.value,
@@ -2786,7 +2804,33 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
                             console.print(f"[danger]Transaction rolled back due to error: {e}[/danger]")
                             input("Press Enter to continue...")
                             return
-                    
+
+                    feed_now = inquirer.select(
+                        message="¿Deseas alimentar un Tactical Audit ahora para este análisis?",
+                        choices=[
+                            Choice("yes", name="Sí, alimentar Tactical Audit ahora"),
+                            Choice("no", name="No, volver al menú"),
+                        ],
+                        pointer=">",
+                        qmark="",
+                        style=INQUIRER_STYLE
+                    ).execute()
+
+                    if feed_now == "yes":
+                        preselected_payload = {
+                            "asset": asset,
+                            "efficiency": {"Market_Bias": market_bias, "Calc_edge": i_cd},
+                            "tactical": {"tactical_classification": tactical.tactical_classification.value, "calc_edge": i_cd},
+                        }
+                        flow_pending_audits(
+                            preselected_trade_id=trade_id,
+                            preselected_payload=preselected_payload,
+                            preselected_choice="tac",
+                            state_rule="promote",
+                            force_new_tactical=True,
+                        )
+                        return
+
                     input("Press Enter to continue...")
                     return
 
@@ -2901,56 +2945,78 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
         except ExitToMainMenuException:
             return
 
-def flow_pending_audits():
-    records = get_records_by_state(LifecycleState.PENDING_AUDITS, engine=get_active_engine())
-    if not records:
-        console.print("[warning]No pending audits.[/warning]")
-        input("Press Enter to continue...")
-        return
-        
-    sync_status = check_daemon_status()
-    layout = build_persistent_layout(
-        active_session_name=ACTIVE_SESSION["name"] if ACTIVE_SESSION else None,
-        pending_count=len(records),
-        sync_status=sync_status
-    )
-    layout["body"].update(render_pending_audits_table(records))
-    
-    try:
-        console.clear(home=True)
-    except TypeError:
-        console.clear()
-        
-    console.print(layout)
-    console.print()
-    
-    short_id_choice = get_mandatory_text("Enter short ID to audit (or 'c' to cancel)")
-    if short_id_choice.lower() == 'c':
-        return
-        
-    target_record = next((r for r in records if r["id"].startswith(short_id_choice)), None)
-    if not target_record:
-        console.print("[red]Record not found.[/red]")
-        input("Press Enter to continue...")
-        return
-        
-    trade_id = target_record["id"]
-    payload = target_record["payload"]
+def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: dict = None, preselected_choice: str = None, state_rule: str = "promote", force_new_tactical: bool = False):
+    # preselected_* lets a caller (e.g. the post-save prompt in flow_new_analysis(),
+    # or flow_add_tactical_execution()) drop straight into the eff/tac wizard below
+    # for a specific trade_id, bypassing the PENDING_AUDITS-only picker. state_rule
+    # controls how the record's state is finalized: "promote" keeps the original
+    # eff+tac-complete -> READY_FOR_NOTION rule; "preserve" leaves whatever state
+    # the record already has untouched (used when adding an execution to an
+    # analysis that's already READY_FOR_NOTION/SYNCED/COMPLETED). force_new_tactical
+    # forces a brand-new tactical_audit row instead of resuming the most recent draft.
+    if preselected_trade_id is not None:
+        trade_id = preselected_trade_id
+        payload = preselected_payload or {}
+    else:
+        records = get_records_by_state(LifecycleState.PENDING_AUDITS, engine=get_active_engine())
+        if not records:
+            console.print("[warning]No pending audits.[/warning]")
+            input("Press Enter to continue...")
+            return
 
-    audit_choice = inquirer.select(
-        message="Select Component to Audit >",
-        choices=[
-            Choice("eff", name="Efficiency Audit"),
-            Choice("tac", name="Tactical Audit"),
-            Choice("cancel", name="Cancel")
-        ],
-        pointer=">",
-        qmark=""
-    ).execute()
+        sync_status = check_daemon_status()
+        layout = build_persistent_layout(
+            active_session_name=ACTIVE_SESSION["name"] if ACTIVE_SESSION else None,
+            pending_count=len(records),
+            sync_status=sync_status
+        )
+        layout["body"].update(render_pending_audits_table(records))
 
-    if audit_choice == "cancel":
-        return
-        
+        try:
+            console.clear(home=True)
+        except TypeError:
+            console.clear()
+
+        console.print(layout)
+        console.print()
+
+        record_num = get_mandatory_text("Enter Record # to audit (or 'c' to cancel)")
+        if record_num.strip().lower() == 'c':
+            return
+
+        try:
+            record_idx = int(record_num.strip())
+            if record_idx < 1 or record_idx > len(records):
+                raise ValueError
+        except ValueError:
+            console.print("[red]Invalid record #.[/red]")
+            input("Press Enter to continue...")
+            return
+
+        target_record = records[record_idx - 1]
+
+        trade_id = target_record["id"]
+        payload = target_record["payload"]
+
+    existing_tactical_row_id = None if force_new_tactical else payload.get("audit_tactical", {}).get("id")
+
+    if preselected_choice is not None:
+        audit_choice = preselected_choice
+    else:
+        audit_choice = inquirer.select(
+            message="Select Component to Audit >",
+            choices=[
+                Choice("eff", name="Efficiency Audit"),
+                Choice("tac", name="Tactical Audit"),
+                Choice("cancel", name="Cancel")
+            ],
+            pointer=">",
+            qmark=""
+        ).execute()
+
+        if audit_choice == "cancel":
+            return
+
     new_payload = dict(payload)
 
     if audit_choice == "eff":
@@ -3104,43 +3170,68 @@ def flow_pending_audits():
 
     elif audit_choice == "tac":
         console.print(Panel("Tactical Audit", style="bold magenta"))
-        session = AuditSession(trade_id, "tac")
+        market_bias_val = payload.get("efficiency", {}).get("Market_Bias", "Unknown")
+        console.print(f"[bold cyan]Original Market Bias:[/bold cyan] {market_bias_val}")
+        session = AuditSession(trade_id, f"tac:{existing_tactical_row_id or 'new'}")
         while True:
             try:
-                t_status = session.prompt("t_status", get_enum_choice, "Trade Status", TradeStatus)
-                
-                if t_status == TradeStatus.NO_TAKEN:
+                # --- Bifurcación temprana: ¿hubo trade esta sesión? (agnóstica al bias) ---
+                def ask_tac_mode():
+                    return bind_pause(inquirer.select(
+                        message="¿Se evaluó/tomó algún trade en esta sesión?",
+                        choices=[
+                            Choice("gates", name="Sí — Evaluar Gates (Motor B)"),
+                            Choice("no_trade", name="No — Ningún trade tomado (Skip)")
+                        ],
+                        pointer=">",
+                        qmark=""
+                    )).execute()
+
+                tac_mode = session.prompt("tac_mode", ask_tac_mode)
+
+                if tac_mode == "no_trade":
+                    # --- Camino corto: ningún setup fue evaluado esta sesión ---
+                    def ask_no_trade_skip_reason():
+                        ordered_choices = [SkipReason.SIN_SETUP_IDENTIFICADO] + [
+                            c for c in SkipReason if c not in (SkipReason.SKIP, SkipReason.SIN_SETUP_IDENTIFICADO)
+                        ]
+                        return bind_pause(inquirer.select(
+                            message="Skip Reason? >",
+                            choices=ordered_choices,
+                            pointer=">",
+                            qmark=""
+                        )).execute()
+
                     while True:
-                        t_comp = session.prompt("t_comp", get_enum_choice, "Compliance State", ComplianceState)
-                        htf_trend = session.prompt("htf_trend", get_enum_choice, "HTF Trend Context", HTFTrendContext)
-                        ltf_trend = session.prompt("ltf_trend", get_enum_choice, "LTF Trend Context", TrendContext)
-                        lesson_tact = session.prompt("lesson_tact", get_mandatory_text, "Tactical Lesson Learned", multiline=True)
-                        visual_path = session.prompt("visual_lesson_path", handle_visual_lesson_assignment, trade_id, payload.get("asset", "Unknown"))
-                        
+                        skip_reason = session.prompt("no_trade_skip_reason", ask_no_trade_skip_reason)
+                        lesson_tact = session.prompt("no_trade_lesson_tact", get_mandatory_text, "Tactical Lesson Learned", multiline=True)
+                        visual_path = session.prompt("no_trade_visual_lesson_path", handle_visual_lesson_assignment, trade_id, payload.get("asset", "Unknown"))
+
                         audit_tactical = TacticalAudit(
                             tactical_id=trade_id,
-                            compliance=t_comp,
-                            htf_trend_context=htf_trend,
-                            ltf_trend_context=ltf_trend,
+                            tactical_row_id=existing_tactical_row_id,
+                            order_filled=False,
+                            skip_reason=skip_reason,
+                            tier_setup=TierSetup.SKIP,
                             lesson_learned=lesson_tact,
-                            visual_lesson_path=visual_path
+                            visual_lesson_path=visual_path,
+                            stop_loss=0.0, entry_price=0.0, size=0.0, take_profit=0.0, cost=0.0, mae=0.0, mfe=0.0,
                         )
-                        
+
                         rev_text = Text()
-                        rev_text.append(f"Trade Status: {t_status.value}\n")
-                        rev_text.append(f"Compliance State: {t_comp.value if isinstance(t_comp, Enum) else t_comp}\n")
-                        rev_text.append(f"HTF Trend Context: {htf_trend.value if isinstance(htf_trend, Enum) else htf_trend}\n")
-                        rev_text.append(f"LTF Trend Context: {ltf_trend.value if isinstance(ltf_trend, Enum) else ltf_trend}\n")
+                        rev_text.append("Order Filled: No (Ningún trade tomado)\n")
+                        rev_text.append(f"Skip Reason: {skip_reason.value if hasattr(skip_reason, 'value') else skip_reason}\n", style="yellow")
+                        rev_text.append(f"Market Bias (context): {market_bias_val}\n")
                         rev_text.append(f"Tactical Lesson Learned: {lesson_tact}\n")
                         if visual_path and visual_path != "nan":
                             rev_text.append(f"Visual Lesson: {visual_path}\n")
-                        
+
                         try:
                             console.clear(home=True)
                         except TypeError:
                             console.clear()
                         console.print(Panel(rev_text, title="Review: Tactical Audit (No Trade Taken)", border_style="cyan"))
-                        
+
                         action_choice = inquirer.select(
                             message="Review Action >",
                             choices=[
@@ -3153,11 +3244,10 @@ def flow_pending_audits():
                         ).execute()
 
                         if action_choice == "save":
-                            new_payload["trade_status"] = t_status.value
                             at_dump = audit_tactical.model_dump()
                             string_enum_keys = {
-                                "compliance", "tier_setup", "market_state", "session", "exit_type",
-                                "trade_status", "followed_plan", "primary_emotion", "setup_type",
+                                "tier_setup", "market_state", "session", "exit_type",
+                                "followed_plan", "primary_emotion", "setup_type",
                                 "htf_trend_context", "confirmation_status", "ltf_trend_context",
                                 "pre_trade_emotions", "mid_trade_emotions", "post_trade_emotions",
                                 "could_hit_tp", "lesson_learned", "trade_decision", "trade_duration",
@@ -3174,7 +3264,173 @@ def flow_pending_audits():
                             raise PauseAuditException("Discard requested")
                         elif action_choice == "edit":
                             edit_choices = [
-                                Choice("t_comp", name=f"Compliance State: {t_comp.value if isinstance(t_comp, Enum) else t_comp}"),
+                                Choice("no_trade_skip_reason", name=f"Skip Reason: {skip_reason.value if hasattr(skip_reason, 'value') else skip_reason}"),
+                                Choice("no_trade_lesson_tact", name=f"Lesson: {lesson_tact[:30]}..."),
+                                Choice("no_trade_visual_lesson_path", name=f"Visual Lesson Path: {session.state.get('no_trade_visual_lesson_path', 'nan')}"),
+                                Choice("back", name="[<] Back to Review")
+                            ]
+                            field_to_edit = inquirer.select(
+                                message="Select Field to Edit >",
+                                choices=edit_choices,
+                                pointer=">",
+                                qmark=""
+                            ).execute()
+                            if field_to_edit == "back":
+                                continue
+                            if field_to_edit == "no_trade_skip_reason":
+                                session.state["no_trade_skip_reason"] = get_enum_choice("Edit Skip Reason", SkipReason)
+                            elif field_to_edit == "no_trade_lesson_tact":
+                                session.state["no_trade_lesson_tact"] = get_mandatory_text("Edit Tactical Lesson Learned", multiline=True)
+                            elif field_to_edit == "no_trade_visual_lesson_path":
+                                visual_path = handle_visual_lesson_assignment(trade_id, payload.get("asset", "Unknown"), session.state.get("no_trade_visual_lesson_path", "nan"))
+                                session.state["no_trade_visual_lesson_path"] = visual_path
+                    break
+
+                # --- Auto-Heal Legacy Tactical State ---
+                legacy_trigger_vals = [
+                    "Yes", "yes but bad entry point (too tight)",
+                    "Yes but late entry", "yes but closed too early - Fear", "No"
+                ]
+                current_conf = session.state.get("conf_status") or session.state.get("confirmation_status")
+                if isinstance(current_conf, str) and current_conf in legacy_trigger_vals:
+                    # Purgar claves tácticas legacy para forzar re-evaluación bajo Motor B
+                    for k in ["conf_status", "confirmation_status", "selected_gates", "selected_confs", "mfe_potencial_estimado", "gate_action", "htf_trend", "ltf_trend", "lesson_tact", "visual_lesson_path"]:
+                        session.state.pop(k, None)
+
+                # --- BLOQUE 1: Motor B — Gates + HTF/LTF Trend (siempre primero) ---
+                def ask_gates():
+                    choices = [
+                        Choice("g1", name="G1: P0 Trend 15m"),
+                        Choice("g2", name="G2: Trend Fractal (5m or 15m)"),
+                        Choice("g3", name="G3: Limit Order"),
+                        Choice("g4", name="G4: Breathing - Mindfulness"),
+                        Choice("g5", name="G5: Manual Cooldown"),
+                        Choice("g6", name="G6: SL Validated"),
+                        Choice("g7", name="G7: TP Validated")
+                    ]
+                    return bind_pause(inquirer.checkbox(message="Select fulfilled Gates >", choices=choices)).execute()
+
+                selected_gates = session.prompt("selected_gates", ask_gates)
+                gates_failed_cnt = 7 - len(selected_gates)
+
+                g1_trend_15m = "g1" in selected_gates
+                g2_fractal_trend = "g2" in selected_gates
+                g3_limit_order = "g3" in selected_gates
+                g4_breathing = "g4" in selected_gates
+                g5_manual_cooldown = "g5" in selected_gates
+                g6_sl_validated = "g6" in selected_gates
+                g7_tp_validated = "g7" in selected_gates
+
+                htf_trend = session.prompt("htf_trend", get_enum_choice, "HTF Trend Context", HTFTrendContext)
+                ltf_trend = session.prompt("ltf_trend", get_enum_choice, "LTF Trend Context", TrendContext)
+
+                abort_trade = False
+                if gates_failed_cnt > 0:
+                    gate_action = session.prompt("gate_action", lambda: bind_pause(inquirer.select(
+                        message="[GATES FAILED] Operación inválida estructuralmente:",
+                        choices=["Abortar Trade", "Forzar Entrada (Revenge)"]
+                    )).execute())
+                    if gate_action == "Abortar Trade":
+                        abort_trade = True
+
+                def ask_could_hit_tp():
+                    return bind_pause(inquirer.select(
+                        message="Could hit TP? >",
+                        choices=[Choice("yes", name="yes"), Choice("no", name="no")],
+                        pointer=">",
+                        qmark="",
+                        keybindings={"skip": []}
+                    )).execute()
+
+                def ask_order_filled():
+                    return bind_pause(inquirer.select(
+                        message="Order Filled? >",
+                        choices=[Choice("yes", name="yes"), Choice("no", name="no")],
+                        pointer=">",
+                        qmark=""
+                    )).execute() == "yes"
+
+                def ask_skip_reason():
+                    return bind_pause(inquirer.select(
+                        message="Skip Reason? >",
+                        choices=[c for c in SkipReason if c != SkipReason.SKIP],
+                        pointer=">",
+                        qmark=""
+                    )).execute()
+
+                if abort_trade:
+                    # --- Camino corto: nunca se intentó la entrada ---
+                    while True:
+                        skip_reason = session.prompt("skip_reason", ask_skip_reason)
+                        lesson_tact = session.prompt("lesson_tact", get_mandatory_text, "Tactical Lesson Learned", multiline=True)
+                        visual_path = session.prompt("visual_lesson_path", handle_visual_lesson_assignment, trade_id, payload.get("asset", "Unknown"))
+
+                        audit_tactical = TacticalAudit(
+                            tactical_id=trade_id,
+                            tactical_row_id=existing_tactical_row_id,
+                            order_filled=False,
+                            skip_reason=skip_reason,
+                            htf_trend_context=htf_trend,
+                            ltf_trend_context=ltf_trend,
+                            lesson_learned=lesson_tact,
+                            visual_lesson_path=visual_path,
+                            gates_failed=gates_failed_cnt,
+                            confirmations_count=0,
+                            stop_loss=0.0, entry_price=0.0, size=0.0, take_profit=0.0, cost=0.0, mae=0.0, mfe=0.0,
+                            g1_trend_15m=g1_trend_15m, g2_fractal_trend=g2_fractal_trend, g3_limit_order=g3_limit_order,
+                            g4_breathing=g4_breathing, g5_manual_cooldown=g5_manual_cooldown,
+                            g6_sl_validated=g6_sl_validated, g7_tp_validated=g7_tp_validated,
+                        )
+
+                        rev_text = Text()
+                        rev_text.append("Order Filled: No (Abortado por Gates)\n")
+                        rev_text.append(f"Skip Reason: {skip_reason.value if hasattr(skip_reason, 'value') else skip_reason}\n", style="yellow")
+                        rev_text.append(f"Gates Failed: {gates_failed_cnt}\n", style="red")
+                        rev_text.append(f"HTF Trend Context: {htf_trend.value if isinstance(htf_trend, Enum) else htf_trend}\n")
+                        rev_text.append(f"LTF Trend Context: {ltf_trend.value if isinstance(ltf_trend, Enum) else ltf_trend}\n")
+                        rev_text.append(f"Tactical Lesson Learned: {lesson_tact}\n")
+                        if visual_path and visual_path != "nan":
+                            rev_text.append(f"Visual Lesson: {visual_path}\n")
+
+                        try:
+                            console.clear(home=True)
+                        except TypeError:
+                            console.clear()
+                        console.print(Panel(rev_text, title="Review: Tactical Audit (Aborted by Gates)", border_style="cyan"))
+
+                        action_choice = inquirer.select(
+                            message="Review Action >",
+                            choices=[
+                                Choice("save", name="[1] Confirm & Save"),
+                                Choice("edit", name="[2] Edit a Field"),
+                                Choice("discard", name="[3] Discard")
+                            ],
+                            pointer=">",
+                            qmark=""
+                        ).execute()
+
+                        if action_choice == "save":
+                            at_dump = audit_tactical.model_dump()
+                            string_enum_keys = {
+                                "tier_setup", "market_state", "session", "exit_type",
+                                "followed_plan", "primary_emotion", "setup_type",
+                                "htf_trend_context", "confirmation_status", "ltf_trend_context",
+                                "pre_trade_emotions", "mid_trade_emotions", "post_trade_emotions",
+                                "could_hit_tp", "lesson_learned", "trade_decision", "trade_duration",
+                                "visual_lesson_path"
+                            }
+                            for k, v in at_dump.items():
+                                if v is None and k in string_enum_keys:
+                                    at_dump[k] = "nan"
+                            new_payload["audit_tactical"] = at_dump
+                            console.print("[green]Tactical Audit saved (No Trade Taken).[/green]")
+                            session.clear_state()
+                            break
+                        elif action_choice == "discard":
+                            raise PauseAuditException("Discard requested")
+                        elif action_choice == "edit":
+                            edit_choices = [
+                                Choice("skip_reason", name=f"Skip Reason: {skip_reason.value if hasattr(skip_reason, 'value') else skip_reason}"),
                                 Choice("htf_trend", name=f"HTF Trend: {htf_trend.value if isinstance(htf_trend, Enum) else htf_trend}"),
                                 Choice("ltf_trend", name=f"LTF Trend: {ltf_trend.value if isinstance(ltf_trend, Enum) else ltf_trend}"),
                                 Choice("lesson_tact", name=f"Lesson: {lesson_tact[:30]}..."),
@@ -3189,8 +3445,8 @@ def flow_pending_audits():
                             ).execute()
                             if field_to_edit == "back":
                                 continue
-                            if field_to_edit == "t_comp":
-                                session.state["t_comp"] = get_enum_choice("Edit Compliance State", ComplianceState)
+                            if field_to_edit == "skip_reason":
+                                session.state["skip_reason"] = get_enum_choice("Edit Skip Reason", SkipReason)
                             elif field_to_edit == "htf_trend":
                                 session.state["htf_trend"] = get_enum_choice("Edit HTF Trend Context", HTFTrendContext)
                             elif field_to_edit == "ltf_trend":
@@ -3202,179 +3458,140 @@ def flow_pending_audits():
                                 session.state["visual_lesson_path"] = visual_path
                     break
                 else:
+                    # --- Camino principal: se intenta la entrada (gates limpios o forzada) ---
                     while True:
-                        # --- Auto-Heal Legacy Tactical State ---
-                        legacy_trigger_vals = [
-                            "Yes", "yes but bad entry point (too tight)", 
-                            "Yes but late entry", "yes but closed too early - Fear", "No"
-                        ]
-                        current_conf = session.state.get("conf_status") or session.state.get("confirmation_status")
-                        if isinstance(current_conf, str) and current_conf in legacy_trigger_vals:
-                            # Purgar claves tácticas legacy para forzar re-evaluación bajo Motor B
-                            for k in ["conf_status", "confirmation_status", "selected_gates", "selected_confs", "mfe_potencial_estimado", "gate_action", "htf_trend", "ltf_trend", "lesson_tact", "visual_lesson_path"]:
-                                session.state.pop(k, None)
+                        # BLOQUE 2: Confirmations (Motor B 2ª mitad) + tier_setup
+                        if gates_failed_cnt == 0:
+                            def ask_confirmations():
+                                choices = [
+                                    Choice("c1", name="C1: KL as Support/Resistance"),
+                                    Choice("c2", name="C2: Standard Fractal Confirmation (5-15m)"),
+                                    Choice("c3", name="C3: 1m Fractal Confirmation/Assistance"),
+                                    Choice("c4", name="C4: 1h Fractal Continuation or Inflection"),
+                                    Choice("c5", name="C5: KL as target"),
+                                    Choice("c6", name="C6: Liquidity grabbed or to be grabbed"),
+                                    Choice("c7", name="C7: 0.4-0.6 Retracement in P015m"),
+                                    Choice("c8", name="C8: Convergence with P015m")
+                                ]
+                                return bind_pause(inquirer.checkbox(message="Select fulfilled Confirmations >", choices=choices)).execute()
 
-                        def ask_gates():
-                            choices = [
-                                Choice("g1", name="G1: P0 Trend 15m"),
-                                Choice("g2", name="G2: Trend Fractal (5m or 15m)"),
-                                Choice("g3", name="G3: Limit Order"),
-                                Choice("g4", name="G4: Breathing - Mindfulness"),
-                                Choice("g5", name="G5: Manual Cooldown"),
-                                Choice("g6", name="G6: SL Validated"),
-                                Choice("g7", name="G7: TP Validated")
-                            ]
-                            return bind_pause(inquirer.checkbox(message="Select fulfilled Gates >", choices=choices)).execute()
-                            
-                        selected_gates = session.prompt("selected_gates", ask_gates)
-                        gates_failed_cnt = 7 - len(selected_gates)
-                        
-                        g1_trend_15m = "g1" in selected_gates
-                        g2_fractal_trend = "g2" in selected_gates
-                        g3_limit_order = "g3" in selected_gates
-                        g4_breathing = "g4" in selected_gates
-                        g5_manual_cooldown = "g5" in selected_gates
-                        g6_sl_validated = "g6" in selected_gates
-                        g7_tp_validated = "g7" in selected_gates
-
-                        abort_trade = False
-                        if gates_failed_cnt > 0:
-                            gate_action = session.prompt("gate_action", lambda: bind_pause(inquirer.select(
-                                message="[GATES FAILED] Operación inválida estructuralmente:",
-                                choices=["Abortar Trade", "Forzar Entrada (Revenge)"]
+                            selected_confs = session.prompt("selected_confs", ask_confirmations)
+                            conf_status = session.prompt("conf_status", lambda: bind_pause(inquirer.select(
+                                message="Confirmation Status >",
+                                choices=[c for c in ConfirmationStatus if c not in (ConfirmationStatus.S7_REVENGE_FORCED, ConfirmationStatus.SKIP)]
                             )).execute())
-                            if gate_action == "Abortar Trade":
-                                abort_trade = True
-                                t_status = next((c for c in TradeStatus if c.value == "Trade_no_taken"), TradeStatus.NO_TAKEN)
-                                session.state["t_status"] = t_status
-                        
-                        if abort_trade:
-                            t_comp = session.prompt("t_comp", get_enum_choice, "Compliance State", ComplianceState)
-                            htf_trend = session.prompt("htf_trend", get_enum_choice, "HTF Trend Context", HTFTrendContext)
-                            ltf_trend = session.prompt("ltf_trend", get_enum_choice, "LTF Trend Context", TrendContext)
+
+                            if conf_status == ConfirmationStatus.S6_FEAR_NO_ENTRY:
+                                mfe_potencial = session.prompt("mfe_potencial_estimado", get_mandatory_float, "MFE Potencial Estimado")
+                            else:
+                                mfe_potencial = None
+                        else:
+                            selected_confs = []
+                            conf_status = ConfirmationStatus.S7_REVENGE_FORCED
+                            mfe_potencial = None
+
+                        confirmations_count = len(selected_confs)
+                        c1_kl_support = "c1" in selected_confs
+                        c2_fractal_std = "c2" in selected_confs
+                        c3_fractal_1m = "c3" in selected_confs
+                        c4_fractal_1h = "c4" in selected_confs
+                        c5_kl_target = "c5" in selected_confs
+                        c6_liquidity = "c6" in selected_confs
+                        c7_retracement = "c7" in selected_confs
+                        c8_convergence_15m = "c8" in selected_confs
+
+                        if conf_status == ConfirmationStatus.S7_REVENGE_FORCED or gates_failed_cnt >= 3:
+                            tier_setup = TierSetup.F
+                        elif gates_failed_cnt >= 1:
+                            tier_setup = TierSetup.D
+                        elif confirmations_count >= 5:
+                            tier_setup = TierSetup.A
+                        elif confirmations_count >= 4:
+                            tier_setup = TierSetup.B
+                        else:
+                            tier_setup = TierSetup.C
+
+                        # BLOQUE 3: Datos de entrada
+                        sl = session.prompt("sl", get_mandatory_float, "Stop Loss")
+                        entry_p = session.prompt("entry_p", get_mandatory_float, "Entry Price")
+                        size = session.prompt("size", get_mandatory_float, "Size")
+                        tp = session.prompt("tp", get_mandatory_float, "Take Profit")
+                        entry_time = session.prompt("entry_time", get_mandatory_datetime, "Entry Time")
+
+                        # BLOQUE 4: Estado pre-trade
+                        pre_trade_emotions = session.prompt("pre_trade_emotions", get_mandatory_text, "Pre Trade Emotions")
+                        emotions = session.prompt("emotions", get_multi_enum_choice, "Emotions", Emotions, choices=ACTIVE_EMOTIONS)
+                        p_emotion = session.prompt("p_emotion", get_enum_choice, "Primary Emotion", PrimaryEmotion)
+                        mental_clarity = session.prompt("mental_clarity", get_mandatory_int, "Mental Clarity Level", 1, 5)
+                        impatience = session.prompt("impatience", get_mandatory_int, "Impatience Level", 1, 5)
+                        anxiety = session.prompt("anxiety", get_mandatory_int, "Anxiety Level", 1, 5)
+                        market_state = session.prompt("market_state", get_enum_choice, "Market State", MarketState)
+                        setup_t = session.prompt("setup_t", get_enum_choice, "Setup Type", SetupType)
+                        cost = session.prompt("cost", get_mandatory_float, "Cost (Fees/Funding)")
+
+                        # --- ¿Se llenó la orden? ---
+                        order_filled = session.prompt("order_filled", ask_order_filled)
+
+                        if not order_filled:
+                            # BLOQUE FINAL (no llenada): skip_reason + lección + visual
+                            skip_reason = session.prompt("skip_reason", ask_skip_reason)
                             lesson_tact = session.prompt("lesson_tact", get_mandatory_text, "Tactical Lesson Learned", multiline=True)
                             visual_path = session.prompt("visual_lesson_path", handle_visual_lesson_assignment, trade_id, payload.get("asset", "Unknown"))
-                            
+
                             audit_tactical = TacticalAudit(
                                 tactical_id=trade_id,
-                                trade_status=t_status,
-                                compliance=t_comp,
+                                tactical_row_id=existing_tactical_row_id,
+                                order_filled=False,
+                                skip_reason=skip_reason,
                                 htf_trend_context=htf_trend,
                                 ltf_trend_context=ltf_trend,
+                                stop_loss=sl,
+                                entry_price=entry_p,
+                                size=size,
+                                take_profit=tp,
+                                entry_time=entry_time,
+                                emotions=emotions,
+                                pre_trade_emotions=pre_trade_emotions,
+                                primary_emotion=p_emotion,
+                                mental_clarity_level=mental_clarity,
+                                impatience_level=impatience,
+                                anxiety_level=anxiety,
+                                confirmation_status=conf_status,
+                                tier_setup=tier_setup,
+                                market_state=market_state,
+                                setup_type=setup_t,
+                                cost=cost,
                                 lesson_learned=lesson_tact,
                                 visual_lesson_path=visual_path,
+                                g1_trend_15m=g1_trend_15m, g2_fractal_trend=g2_fractal_trend, g3_limit_order=g3_limit_order,
+                                g4_breathing=g4_breathing, g5_manual_cooldown=g5_manual_cooldown,
+                                g6_sl_validated=g6_sl_validated, g7_tp_validated=g7_tp_validated,
+                                c1_kl_support=c1_kl_support, c2_fractal_std=c2_fractal_std, c3_fractal_1m=c3_fractal_1m,
+                                c4_fractal_1h=c4_fractal_1h, c5_kl_target=c5_kl_target, c6_liquidity=c6_liquidity,
+                                c7_retracement=c7_retracement, c8_convergence_15m=c8_convergence_15m,
                                 gates_failed=gates_failed_cnt,
-                                confirmations_count=0,
-                                stop_loss=0.0,
-                                entry_price=0.0,
-                                size=0.0,
-                                take_profit=0.0,
-                                cost=0.0,
-                                mae=0.0,
-                                mfe=0.0,
-                                g1_trend_15m=g1_trend_15m,
-                                g2_fractal_trend=g2_fractal_trend,
-                                g3_limit_order=g3_limit_order,
-                                g4_breathing=g4_breathing,
-                                g5_manual_cooldown=g5_manual_cooldown,
-                                g6_sl_validated=g6_sl_validated,
-                                g7_tp_validated=g7_tp_validated
+                                confirmations_count=confirmations_count,
+                                mfe_potencial_estimado=mfe_potencial,
                             )
                         else:
-                            if gates_failed_cnt == 0:
-                                def ask_confirmations():
-                                    choices = [
-                                        Choice("c1", name="C1: KL as Support/Resistance"),
-                                        Choice("c2", name="C2: Standard Fractal Confirmation (5-15m)"),
-                                        Choice("c3", name="C3: 1m Fractal Confirmation/Assistance"),
-                                        Choice("c4", name="C4: 1h Fractal Continuation or Inflection"),
-                                        Choice("c5", name="C5: KL as target"),
-                                        Choice("c6", name="C6: Liquidity grabbed or to be grabbed"),
-                                        Choice("c7", name="C7: 0.4-0.6 Retracement in P015m"),
-                                        Choice("c8", name="C8: Convergence with P015m")
-                                    ]
-                                    return bind_pause(inquirer.checkbox(message="Select fulfilled Confirmations >", choices=choices)).execute()
-                                
-                                selected_confs = session.prompt("selected_confs", ask_confirmations)
-                                conf_status = session.prompt("conf_status", lambda: bind_pause(inquirer.select(
-                                    message="Confirmation Status >",
-                                    choices=[c for c in ConfirmationStatus if c not in (ConfirmationStatus.S7_REVENGE_FORCED, ConfirmationStatus.SKIP)]
-                                )).execute())
-                                
-                                if conf_status == ConfirmationStatus.S6_FEAR_NO_ENTRY:
-                                    mfe_potencial = session.prompt("mfe_potencial_estimado", get_mandatory_float, "MFE Potencial Estimado")
-                                else:
-                                    mfe_potencial = None
-                            else:
-                                selected_confs = []
-                                conf_status = ConfirmationStatus.S7_REVENGE_FORCED
-                                mfe_potencial = None
-                                
-                            confirmations_count = len(selected_confs)
-                            c1_kl_support = "c1" in selected_confs
-                            c2_fractal_std = "c2" in selected_confs
-                            c3_fractal_1m = "c3" in selected_confs
-                            c4_fractal_1h = "c4" in selected_confs
-                            c5_kl_target = "c5" in selected_confs
-                            c6_liquidity = "c6" in selected_confs
-                            c7_retracement = "c7" in selected_confs
-                            c8_convergence_15m = "c8" in selected_confs
-
-                            if conf_status == ConfirmationStatus.S7_REVENGE_FORCED or gates_failed_cnt >= 3:
-                                tier_setup = TierSetup.F
-                            elif gates_failed_cnt >= 1:
-                                tier_setup = TierSetup.D
-                            elif confirmations_count >= 5:
-                                tier_setup = TierSetup.A
-                            elif confirmations_count >= 4:
-                                tier_setup = TierSetup.B
-                            else:
-                                tier_setup = TierSetup.C
-
-                            sl = session.prompt("sl", get_mandatory_float, "Stop Loss")
-                            entry_p = session.prompt("entry_p", get_mandatory_float, "Entry Price")
-                            size = session.prompt("size", get_mandatory_float, "Size")
-                            tp = session.prompt("tp", get_mandatory_float, "Take Profit")
-                            entry_time = session.prompt("entry_time", get_mandatory_datetime, "Entry Time")
-
-                            htf_trend = session.prompt("htf_trend", get_enum_choice, "HTF Trend Context", HTFTrendContext)
-                            ltf_trend = session.prompt("ltf_trend", get_enum_choice, "LTF Trend Context", TrendContext)
-                            emotions = session.prompt("emotions", get_multi_enum_choice, "Emotions", Emotions, choices=ACTIVE_EMOTIONS)
-                            pre_trade_emotions = session.prompt("pre_trade_emotions", get_mandatory_text, "Pre Trade Emotions")
-                            p_emotion = session.prompt("p_emotion", get_enum_choice, "Primary Emotion", PrimaryEmotion)
-                            mental_clarity = session.prompt("mental_clarity", get_mandatory_int, "Mental Clarity Level", 1, 5)
-                            impatience = session.prompt("impatience", get_mandatory_int, "Impatience Level", 1, 5)
-                            anxiety = session.prompt("anxiety", get_mandatory_int, "Anxiety Level", 1, 5)
+                            # BLOQUE 5 (llenada): datos post-fill
                             mid_trade_emotions = session.prompt("mid_trade_emotions", get_mandatory_text, "Mid Trade Emotions")
                             post_trade_emotions = session.prompt("post_trade_emotions", get_mandatory_text, "Post Trade Emotions")
                             exit_time = session.prompt("exit_time", get_mandatory_datetime, "Exit Time")
                             exit_type = session.prompt("exit_type", get_enum_choice, "Exit Type", ExitType)
                             close_p = session.prompt("close_p", get_mandatory_float, "Closing Price")
-                            
-                            def ask_could_hit_tp():
-                                return bind_pause(inquirer.select(
-                                    message="Could hit TP? >",
-                                    choices=[Choice("yes", name="yes"), Choice("no", name="no")],
-                                    pointer=">",
-                                    qmark="",
-                                    keybindings={"skip": []}
-                                )).execute()
-                                
                             could_hit_tp = session.prompt("could_hit_tp", ask_could_hit_tp)
-                            t_comp = session.prompt("t_comp", get_enum_choice, "Compliance State", ComplianceState)
-                            market_state = session.prompt("market_state", get_enum_choice, "Market State", MarketState)
                             f_plan = session.prompt("f_plan", get_enum_choice, "Followed Plan", FollowedPlan)
-                            setup_t = session.prompt("setup_t", get_enum_choice, "Setup Type", SetupType)
                             behav_errors = session.prompt("behav_errors", get_multi_enum_choice, "Behavioral Errors", BehavioralErrors)
                             mae = session.prompt("mae", get_mandatory_float, "MAE (0 <= MAE <= 10)", min_val=0, max_val=10)
                             mfe = session.prompt("mfe", get_mandatory_float, "MFE (0 <= MFE <= 10)", min_val=0, max_val=10)
-                            cost = session.prompt("cost", get_mandatory_float, "Cost (Fees/Funding)")
                             lesson_tact = session.prompt("lesson_tact", get_mandatory_text, "Tactical Lesson Learned", multiline=True)
                             visual_path = session.prompt("visual_lesson_path", handle_visual_lesson_assignment, trade_id, payload.get("asset", "Unknown"))
 
                             audit_tactical = TacticalAudit(
                                 tactical_id=trade_id,
-                                trade_status=t_status,
+                                tactical_row_id=existing_tactical_row_id,
+                                order_filled=True,
                                 htf_trend_context=htf_trend,
                                 ltf_trend_context=ltf_trend,
                                 stop_loss=sl,
@@ -3395,7 +3612,6 @@ def flow_pending_audits():
                                 confirmation_status=conf_status,
                                 closing_price=close_p,
                                 could_hit_tp=could_hit_tp,
-                                compliance=t_comp,
                                 tier_setup=tier_setup,
                                 market_state=market_state,
                                 followed_plan=f_plan,
@@ -3406,44 +3622,36 @@ def flow_pending_audits():
                                 mfe=mfe,
                                 lesson_learned=lesson_tact,
                                 visual_lesson_path=visual_path,
-                                g1_trend_15m=g1_trend_15m,
-                                g2_fractal_trend=g2_fractal_trend,
-                                g3_limit_order=g3_limit_order,
-                                g4_breathing=g4_breathing,
-                                g5_manual_cooldown=g5_manual_cooldown,
-                                g6_sl_validated=g6_sl_validated,
-                                g7_tp_validated=g7_tp_validated,
-                                c1_kl_support=c1_kl_support,
-                                c2_fractal_std=c2_fractal_std,
-                                c3_fractal_1m=c3_fractal_1m,
-                                c4_fractal_1h=c4_fractal_1h,
-                                c5_kl_target=c5_kl_target,
-                                c6_liquidity=c6_liquidity,
-                                c7_retracement=c7_retracement,
-                                c8_convergence_15m=c8_convergence_15m,
+                                g1_trend_15m=g1_trend_15m, g2_fractal_trend=g2_fractal_trend, g3_limit_order=g3_limit_order,
+                                g4_breathing=g4_breathing, g5_manual_cooldown=g5_manual_cooldown,
+                                g6_sl_validated=g6_sl_validated, g7_tp_validated=g7_tp_validated,
+                                c1_kl_support=c1_kl_support, c2_fractal_std=c2_fractal_std, c3_fractal_1m=c3_fractal_1m,
+                                c4_fractal_1h=c4_fractal_1h, c5_kl_target=c5_kl_target, c6_liquidity=c6_liquidity,
+                                c7_retracement=c7_retracement, c8_convergence_15m=c8_convergence_15m,
                                 gates_failed=gates_failed_cnt,
                                 confirmations_count=confirmations_count,
-                                mfe_potencial_estimado=mfe_potencial
+                                mfe_potencial_estimado=mfe_potencial,
                             )
 
-                        # Post Review Panel Reconstructed & Homologated
+                        # --- Review Panel (común a ambos desenlaces) ---
                         ep = audit_tactical.entry_price or 0.0
-                        sl = audit_tactical.stop_loss or 0.0
-                        tp = audit_tactical.take_profit or 0.0
-                        dist_to_sl = abs(ep - sl) / ep if ep != 0.0 else 0.0
-                        dist_to_tp = abs(ep - tp) / ep if ep != 0.0 else 0.0
+                        sl_disp = audit_tactical.stop_loss or 0.0
+                        tp_disp = audit_tactical.take_profit or 0.0
+                        dist_to_sl = abs(ep - sl_disp) / ep if ep != 0.0 else 0.0
+                        dist_to_tp = abs(ep - tp_disp) / ep if ep != 0.0 else 0.0
 
                         rev_text = Text()
-                        
+
                         # --- Core Inputs ---
                         rev_text.append("--- Core Inputs ---\n", style="bold green")
-                        rev_text.append(f"Trade Status:         {t_status.value if hasattr(t_status, 'value') else t_status}\n", style="white")
-                        rev_text.append(f"Compliance:           {t_comp.value if hasattr(t_comp, 'value') else t_comp}\n", style="white")
+                        rev_text.append(f"Order Filled:         {order_filled}\n", style="white")
+                        if not order_filled:
+                            rev_text.append(f"Skip Reason:          {skip_reason.value if hasattr(skip_reason, 'value') else skip_reason}\n", style="yellow")
                         rev_text.append(f"Entry Price:          {ep}\n", style="white")
                         rev_text.append(f"Closing Price:        {audit_tactical.closing_price}\n", style="white")
                         rev_text.append(f"Size:                 {audit_tactical.size}\n", style="white")
-                        rev_text.append(f"Stop Loss:            {sl}\n", style="white")
-                        rev_text.append(f"Take Profit:          {tp}\n", style="white")
+                        rev_text.append(f"Stop Loss:            {sl_disp}\n", style="white")
+                        rev_text.append(f"Take Profit:          {tp_disp}\n", style="white")
                         rev_text.append(f"MAE Adverse:          {audit_tactical.mae}\n", style="white")
                         rev_text.append(f"MFE Favorable:        {audit_tactical.mfe}\n", style="white")
                         rev_text.append(f"Could Hit TP:         {audit_tactical.could_hit_tp}\n", style="white")
@@ -3451,12 +3659,12 @@ def flow_pending_audits():
                         exit_str = to_local_display(audit_tactical.exit_time) if audit_tactical.exit_time else "N/A"
                         rev_text.append(f"Entry Time:           {entry_str}\n", style="white")
                         rev_text.append(f"Exit Time:            {exit_str}\n\n", style="white")
-                        
+
                         # --- Distance Calculations ---
                         rev_text.append("--- Distance Calculations ---\n", style="bold cyan")
                         rev_text.append(f"Dist to SL:           {dist_to_sl * 100:.2f}%\n", style="white")
                         rev_text.append(f"Dist to TP:           {dist_to_tp * 100:.2f}%\n\n", style="white")
-                        
+
                         # --- Calculated Algebraic Metrics ---
                         rev_text.append("--- Calculated Algebraic Metrics ---\n", style="bold yellow")
                         rev_text.append(f"Resolved Direction:   {audit_tactical.trade_decision}\n", style="bold cyan")
@@ -3464,12 +3672,12 @@ def flow_pending_audits():
                         rev_text.append(f"Notional Size USD:    {audit_tactical.notional_size:.2f}\n", style="white")
                         rev_text.append(f"Capital At Risk:      {audit_tactical.capital_at_risk:.2f}\n", style="white")
                         rev_text.append(f"Risk USD:             {audit_tactical.risk_usd:.2f}\n", style="white")
-                        rev_text.append(f"PnL:                  {audit_tactical.pnl:.2f}\n", style="white")
-                        rev_text.append(f"PnL and Cost:         {audit_tactical.pnl_and_cost:.2f}\n", style="white")
-                        rev_text.append(f"R:R:                  {audit_tactical.r_r:.2f}\n", style="white")
-                        rev_text.append(f"R Multiple:           {audit_tactical.r_multiple:.2f}\n", style="white")
-                        rev_text.append(f"Captured MFE:         {audit_tactical.captured_mfe:.2f}\n\n", style="white")
-                        
+                        rev_text.append(f"PnL:                  {audit_tactical.pnl if audit_tactical.pnl is not None else 'N/A'}\n", style="white")
+                        rev_text.append(f"PnL and Cost:         {audit_tactical.pnl_and_cost if audit_tactical.pnl_and_cost is not None else 'N/A'}\n", style="white")
+                        rev_text.append(f"R:R:                  {audit_tactical.r_r if audit_tactical.r_r is not None else 'N/A'}\n", style="white")
+                        rev_text.append(f"R Multiple:           {audit_tactical.r_multiple if audit_tactical.r_multiple is not None else 'N/A'}\n", style="white")
+                        rev_text.append(f"Captured MFE:         {audit_tactical.captured_mfe if audit_tactical.captured_mfe is not None else 'N/A'}\n\n", style="white")
+
                         # --- Execution Framework Context ---
                         rev_text.append("--- Execution Framework Context ---\n", style="bold magenta")
                         rev_text.append(f"Tier Setup:           {tier_setup.value if hasattr(tier_setup, 'value') else tier_setup}\n", style="white")
@@ -3478,65 +3686,84 @@ def flow_pending_audits():
                         rev_text.append(f"HTF Trend Context:    {htf_trend.value if hasattr(htf_trend, 'value') else htf_trend}\n", style="white")
                         rev_text.append(f"LTF Trend Context:    {ltf_trend.value if hasattr(ltf_trend, 'value') else ltf_trend}\n", style="white")
                         rev_text.append(f"Confirmation Status:  {conf_status.value if hasattr(conf_status, 'value') else conf_status}\n", style="white")
-                        rev_text.append(f"Followed Plan:        {f_plan.value if hasattr(f_plan, 'value') else f_plan}\n", style="white")
-                        
+                        if order_filled:
+                            rev_text.append(f"Followed Plan:        {f_plan.value if hasattr(f_plan, 'value') else f_plan}\n", style="white")
+
                         # --- Motor B (Gates & Confirmations) ---
                         rev_text.append("--- Motor B (Gates & Confirmations) ---\n", style="bold magenta")
                         rev_text.append(f"Gates Failed:         {gates_failed_cnt}\n", style="red" if gates_failed_cnt > 0 else "green")
-                        if not abort_trade:
-                            rev_text.append(f"Confirmations Count:  {confirmations_count}\n", style="white")
-                            if mfe_potencial is not None:
-                                rev_text.append(f"MFE Potencial (S6):   {mfe_potencial}\n", style="yellow")
+                        rev_text.append(f"Confirmations Count:  {confirmations_count}\n", style="white")
+                        if mfe_potencial is not None:
+                            rev_text.append(f"MFE Potencial (S6):   {mfe_potencial}\n", style="yellow")
 
                         # --- Psychological & Cognitive Logging ---
                         rev_text.append("--- Psychological & Cognitive Logging ---\n", style="bold blue")
                         rev_text.append(f"Primary Emotion:      {p_emotion.value if hasattr(p_emotion, 'value') else p_emotion}\n", style="white")
                         emotions_str = ", ".join([e.value if hasattr(e, 'value') else str(e) for e in emotions]) if isinstance(emotions, list) else str(emotions)
-                        be_list_clean = [b.value if hasattr(b, 'value') else str(b) for b in behav_errors] if isinstance(behav_errors, list) else []
-                        be_str = ", ".join(be_list_clean) if be_list_clean else "N/A"
                         rev_text.append(f"Emotions:             {format_indented_block(emotions_str, indent_spaces=22, first_line_flush=True, wrap_width=60)}\n", style="white")
-                        rev_text.append(f"Behav. Errors:        {format_indented_block(be_str, indent_spaces=22, first_line_flush=True, wrap_width=60)}\n", style="white")
+                        if order_filled:
+                            be_list_clean = [b.value if hasattr(b, 'value') else str(b) for b in behav_errors] if isinstance(behav_errors, list) else []
+                            be_str = ", ".join(be_list_clean) if be_list_clean else "N/A"
+                            rev_text.append(f"Behav. Errors:        {format_indented_block(be_str, indent_spaces=22, first_line_flush=True, wrap_width=60)}\n", style="white")
 
-                        detected = compute_detected_patterns({
-                            "primary_emotion": p_emotion.value if hasattr(p_emotion, 'value') else p_emotion,
-                            "anxiety_level": anxiety,
-                            "impatience_level": impatience,
-                            "mental_clarity_level": mental_clarity,
-                            "behavioral_errors": be_list_clean,
-                            "confirmation_status": conf_status.value if hasattr(conf_status, 'value') else conf_status,
-                            "gates_failed": gates_failed_cnt,
-                            "followed_plan": f_plan.value if hasattr(f_plan, 'value') else f_plan,
-                        })
-                        rev_text.append("Detected Patterns:\n", style="dim")
-                        for label, color in detected:
-                            rev_text.append(f"    • {label}\n", style=color)
+                            detected = compute_detected_patterns({
+                                "primary_emotion": p_emotion.value if hasattr(p_emotion, 'value') else p_emotion,
+                                "anxiety_level": anxiety,
+                                "impatience_level": impatience,
+                                "mental_clarity_level": mental_clarity,
+                                "behavioral_errors": be_list_clean,
+                                "confirmation_status": conf_status.value if hasattr(conf_status, 'value') else conf_status,
+                                "gates_failed": gates_failed_cnt,
+                                "followed_plan": f_plan.value if hasattr(f_plan, 'value') else f_plan,
+                            })
+                            rev_text.append("Detected Patterns:\n", style="dim")
+                            for label, color in detected:
+                                rev_text.append(f"    • {label}\n", style=color)
                         rev_text.append(f"Pre-Trade Emotions:   {format_indented_block(pre_trade_emotions, indent_spaces=22, first_line_flush=True, wrap_width=60)}\n", style="white")
-                        rev_text.append(f"Mid-Trade Emotions:   {format_indented_block(mid_trade_emotions, indent_spaces=22, first_line_flush=True, wrap_width=60)}\n", style="white")
-                        rev_text.append(f"Post-Trade Emotions:  {format_indented_block(post_trade_emotions, indent_spaces=22, first_line_flush=True, wrap_width=60)}\n\n", style="white")
-                        
+                        if order_filled:
+                            rev_text.append(f"Mid-Trade Emotions:   {format_indented_block(mid_trade_emotions, indent_spaces=22, first_line_flush=True, wrap_width=60)}\n", style="white")
+                            rev_text.append(f"Post-Trade Emotions:  {format_indented_block(post_trade_emotions, indent_spaces=22, first_line_flush=True, wrap_width=60)}\n\n", style="white")
+                        else:
+                            rev_text.append("\n")
+
                         # --- Internal State Thresholds ---
                         rev_text.append("--- Internal State Thresholds ---\n", style="bold orange1")
                         rev_text.append(f"Anxiety Level:        {anxiety}\n", style="white")
                         rev_text.append(f"Impatience Level:     {impatience}\n", style="white")
                         rev_text.append(f"Mental Clarity Level: {mental_clarity}\n\n", style="white")
-                        
+
                         # --- Qualitative Notes ---
                         rev_text.append("--- Qualitative Notes ---\n", style="bold cyan")
                         if lesson_tact and lesson_tact != "nan":
                             rev_text.append(f"Lesson Learned:\n  {format_indented_block(lesson_tact, indent_spaces=2, first_line_flush=False, wrap_width=60)}\n", style="dim italic")
                         else:
                             rev_text.append("Lesson Learned:       N/A\n", style="dim italic")
-                        
+
                         v_path = session.state.get("visual_lesson_path", "nan")
                         if v_path and v_path != "nan":
                             rev_text.append(f"Visual Lesson Path: {v_path}\n", style="dim cyan")
+
+                        # --- Red de seguridad: Order Filled=Sí pero entry==exit (tiempo o precio) ---
+                        inconsistent_fill = order_filled and (
+                            (audit_tactical.entry_time is not None and audit_tactical.exit_time is not None
+                             and audit_tactical.entry_time == audit_tactical.exit_time)
+                            or
+                            (audit_tactical.entry_price is not None and audit_tactical.closing_price is not None
+                             and audit_tactical.entry_price == audit_tactical.closing_price)
+                        )
+                        if inconsistent_fill:
+                            rev_text.append(
+                                "\n⚠ ADVERTENCIA: entry_time == exit_time y/o entry_price == closing_price, "
+                                "pero Order Filled = Sí. ¿Seguro que la orden se llenó?\n",
+                                style="bold red"
+                            )
 
                         try:
                             console.clear(home=True)
                         except TypeError:
                             console.clear()
                         console.print(Panel(rev_text, title="Review: Tactical Audit Calculation", border_style="cyan"))
-                        
+
                         action_choice = inquirer.select(
                             message="Review Action >",
                             choices=[
@@ -3549,8 +3776,29 @@ def flow_pending_audits():
                         ).execute()
 
                         if action_choice == "save":
-                            new_payload["trade_status"] = t_status.value
-                            new_payload["audit_tactical"] = audit_tactical.model_dump()
+                            if inconsistent_fill:
+                                confirm_fill = bind_pause(inquirer.select(
+                                    message="¿Confirmás que la orden SÍ se llenó pese a la advertencia? >",
+                                    choices=[Choice("yes", name="yes"), Choice("no", name="no")],
+                                    pointer=">",
+                                    qmark=""
+                                )).execute()
+                                if confirm_fill == "no":
+                                    continue
+                            at_dump = audit_tactical.model_dump()
+                            if not order_filled:
+                                string_enum_keys = {
+                                    "tier_setup", "market_state", "session", "exit_type",
+                                    "followed_plan", "primary_emotion", "setup_type",
+                                    "htf_trend_context", "confirmation_status", "ltf_trend_context",
+                                    "pre_trade_emotions", "mid_trade_emotions", "post_trade_emotions",
+                                    "could_hit_tp", "lesson_learned", "trade_decision", "trade_duration",
+                                    "visual_lesson_path"
+                                }
+                                for k, v in at_dump.items():
+                                    if v is None and k in string_enum_keys:
+                                        at_dump[k] = "nan"
+                            new_payload["audit_tactical"] = at_dump
                             console.print("[green]Tactical Audit saved.[/green]")
                             session.clear_state()
                             break
@@ -3560,35 +3808,41 @@ def flow_pending_audits():
                             edit_choices = [
                                 Choice("htf_trend", name=f"HTF Trend: {htf_trend.value if hasattr(htf_trend, 'value') else htf_trend}"),
                                 Choice("ltf_trend", name=f"LTF Trend: {ltf_trend.value if hasattr(ltf_trend, 'value') else ltf_trend}"),
-                                Choice("confirmation_5m_15m", name=f"5m/15m Confirmation: {confirmation_5m_15m}"),
                                 Choice("sl", name=f"Stop Loss: {sl}"),
                                 Choice("entry_p", name=f"Entry Price: {entry_p}"),
                                 Choice("size", name=f"Size: {size}"),
                                 Choice("tp", name=f"Take Profit: {tp}"),
                                 Choice("entry_time", name=f"Entry Time: {entry_time}"),
-                                Choice("exit_time", name=f"Exit Time: {exit_time}"),
-                                Choice("exit_type", name=f"Exit Type: {exit_type.value if hasattr(exit_type, 'value') else exit_type}"),
                                 Choice("conf_status", name=f"Confirmation Status: {conf_status.value if hasattr(conf_status, 'value') else conf_status}"),
-                                Choice("conf_params", name=f"Confirmation Params: {len(conf_params) if isinstance(conf_params, list) else 0} chosen"),
-                                Choice("close_p", name=f"Closing Price: {close_p}"),
-                                Choice("could_hit_tp", name=f"Could hit TP: {could_hit_tp}"),
-                                Choice("t_comp", name=f"Compliance State: {t_comp.value if hasattr(t_comp, 'value') else t_comp}"),
                                 Choice("tier_setup", name=f"Tier Setup: {tier_setup.value if hasattr(tier_setup, 'value') else tier_setup}"),
                                 Choice("market_state", name=f"Market State: {market_state.value if hasattr(market_state, 'value') else market_state}"),
-                                Choice("f_plan", name=f"Followed Plan: {f_plan.value if hasattr(f_plan, 'value') else f_plan}"),
                                 Choice("setup_t", name=f"Setup Type: {setup_t.value if hasattr(setup_t, 'value') else setup_t}"),
-                                Choice("mae", name=f"MAE: {mae}"),
-                                Choice("mfe", name=f"MFE: {mfe}"),
                                 Choice("cost", name=f"Cost: {session.state.get('cost', 0.0)}"),
                                 Choice("primary_emotion", name=f"Primary Emotion: {p_emotion.value if hasattr(p_emotion, 'value') else p_emotion}"),
                                 Choice("emotions", name=f"Emotions: {len(emotions) if isinstance(emotions, list) else 0} chosen"),
-                                Choice("behav_errors", name=f"Behavioral Errors: {len(behav_errors) if isinstance(behav_errors, list) else 0} chosen"),
                                 Choice("anxiety", name=f"Anxiety Level: {anxiety}"),
                                 Choice("impatience", name=f"Impatience Level: {impatience}"),
                                 Choice("mental_clarity", name=f"Mental Clarity Level: {mental_clarity}"),
                                 Choice("pre_trade_emotions", name=f"Pre Trade Emotions: {pre_trade_emotions[:25] if pre_trade_emotions else 'N/A'}..."),
-                                Choice("mid_trade_emotions", name=f"Mid Trade Emotions: {mid_trade_emotions[:25] if mid_trade_emotions else 'N/A'}..."),
-                                Choice("post_trade_emotions", name=f"Post Trade Emotions: {post_trade_emotions[:25] if post_trade_emotions else 'N/A'}..."),
+                            ]
+                            if order_filled:
+                                edit_choices += [
+                                    Choice("exit_time", name=f"Exit Time: {exit_time}"),
+                                    Choice("exit_type", name=f"Exit Type: {exit_type.value if hasattr(exit_type, 'value') else exit_type}"),
+                                    Choice("close_p", name=f"Closing Price: {close_p}"),
+                                    Choice("could_hit_tp", name=f"Could hit TP: {could_hit_tp}"),
+                                    Choice("f_plan", name=f"Followed Plan: {f_plan.value if hasattr(f_plan, 'value') else f_plan}"),
+                                    Choice("behav_errors", name=f"Behavioral Errors: {len(behav_errors) if isinstance(behav_errors, list) else 0} chosen"),
+                                    Choice("mae", name=f"MAE: {mae}"),
+                                    Choice("mfe", name=f"MFE: {mfe}"),
+                                    Choice("mid_trade_emotions", name=f"Mid Trade Emotions: {mid_trade_emotions[:25] if mid_trade_emotions else 'N/A'}..."),
+                                    Choice("post_trade_emotions", name=f"Post Trade Emotions: {post_trade_emotions[:25] if post_trade_emotions else 'N/A'}..."),
+                                ]
+                            else:
+                                edit_choices += [
+                                    Choice("skip_reason", name=f"Skip Reason: {skip_reason.value if hasattr(skip_reason, 'value') else skip_reason}"),
+                                ]
+                            edit_choices += [
                                 Choice("lesson_tact", name=f"Lesson: {lesson_tact[:30] if lesson_tact else 'N/A'}..."),
                                 Choice("visual_lesson_path", name=f"Visual Lesson Path: {session.state.get('visual_lesson_path', 'nan')}"),
                                 Choice("back", name="[<] Back to Review")
@@ -3601,17 +3855,12 @@ def flow_pending_audits():
                             ).execute()
                             if field_to_edit == "back":
                                 continue
-                            if field_to_edit == "htf_trend":
+                            if field_to_edit == "skip_reason":
+                                session.state["skip_reason"] = get_enum_choice("Edit Skip Reason", SkipReason)
+                            elif field_to_edit == "htf_trend":
                                 session.state["htf_trend"] = get_enum_choice("Edit HTF Trend Context", HTFTrendContext)
                             elif field_to_edit == "ltf_trend":
                                 session.state["ltf_trend"] = get_enum_choice("Edit LTF Trend Context", TrendContext)
-                            elif field_to_edit == "confirmation_5m_15m":
-                                session.state["confirmation_5m_15m"] = bind_pause(inquirer.select(
-                                    message="Edit 5m_15m_confirmation >",
-                                    choices=[Choice("yes", name="yes"), Choice("no", name="no")],
-                                    pointer=">",
-                                    qmark=""
-                                )).execute()
                             elif field_to_edit == "sl":
                                 session.state["sl"] = get_mandatory_float("Edit Stop Loss")
                             elif field_to_edit == "entry_p":
@@ -3622,40 +3871,20 @@ def flow_pending_audits():
                                 session.state["tp"] = get_mandatory_float("Edit Take Profit")
                             elif field_to_edit == "entry_time":
                                 session.state["entry_time"] = get_mandatory_datetime("Edit Entry Time")
-                            elif field_to_edit == "exit_time":
-                                session.state["exit_time"] = get_mandatory_datetime("Edit Exit Time")
-                            elif field_to_edit == "exit_type":
-                                session.state["exit_type"] = get_enum_choice("Edit Exit Type", ExitType)
                             elif field_to_edit == "conf_status":
                                 session.state["conf_status"] = get_enum_choice("Edit Confirmation Status", ConfirmationStatus)
-                            elif field_to_edit == "conf_params":
-                                session.state["conf_params"] = get_multi_enum_choice("Edit Confirmation Params", ConfirmationParams)
-                            elif field_to_edit == "close_p":
-                                session.state["close_p"] = get_mandatory_float("Edit Closing Price")
-                            elif field_to_edit == "could_hit_tp":
-                                session.state["could_hit_tp"] = ask_could_hit_tp()
-                            elif field_to_edit == "t_comp":
-                                session.state["t_comp"] = get_enum_choice("Edit Compliance State", ComplianceState)
                             elif field_to_edit == "tier_setup":
                                 session.state["tier_setup"] = get_enum_choice("Edit Tier Setup", TierSetup)
                             elif field_to_edit == "market_state":
                                 session.state["market_state"] = get_enum_choice("Edit Market State", MarketState)
-                            elif field_to_edit == "f_plan":
-                                session.state["f_plan"] = get_enum_choice("Edit Followed Plan", FollowedPlan)
                             elif field_to_edit == "setup_t":
                                 session.state["setup_t"] = get_enum_choice("Edit Setup Type", SetupType)
-                            elif field_to_edit == "mae":
-                                session.state["mae"] = get_mandatory_float("Edit MAE (0 <= MAE <= 10)", min_val=0, max_val=10)
-                            elif field_to_edit == "mfe":
-                                session.state["mfe"] = get_mandatory_float("Edit MFE (0 <= MFE <= 10)", min_val=0, max_val=10)
                             elif field_to_edit == "cost":
                                 session.state["cost"] = get_mandatory_float("Edit Cost")
                             elif field_to_edit == "primary_emotion":
                                 session.state["p_emotion"] = get_enum_choice("Edit Primary Emotion", PrimaryEmotion)
                             elif field_to_edit == "emotions":
                                 session.state["emotions"] = get_multi_enum_choice("Edit Emotions", Emotions, choices=ACTIVE_EMOTIONS, preselected=session.state.get("emotions"))
-                            elif field_to_edit == "behav_errors":
-                                session.state["behav_errors"] = get_multi_enum_choice("Edit Behavioral Errors", BehavioralErrors)
                             elif field_to_edit == "anxiety":
                                 session.state["anxiety"] = get_mandatory_int("Edit Anxiety Level (1 to 5)", 1, 5)
                             elif field_to_edit == "impatience":
@@ -3664,6 +3893,22 @@ def flow_pending_audits():
                                 session.state["mental_clarity"] = get_mandatory_int("Edit Mental Clarity Level (1 to 5)", 1, 5)
                             elif field_to_edit == "pre_trade_emotions":
                                 session.state["pre_trade_emotions"] = get_mandatory_text("Edit Pre Trade Emotions")
+                            elif field_to_edit == "exit_time":
+                                session.state["exit_time"] = get_mandatory_datetime("Edit Exit Time")
+                            elif field_to_edit == "exit_type":
+                                session.state["exit_type"] = get_enum_choice("Edit Exit Type", ExitType)
+                            elif field_to_edit == "close_p":
+                                session.state["close_p"] = get_mandatory_float("Edit Closing Price")
+                            elif field_to_edit == "could_hit_tp":
+                                session.state["could_hit_tp"] = ask_could_hit_tp()
+                            elif field_to_edit == "f_plan":
+                                session.state["f_plan"] = get_enum_choice("Edit Followed Plan", FollowedPlan)
+                            elif field_to_edit == "behav_errors":
+                                session.state["behav_errors"] = get_multi_enum_choice("Edit Behavioral Errors", BehavioralErrors)
+                            elif field_to_edit == "mae":
+                                session.state["mae"] = get_mandatory_float("Edit MAE (0 <= MAE <= 10)", min_val=0, max_val=10)
+                            elif field_to_edit == "mfe":
+                                session.state["mfe"] = get_mandatory_float("Edit MFE (0 <= MFE <= 10)", min_val=0, max_val=10)
                             elif field_to_edit == "mid_trade_emotions":
                                 session.state["mid_trade_emotions"] = get_mandatory_text("Edit Mid Trade Emotions")
                             elif field_to_edit == "post_trade_emotions":
@@ -3673,7 +3918,6 @@ def flow_pending_audits():
                             elif field_to_edit == "visual_lesson_path":
                                 visual_path = handle_visual_lesson_assignment(trade_id, payload.get("asset", "Unknown"), session.state.get("visual_lesson_path", "nan"))
                                 session.state["visual_lesson_path"] = visual_path
-
                     break
             except RestartFlowException:
                 continue
@@ -3682,18 +3926,104 @@ def flow_pending_audits():
                 input("Press Enter to continue...")
                 return
 
+
     # Promotion Rule
-    has_eff_final = new_payload.get("audit_efficiency", {}).get("real_bias_b") is not None
-    has_tac_final = "audit_tactical" in new_payload
-    if has_eff_final and has_tac_final:
-        final_state = LifecycleState.READY_FOR_NOTION
-        console.print("[bold cyan]Both audits complete! Record transitioning to READY_FOR_NOTION.[/bold cyan]")
+    if state_rule == "preserve":
+        # Adding an execution to an analysis that's already past PENDING_AUDITS
+        # (READY_FOR_NOTION / SYNCED / COMPLETED) must not downgrade its state --
+        # the new tactical_audit row gets picked up by Notion sync independently.
+        from tools.database import UnifiedDepartment
+        from sqlalchemy.orm import Session
+        with Session(get_active_engine()) as _state_session:
+            _current = _state_session.get(UnifiedDepartment, trade_id)
+            final_state = LifecycleState(_current.state) if _current else LifecycleState.PENDING_AUDITS
+        console.print(f"[bold cyan]Tactical execution added. Record stays in {final_state.value}.[/bold cyan]")
     else:
-        final_state = LifecycleState.PENDING_AUDITS
-        console.print("[yellow]Record remains in PENDING_AUDITS until both components are complete.[/yellow]")
-        
-    update_record_state(trade_id, final_state, append_payload=new_payload, engine=get_active_engine())
+        has_eff_final = new_payload.get("audit_efficiency", {}).get("real_bias_b") is not None
+        has_tac_final = "audit_tactical" in new_payload
+        if has_eff_final and has_tac_final:
+            final_state = LifecycleState.READY_FOR_NOTION
+            console.print("[bold cyan]Both audits complete! Record transitioning to READY_FOR_NOTION.[/bold cyan]")
+        else:
+            final_state = LifecycleState.PENDING_AUDITS
+            console.print("[yellow]Record remains in PENDING_AUDITS until both components are complete.[/yellow]")
+
+    update_record_state(trade_id, final_state, append_payload=new_payload, tactical_audit_id=existing_tactical_row_id, engine=get_active_engine())
     input("Press Enter to continue...")
+
+def flow_add_tactical_execution():
+    """Add a new tactical_audit execution to ANY analysis, regardless of its
+    current state -- covers scaling into the same setup, or retrying it on a
+    later day, after the analysis already reached READY_FOR_NOTION/SYNCED."""
+    from tools.database import UnifiedDepartment
+    from sqlalchemy.orm import Session
+    from sqlalchemy import select
+
+    with Session(get_active_engine()) as db_session:
+        stmt = select(UnifiedDepartment).order_by(UnifiedDepartment.created_at.desc())
+        records = db_session.scalars(stmt).all()
+
+        if not records:
+            console.print("[yellow]No analyses logged in the database yet.[/yellow]")
+            input("Press Enter to continue...")
+            return
+
+        try:
+            console.clear(home=True)
+        except TypeError:
+            console.clear()
+
+        console.rule("[bold cyan]Add Tactical Audit to an Existing Analysis[/bold cyan]")
+        console.print()
+
+        BIAS_SHORTHANDS = {"Choppy / Neutral": "Choppy"}
+
+        table = Table(box=box.ROUNDED, border_style="magenta", expand=False)
+        table.add_column("#", justify="center", width=4)
+        table.add_column("Short ID", justify="center", style="cyan", width=14)
+        table.add_column("Asset", justify="center", width=12)
+        table.add_column("Market Bias", justify="center", width=13, no_wrap=True)
+        table.add_column("State", justify="center", width=16)
+        table.add_column("Created At", justify="center", style="dim cyan", width=16)
+        table.add_column("Executions", justify="center", width=10)
+
+        for idx, r in enumerate(records):
+            bias_display = BIAS_SHORTHANDS.get(r.market_bias, r.market_bias or "N/A")
+            table.add_row(
+                str(idx + 1), r.id[:8], r.asset, bias_display,
+                r.state, to_local_display(r.created_at), str(len(r.tactical_audits))
+            )
+        console.print(table)
+        console.print()
+
+        record_num = get_mandatory_text("Enter Record # to add a Tactical Audit to (or 'c' to cancel)")
+        if record_num.strip().lower() == 'c':
+            return
+
+        try:
+            record_idx = int(record_num.strip())
+            if record_idx < 1 or record_idx > len(records):
+                raise ValueError
+        except ValueError:
+            console.print("[red]Invalid record #.[/red]")
+            input("Press Enter to continue...")
+            return
+
+        record = records[record_idx - 1]
+        preselected_payload = {
+            "asset": record.asset,
+            "efficiency": {"Market_Bias": record.market_bias, "Calc_edge": record.calc_edge},
+            "tactical": {"tactical_classification": record.tactical_classification, "calc_edge": record.calc_edge},
+        }
+        trade_id = record.id
+
+    flow_pending_audits(
+        preselected_trade_id=trade_id,
+        preselected_payload=preselected_payload,
+        preselected_choice="tac",
+        state_rule="preserve",
+        force_new_tactical=True,
+    )
 
 def render_final_review_layout(record, workspace=None, pyd_ta=None):
     # Retrieve P-layers
@@ -3794,9 +4124,9 @@ def render_final_review_layout(record, workspace=None, pyd_ta=None):
             
     # Tactical Audit Table Metrics
     tact_text.append("\n--- Tactical Audit Metrics ---\n", style="bold magenta")
-    ta = record.tactical_audit
+    ta = max(record.tactical_audits, key=lambda t: t.created_at) if record.tactical_audits else None
     if ta:
-        t_comp = workspace.get("compliance") if (workspace and "compliance" in workspace) else (ta.compliance if ta else None)
+        order_filled = workspace.get("order_filled") if (workspace and "order_filled" in workspace) else (ta.order_filled if ta else None)
         could_hit = workspace.get("could_hit_tp") if (workspace and "could_hit_tp" in workspace) else (ta.could_hit_tp if ta else None)
         entry_p = workspace.get("entry_price") if (workspace and "entry_price" in workspace) else (ta.entry_price if ta else None)
         close_p = workspace.get("closing_price") if (workspace and "closing_price" in workspace) else (ta.closing_price if ta else None)
@@ -3835,8 +4165,8 @@ def render_final_review_layout(record, workspace=None, pyd_ta=None):
         mid_emo = workspace.get("mid_trade_emotions") if (workspace and "mid_trade_emotions" in workspace) else (ta.mid_trade_emotions if ta else None)
         post_emo = workspace.get("post_trade_emotions") if (workspace and "post_trade_emotions" in workspace) else (ta.post_trade_emotions if ta else None)
 
-        tact_text.append("Compliance: ", style="dim")
-        tact_text.append(f"{t_comp}\n", style="white")
+        tact_text.append("Order Filled: ", style="dim")
+        tact_text.append(f"{order_filled}\n", style="white")
         tact_text.append("Could Hit TP: ", style="dim")
         tact_text.append(f"{could_hit}\n", style="white")
         tact_text.append("Entry Price: ", style="dim")
@@ -4057,7 +4387,7 @@ def flow_assets_configuration():
                     continue
                 
                 count1 = session.scalar(text("SELECT COUNT(*) FROM unified_department WHERE asset = :asset"), {"asset": del_target})
-                count2 = session.scalar(text("SELECT COUNT(t.id) FROM tactical_audit t JOIN unified_department u ON t.id = u.id WHERE u.asset = :asset"), {"asset": del_target})
+                count2 = session.scalar(text("SELECT COUNT(t.id) FROM tactical_audit t JOIN unified_department u ON t.trade_id = u.id WHERE u.asset = :asset"), {"asset": del_target})
                 
                 if count1 > 0 or count2 > 0:
                     console.print("[bold red]Aborting: Cannot delete asset. There are active trades or analysis entries linked to this asset in the current Flight Session.[/bold red]")
@@ -4142,7 +4472,7 @@ def flow_repair_analysis_audits():
                 bias_val = r.market_bias or "Neutral"
                 edge_val = f"{r.calc_edge:.3f}" if r.calc_edge is not None else "N/A"
                 
-                is_completed = r.efficiency_audit is not None and r.tactical_audit is not None
+                is_completed = r.efficiency_audit is not None and len(r.tactical_audits) > 0
                 status_str = "[bold green]Finalized[/bold green]" if is_completed else "[bold yellow]Pending[/bold yellow]"
                 
                 table.add_row(
@@ -4187,9 +4517,31 @@ def flow_repair_analysis_audits():
             p4 = next((l for l in layers if l.department == 'TACTICAL' and l.layer_name == 'P4'), None)
             p1 = next((l for l in layers if l.department == 'TACTICAL' and l.layer_name == 'P1'), None)
             
+            # An analysis can now have several tactical_audit rows (executions) --
+            # pick which one this repair pass targets (or start a brand-new one)
+            # before extracting defaults below.
+            selected_ta = None
+            if len(record.tactical_audits) > 1:
+                ta_choices = []
+                for t_idx, cand in enumerate(record.tactical_audits):
+                    entry_str = to_local_display(cand.entry_time) if cand.entry_time else "sin entry"
+                    fill_str = "Filled" if cand.order_filled else "No Fill"
+                    ta_choices.append(Choice(cand.id, name=f"[{t_idx+1}] {to_local_display(cand.created_at)} | entry {entry_str} | {fill_str}"))
+                ta_choices.append(Choice("__new__", name="[+] Crear una fila nueva de Tactical Audit"))
+                chosen_ta_id = inquirer.select(
+                    message="Este análisis tiene varias ejecuciones (Tactical Audits) — ¿cuál deseas reparar?",
+                    choices=ta_choices,
+                    pointer=">",
+                    qmark=""
+                ).execute()
+                if chosen_ta_id != "__new__":
+                    selected_ta = next((t for t in record.tactical_audits if t.id == chosen_ta_id), None)
+            elif len(record.tactical_audits) == 1:
+                selected_ta = record.tactical_audits[0]
+
             # Initialize defaults extracting attributes directly from related ORM model instances
             ea = getattr(record, "efficiency_audit", None)
-            ta = getattr(record, "tactical_audit", None)
+            ta = selected_ta
 
             ea_defaults = {
                 "bias_a": ea.bias_a if (ea and hasattr(ea, "bias_a") and ea.bias_a) else "Choppy / Neutral",
@@ -4207,7 +4559,8 @@ def flow_repair_analysis_audits():
             }
             
             ta_defaults = {
-                "compliance": ta.compliance if (ta and hasattr(ta, "compliance") and ta.compliance) else "Invalid_edge",
+                "order_filled": ta.order_filled if (ta and hasattr(ta, "order_filled") and ta.order_filled is not None) else True,
+                "skip_reason": ta.skip_reason if (ta and hasattr(ta, "skip_reason") and ta.skip_reason) else None,
                 "confirmation_5m_15m": ta.confirmation_5m_15m if (ta and hasattr(ta, "confirmation_5m_15m") and ta.confirmation_5m_15m) else "no",
                 "followed_plan": ta.followed_plan if (ta and hasattr(ta, "followed_plan") and ta.followed_plan) else "Skip",
                 "entry_time": ta.entry_time if (ta and hasattr(ta, "entry_time") and ta.entry_time) else None,
@@ -4285,7 +4638,6 @@ def flow_repair_analysis_audits():
                 "long_prob": record.long_prob,
                 "short_prob": record.short_prob,
                 "no_trade_prob": record.no_trade_prob,
-                "trade_status": record.trade_status or None,
                 "edge_validation_price": record.edge_validation_price,
                 "structural_invalidation": record.structural_invalidation,
                 "mark_price": record.mark_price,
@@ -5007,8 +5359,9 @@ def flow_repair_analysis_audits():
                         rev_text = Text()
                         # --- Core Inputs ---
                         rev_text.append("--- Core Inputs ---\n", style="bold green")
-                        rev_text.append(f"Trade Status: {workspace['trade_status']}\n", style="white")
-                        rev_text.append(f"Compliance: {workspace['compliance']}\n", style="white")
+                        rev_text.append(f"Order Filled: {workspace['order_filled']}\n", style="white")
+                        if not workspace['order_filled']:
+                            rev_text.append(f"Skip Reason: {workspace.get('skip_reason') or 'N/A'}\n", style="yellow")
                         rev_text.append(f"Entry Price: {workspace['entry_price']}\n", style="white")
                         rev_text.append(f"Closing Price: {workspace['closing_price']}\n", style="white")
                         rev_text.append(f"Size: {workspace['size']}\n", style="white")
@@ -5163,8 +5516,8 @@ def flow_repair_analysis_audits():
                             confs_count_disp = workspace.get("confirmations_count", 0) or 0
                             edit_choices = [
                                 Separator("── 🟢 Core Inputs ──"),
-                                Choice("trade_status", name=f"   Trade Status: {workspace['trade_status']}"),
-                                Choice("compliance", name=f"   Compliance: {workspace['compliance']}"),
+                                Choice("order_filled", name=f"   Order Filled: {workspace['order_filled']}"),
+                                Choice("skip_reason", name=f"   Skip Reason: {workspace.get('skip_reason') or 'N/A'}"),
                                 Choice("entry_price", name=f"   Entry Price: {workspace['entry_price']}"),
                                 Choice("closing_price", name=f"   Closing Price: {workspace['closing_price']}"),
                                 Choice("size", name=f"   Size: {workspace['size']}"),
@@ -5218,10 +5571,15 @@ def flow_repair_analysis_audits():
                             if field == "back":
                                 continue
                                 
-                            if field == "trade_status":
-                                workspace["trade_status"] = get_enum_choice("Edit Trade Status", TradeStatus).value
-                            elif field == "compliance":
-                                workspace["compliance"] = get_enum_choice("Edit Compliance State", ComplianceState).value
+                            if field == "order_filled":
+                                workspace["order_filled"] = bind_pause(inquirer.select(
+                                    message="Edit Order Filled >",
+                                    choices=[Choice("yes", name="yes"), Choice("no", name="no")],
+                                    pointer=">",
+                                    qmark=""
+                                )).execute() == "yes"
+                            elif field == "skip_reason":
+                                workspace["skip_reason"] = get_enum_choice("Edit Skip Reason", SkipReason)
                             elif field in ["take_profit", "entry_price", "closing_price", "stop_loss", "size"]:
                                 workspace[field] = get_mandatory_float(f"Edit {field.replace('_', ' ').title()}")
                                 recalculate_tactical_math(workspace, workspace["p0_dir"], workspace["p2_dir"], workspace["p4_dir"])
@@ -5301,14 +5659,14 @@ def flow_repair_analysis_audits():
                         elif action == "save":
                             try:
                                 raw_conn = db_session.connection().connection
-                                exists = raw_conn.execute("SELECT 1 FROM tactical_audit WHERE id = ?", (record.id,)).fetchone()
-                                
-                                raw_conn.execute("UPDATE unified_department SET trade_status = ? WHERE id = ?", (workspace["trade_status"], record.id))
-                                
+                                target_ta_id = selected_ta.id if selected_ta else None
+                                exists = raw_conn.execute("SELECT 1 FROM tactical_audit WHERE id = ?", (target_ta_id,)).fetchone() if target_ta_id else None
+
                                 if exists:
                                     raw_conn.execute("""
                                         UPDATE tactical_audit SET
-                                            compliance = ?,
+                                            order_filled = ?,
+                                            skip_reason = ?,
                                             confirmation_5m_15m = ?,
                                             entry_price = ?,
                                             closing_price = ?,
@@ -5371,7 +5729,8 @@ def flow_repair_analysis_audits():
                                             mfe_potencial_estimado = ?
                                         WHERE id = ?
                                     """, (
-                                        workspace["compliance"] or "nan",
+                                        bool(workspace["order_filled"]),
+                                        workspace.get("skip_reason"),
                                         workspace["confirmation_5m_15m"] or "no",
                                         float(workspace["entry_price"]),
                                         float(workspace["closing_price"]),
@@ -5432,25 +5791,28 @@ def flow_repair_analysis_audits():
                                         int(workspace.get("gates_failed", 0) or 0),
                                         int(workspace.get("confirmations_count", 0) or 0),
                                         float(workspace["mfe_potencial_estimado"]) if workspace.get("mfe_potencial_estimado") is not None else None,
-                                        record.id
+                                        target_ta_id
                                     ))
                                 else:
+                                    new_ta_id = str(uuid.uuid4())
                                     raw_conn.execute("""
                                         INSERT INTO tactical_audit (
-                                            id, compliance, confirmation_5m_15m, entry_price, closing_price, size, stop_loss, take_profit, mae_adverse, mfe_favorable, captured_mae, r_multiple, captured_mfe, could_hit_tp, lesson_learned,
+                                            id, trade_id, order_filled, skip_reason, confirmation_5m_15m, entry_price, closing_price, size, stop_loss, take_profit, mae_adverse, mfe_favorable, captured_mae, r_multiple, captured_mfe, could_hit_tp, lesson_learned,
                                             tier_setup, market_state, session, exit_type, followed_plan, primary_emotion, setup_type, htf_trend_context, ltf_trend_context, confirmation_status, anxiety_level, impatience_level, mental_clarity_level,
                                             risk_usd, r_r, pnl_and_cost, notional_size, capital_at_risk, trade_decision, emotions, behavioral_errors, cognitive_patterns, visual_lesson_path,
                                             pre_trade_emotions, mid_trade_emotions, post_trade_emotions, confirmation_params, entry_time, exit_time,
                                             g1_trend_15m, g2_fractal_trend, g3_limit_order, g4_breathing, g5_manual_cooldown, g6_sl_validated, g7_tp_validated,
                                             c1_kl_support, c2_fractal_std, c3_fractal_1m, c4_fractal_1h, c5_kl_target, c6_liquidity, c7_retracement, c8_convergence_15m,
-                                            gates_failed, confirmations_count, mfe_potencial_estimado
-                                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                            gates_failed, confirmations_count, mfe_potencial_estimado, created_at, updated_at
+                                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                                                   ?, ?, ?, ?, ?, ?, ?,
                                                   ?, ?, ?, ?, ?, ?, ?, ?,
-                                                  ?, ?, ?)
+                                                  ?, ?, ?, ?, ?)
                                     """, (
+                                        new_ta_id,
                                         record.id,
-                                        workspace["compliance"] or "nan",
+                                        bool(workspace["order_filled"]),
+                                        workspace.get("skip_reason"),
                                         workspace["confirmation_5m_15m"] or "no",
                                         float(workspace["entry_price"]),
                                         float(workspace["closing_price"]),
@@ -5510,7 +5872,9 @@ def flow_repair_analysis_audits():
                                         bool(workspace.get("c8_convergence_15m")),
                                         int(workspace.get("gates_failed", 0) or 0),
                                         int(workspace.get("confirmations_count", 0) or 0),
-                                        float(workspace["mfe_potencial_estimado"]) if workspace.get("mfe_potencial_estimado") is not None else None
+                                        float(workspace["mfe_potencial_estimado"]) if workspace.get("mfe_potencial_estimado") is not None else None,
+                                        datetime.datetime.now().isoformat(),
+                                        datetime.datetime.now().isoformat()
                                     ))
                                 db_session.commit()
                                 console.print("[green]Tactical Audit Repair saved successfully.[/green]")
@@ -5540,10 +5904,10 @@ def flow_repair_analysis_audits():
                             dt_choices.append(Choice("ea_updated_at", name=f"   Updated At: {to_local_display(record.efficiency_audit.updated_at)}"))
                             dt_choices.append(Choice("ea_res_time", name=f"   Resolution Time: {to_local_display(record.efficiency_audit.resolution_time)}"))
 
-                        if record.tactical_audit:
-                            dt_choices.append(Separator("── 🟣 Tactical Audit ──"))
-                            dt_choices.append(Choice("ta_entry", name=f"   Entry Time: {to_local_display(record.tactical_audit.entry_time)}"))
-                            dt_choices.append(Choice("ta_exit", name=f"   Exit Time: {to_local_display(record.tactical_audit.exit_time)}"))
+                        if selected_ta:
+                            dt_choices.append(Separator(f"── 🟣 Tactical Audit ({selected_ta.id[:8]}) ──"))
+                            dt_choices.append(Choice("ta_entry", name=f"   Entry Time: {to_local_display(selected_ta.entry_time)}"))
+                            dt_choices.append(Choice("ta_exit", name=f"   Exit Time: {to_local_display(selected_ta.exit_time)}"))
 
                         dt_choices.append(Separator())
                         dt_choices.append(Choice("save", name="[SAVE] Confirm & Commit Changes"))
@@ -5583,9 +5947,9 @@ def flow_repair_analysis_audits():
                                 elif dt_choice == "ea_res_time":
                                     record.efficiency_audit.resolution_time = new_dt
                                 elif dt_choice == "ta_entry":
-                                    record.tactical_audit.entry_time = new_dt
+                                    selected_ta.entry_time = new_dt
                                 elif dt_choice == "ta_exit":
-                                    record.tactical_audit.exit_time = new_dt
+                                    selected_ta.exit_time = new_dt
                             except GoBackException:
                                 pass
 
