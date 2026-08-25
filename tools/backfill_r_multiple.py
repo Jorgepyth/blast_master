@@ -160,6 +160,7 @@ def main():
                 and r.stop_loss is not None
                 and r.size is not None
                 and r.trade_decision in ("Long", "Short")
+                and r.order_filled
             ]
             skipped_missing = [r for r in all_records if r not in candidates]
             logging.info(

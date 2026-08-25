@@ -113,24 +113,27 @@ def _skew_kurtosis(x) -> Tuple[float, float]:
 
 def filter_executed_trades(
     df: pd.DataFrame,
-    compliance_col: str = "compliance",
     r_multiple_col: str = "r_multiple",
-    valid_compliance: Tuple[str, ...] = ("Edge_valid", "Invalid_edge"),
+    order_filled_col: str = "order_filled",
 ) -> pd.DataFrame:
     """
-    Filas con resultado realizado: compliance en valid_compliance Y r_multiple no nulo.
+    Filas con resultado realizado: order_filled == True Y r_multiple no nulo.
 
     Fase 0: usa r_multiple (R realizado), NUNCA r_r (R:R planeado) — r_r no dice
     nada sobre qué pasó realmente con el trade.
+
+    Gate binario deliberado (decisión del usuario, ago-2026): ya no distingue
+    calidad de ejecución — el antiguo par Edge_valid/Invalid_edge de
+    tactical_audit.compliance (campo retirado junto con
+    unified_department.trade_status) — solo si la orden se llenó.
     """
-    if compliance_col not in df.columns:
-        raise KeyError(f"Falta la columna requerida: '{compliance_col}'")
+    if order_filled_col not in df.columns:
+        raise KeyError(f"Falta la columna requerida: '{order_filled_col}'")
     if r_multiple_col not in df.columns:
         raise KeyError(f"Falta la columna requerida: '{r_multiple_col}'")
 
-    return df[
-        df[compliance_col].isin(valid_compliance) & df[r_multiple_col].notna()
-    ].copy()
+    mask = df[order_filled_col].fillna(True).astype(bool) & df[r_multiple_col].notna()
+    return df[mask].copy()
 
 
 # =========================
@@ -195,8 +198,7 @@ def compute_trade_kpis_extended(
     exit_col: str = "exit_time",
     mfe_col: str = "mfe_favorable",
     mae_col: str = "mae_adverse",
-    compliance_col: str = "compliance",
-    valid_compliance: Tuple[str, ...] = ("Edge_valid", "Invalid_edge"),
+    order_filled_col: str = "order_filled",
     segment_cols: Optional[List[str]] = None,
     sort_chronologically: bool = True,
     filter_executed: bool = True,
@@ -207,7 +209,7 @@ def compute_trade_kpis_extended(
     Devuelve: (kpis: dict, curve: DataFrame con equity/drawdown, segments: dict[str, DataFrame]).
 
     Por defecto filtra a trades ejecutados (filter_executed_trades) si existe
-    la columna de compliance — usa r_multiple, no r_r (ver módulo docstring).
+    la columna order_filled — usa r_multiple, no r_r (ver módulo docstring).
     """
     d = df.copy()
 
@@ -215,8 +217,8 @@ def compute_trade_kpis_extended(
         if c not in d.columns:
             raise KeyError(f"Falta la columna requerida: '{c}'")
 
-    if filter_executed and compliance_col in d.columns:
-        d = filter_executed_trades(d, compliance_col, r_col, valid_compliance)
+    if filter_executed and order_filled_col in d.columns:
+        d = filter_executed_trades(d, r_col, order_filled_col)
 
     d[pnl_col] = pd.to_numeric(d[pnl_col], errors="coerce").fillna(0.0)
     d[r_col] = pd.to_numeric(d[r_col], errors="coerce").fillna(0.0)

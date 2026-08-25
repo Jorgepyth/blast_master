@@ -12,30 +12,32 @@ Lógica portada de `notion_api_analysis/notion_to_csv/data_analysis.ipynb`
 (celdas 6-9, clases `InterimBacktester` y `SplitSystemEvaluator`), adaptada a
 funciones puras (patrón de este repo, no clases) y al esquema real de
 blast_master, verificado campo por campo antes de portar:
-  - Compliance/compliance: mismos 3 valores exactos (Edge_valid/Invalid_edge/
-    No_edge).
   - P{i}_direction/strength: mismos valores exactos (Long/Short/Neutral,
     Strong/Mid/Weak).
   - Agrupación EFFICIENCY (P0,P2,P3) vs TACTICAL (P1,P4) usada por
     run_department_confluence_backtest: no es una suposición, es el valor
     real de `analysis_layer.department` en la DB.
 
-Qué "compliance" usar acá (no confundir con Fase 2): este módulo usa
-`tactical_audit.compliance` (validez de la EJECUCIÓN táctica: Edge_valid/
-Invalid_edge/No_edge) para reconstruir el resultado real de mercado, porque
-es el campo que la referencia usa para eso. Fase 2 (`edge_analysis.py`) usa
-en cambio `efficiency_audit.specific_bias_compliance` (validez del SESGO
-ESTRUCTURAL) para la misma reconstrucción, porque responde una pregunta
-distinta. Ambos son correctos para lo que miden — no intercambiarlos.
+Reconstrucción del resultado real de mercado (ago-2026, tras retirar
+`tactical_audit.compliance` y `unified_department.trade_status` — decisión
+del usuario, ver plan de migración): este módulo usa `order_filled`
+(¿se llenó la orden?, binario) + `r_multiple` (R REALIZADO por trade, Fase 0)
+para derivar el acierto direccional, en vez del antiguo juicio subjetivo de
+calidad de ejecución (`compliance`: Edge_valid/Invalid_edge/No_edge). El
+signo de `r_multiple` es evidencia de mercado directa del acierto
+direccional — más directa que una clasificación manual. Fase 2
+(`edge_analysis.py`) sigue usando `efficiency_audit.specific_bias_compliance`
+(validez del SESGO ESTRUCTURAL) para su propia reconstrucción, porque
+responde una pregunta distinta (ese campo no fue tocado por este retiro) —
+no confundirlos.
 
-Limitación aceptada y documentada (no un bug): a diferencia del dataset de
-`notion_api_analysis`, blast_master sí tiene el R-multiple REALIZADO por
-trade (`tactical_audit.r_multiple`, Fase 0), pero no está poblado en todas
-las filas (más ausente en `No_edge`, donde muchos trades nunca cerraron con
-datos completos). Por eso el proxy direccional (±1 según acierto de
-dirección, fiel a la referencia) se mantiene como métrica siempre computable,
-y `evaluate_real_r_by_filter()` se agrega aparte para medir el R real solo
-donde existe, reportando explícitamente cuántas filas quedan excluidas.
+Limitación aceptada y documentada (no un bug): `r_multiple` no está poblado
+en todas las filas (más ausente donde el trade nunca cerró con datos
+completos). Filas sin `r_multiple` o con `order_filled=False` no aportan
+resultado direccional (`true_outcome=0`), mismo criterio que antes tenían
+las filas fuera de `Edge_valid`/`Invalid_edge`. `evaluate_real_r_by_filter()`
+mide el R real solo donde existe, reportando explícitamente cuántas filas
+quedan excluidas.
 """
 from __future__ import annotations
 
@@ -64,17 +66,25 @@ _TACTICAL_STRENGTH_MAP = {"Strong": 2, "Mid": 1, "Weak": 0}
 def reconstruct_execution_outcome(
     df: pd.DataFrame,
     edge_col: str = "calc_edge",
-    compliance_col: str = "compliance",
+    r_multiple_col: str = "r_multiple",
+    order_filled_col: str = "order_filled",
 ) -> pd.DataFrame:
     """
     Agrega la columna `true_outcome`: dirección real hacia la que se movió el
-    mercado (+1/-1/0), derivada de `sign(calc_edge)` invertido según si la
-    ejecución fue válida (`compliance`). `No_edge` (o cualquier otro valor)
-    → 0, mismo criterio que la referencia.
+    mercado (+1/-1/0), derivada de `sign(calc_edge)` invertido según si
+    `r_multiple` fue positivo o negativo. Filas con `order_filled=False` o
+    `r_multiple` nulo → 0 (sin resultado direccional, la orden nunca se llenó
+    o no hay R realizado que evaluar), mismo rol que antes cumplía cualquier
+    valor de `compliance` fuera de Edge_valid/Invalid_edge.
     """
     out = df.copy()
+    if order_filled_col in out.columns:
+        filled = out[order_filled_col].fillna(True).astype(bool)
+    else:
+        filled = pd.Series(True, index=out.index)
+    has_r = out[r_multiple_col].notna()
     legacy_direction = np.sign(out[edge_col])
-    conditions = [out[compliance_col] == "Edge_valid", out[compliance_col] == "Invalid_edge"]
+    conditions = [filled & has_r & (out[r_multiple_col] > 0), filled & has_r & (out[r_multiple_col] < 0)]
     choices = [legacy_direction, -legacy_direction]
     out["true_outcome"] = np.select(conditions, choices, default=0)
     return out
@@ -86,7 +96,8 @@ def run_icd_backtest(
     score_cols: Mapping[str, float] = None,
     weights: Mapping[str, float] = None,
     edge_col: str = "calc_edge",
-    compliance_col: str = "compliance",
+    r_multiple_col: str = "r_multiple",
+    order_filled_col: str = "order_filled",
 ) -> Tuple[pd.DataFrame, dict]:
     """
     Puerto de `InterimBacktester.run_backtest`. Recalcula un ICD propio a
@@ -101,8 +112,10 @@ def run_icd_backtest(
     weights = dict(weights) if weights is not None else dict(DEFAULT_ICD_WEIGHTS)
     cols = list(score_cols) if score_cols is not None else list(weights.keys())
 
-    working = df[df[compliance_col].notna()].copy()
-    working = reconstruct_execution_outcome(working, edge_col=edge_col, compliance_col=compliance_col)
+    working = df[df[order_filled_col].notna()].copy()
+    working = reconstruct_execution_outcome(
+        working, edge_col=edge_col, r_multiple_col=r_multiple_col, order_filled_col=order_filled_col
+    )
 
     icd = sum(working[col] * weights[col] for col in cols) / 2.0
     working["icd"] = icd
@@ -119,7 +132,7 @@ def run_icd_backtest(
     executed["allocation_scale"] = executed["icd"].abs()
     executed["trade_result_scaled"] = executed["trade_result_flat"] * executed["allocation_scale"]
 
-    total_trades_legacy = int((working[compliance_col] != "No_edge").sum())
+    total_trades_legacy = int(working[order_filled_col].fillna(True).astype(bool).sum())
     total_trades_proposed = len(executed)
 
     wins = executed[executed["trade_result_flat"] == 1]
@@ -131,8 +144,15 @@ def run_icd_backtest(
     net_profit_r = gross_win_r - gross_loss_r
     profit_factor = gross_win_r / gross_loss_r if gross_loss_r > 0 else gross_win_r
 
+    # Antes: contaba trades con compliance=="Invalid_edge" (juicio subjetivo de
+    # mala ejecución) que el nuevo filtro evitó. Sin ese campo, el proxy
+    # objetivo equivalente es "trade tomado que perdió dinero" (r_multiple<0).
     trades_invalid_avoided = int(
-        ((working[compliance_col] == "Invalid_edge") & (working["proposed_signal"] == 0)).sum()
+        (
+            working[order_filled_col].fillna(True).astype(bool)
+            & (working[r_multiple_col] < 0)
+            & (working["proposed_signal"] == 0)
+        ).sum()
     )
 
     return working, {
@@ -183,17 +203,20 @@ def sweep_icd_thresholds(df: pd.DataFrame, thresholds: Sequence[float], **kwargs
 
 def baseline_legacy_metrics(
     df: pd.DataFrame,
-    compliance_col: str = "compliance",
+    r_multiple_col: str = "r_multiple",
+    order_filled_col: str = "order_filled",
     edge_col: str = "calc_edge",
 ) -> dict:
     """
-    Métricas del sistema real tal como se ejecutó: todo `Edge_valid`/
-    `Invalid_edge` cuenta como "ejecutado" (sin filtro de threshold), proxy
-    de acierto direccional sin escalar (1R plano). Ancla de comparación
-    contra `sweep_icd_thresholds`.
+    Métricas del sistema real tal como se ejecutó: toda fila con
+    `order_filled == True` cuenta como "ejecutado" (sin filtro de
+    threshold), proxy de acierto direccional sin escalar (1R plano). Ancla
+    de comparación contra `sweep_icd_thresholds`.
     """
-    working = reconstruct_execution_outcome(df, edge_col=edge_col, compliance_col=compliance_col)
-    executed = working[working[compliance_col].isin(["Edge_valid", "Invalid_edge"])].copy()
+    working = reconstruct_execution_outcome(
+        df, edge_col=edge_col, r_multiple_col=r_multiple_col, order_filled_col=order_filled_col
+    )
+    executed = working[working[order_filled_col].fillna(True).astype(bool)].copy()
 
     if executed.empty:
         return {"status": "EXECUTION_ZERO", "message": "Sin trades ejecutados en la muestra."}
@@ -242,7 +265,8 @@ def run_department_confluence_backtest(
     efficiency_layers: Sequence[int] = (0, 2, 3),
     tactical_layers: Sequence[int] = (1, 4),
     edge_col: str = "calc_edge",
-    compliance_col: str = "compliance",
+    r_multiple_col: str = "r_multiple",
+    order_filled_col: str = "order_filled",
 ) -> Tuple[pd.DataFrame, dict]:
     """
     Puerto de `SplitSystemEvaluator.evaluate_split_proposal`. Recalcula
@@ -258,8 +282,10 @@ def run_department_confluence_backtest(
     `executed`/`proposed_direction`/`allocation_scale` para poder
     encadenarlo a `evaluate_real_r_by_filter`.
     """
-    working = df[df[compliance_col].notna()].copy()
-    working = reconstruct_execution_outcome(working, edge_col=edge_col, compliance_col=compliance_col)
+    working = df[df[order_filled_col].notna()].copy()
+    working = reconstruct_execution_outcome(
+        working, edge_col=edge_col, r_multiple_col=r_multiple_col, order_filled_col=order_filled_col
+    )
 
     for i in efficiency_layers:
         working[f"p{i}_custom_score"] = _custom_layer_score(

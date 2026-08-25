@@ -44,7 +44,7 @@ DEFAULT_TRADE_COLUMNS: List[str] = [
     "p0_strength", "p1_strength", "p2_strength", "p3_strength", "p4_strength",
     "p0_score", "p1_score", "p2_score", "p3_score", "p4_score",
     # Ejecución / resultado
-    "trade_decision", "compliance", "followed_plan", "confirmation_status",
+    "trade_decision", "order_filled", "followed_plan", "confirmation_status",
     "r_r", "r_multiple", "pnl_and_cost", "mfe_favorable", "mae_adverse",
     "entry_price", "closing_price", "take_profit", "stop_loss", "size", "risk_usd",
     # Comportamiento / psicología (lo más accionable para "cómo cambiar mi trading")

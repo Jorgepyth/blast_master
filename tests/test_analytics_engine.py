@@ -46,19 +46,30 @@ def test_filter_executed_trades_uses_r_multiple_not_r_r():
     # Fase 0 regression guard: r_r having a value must NOT count as "executed"
     # if r_multiple (the realized outcome) is missing.
     df = pd.DataFrame({
-        "compliance": ["Edge_valid", "Edge_valid", "No_edge"],
+        "order_filled": [True, True, False],
         "r_r": [1.5, np.nan, 1.0],
         "r_multiple": [np.nan, 0.8, 0.8],
     })
     out = filter_executed_trades(df)
     assert len(out) == 1
-    assert out.iloc[0]["compliance"] == "Edge_valid"
+    assert out.iloc[0]["order_filled"] == True
     assert out.iloc[0]["r_multiple"] == 0.8
+
+
+def test_filter_executed_trades_excludes_order_not_filled():
+    # order_filled == False must exclude the row even when r_multiple is present.
+    df = pd.DataFrame({
+        "order_filled": [True, False],
+        "r_multiple": [0.8, -0.2],
+    })
+    out = filter_executed_trades(df)
+    assert len(out) == 1
+    assert out.iloc[0]["order_filled"] == True
 
 
 def test_filter_executed_trades_missing_columns_raise():
     with pytest.raises(KeyError):
-        filter_executed_trades(pd.DataFrame({"compliance": ["Edge_valid"]}))
+        filter_executed_trades(pd.DataFrame({"order_filled": [True]}))
 
 
 def test_segment_kpis_tiny_synthetic_df():
@@ -96,23 +107,23 @@ def test_segment_kpis_empty_dataframe_does_not_raise():
 
 def _synthetic_trades_df():
     return pd.DataFrame([
-        dict(compliance="Edge_valid", entry_time="2024-01-01 09:00", exit_time="2024-01-01 09:30",
+        dict(order_filled=True, entry_time="2024-01-01 09:00", exit_time="2024-01-01 09:30",
              pnl_and_cost=50.0, r_multiple=1.0, mfe_favorable=1.2, mae_adverse=0.3,
              tier_setup="A", market_state="Trend", session="London", exit_type="manual", setup_type="breakout"),
-        dict(compliance="Edge_valid", entry_time="2024-01-01 10:00", exit_time="2024-01-01 10:40",
+        dict(order_filled=True, entry_time="2024-01-01 10:00", exit_time="2024-01-01 10:40",
              pnl_and_cost=80.0, r_multiple=1.6, mfe_favorable=2.0, mae_adverse=0.2,
              tier_setup="A", market_state="Trend", session="London", exit_type="manual", setup_type="breakout"),
-        dict(compliance="Invalid_edge", entry_time="2024-01-01 11:00", exit_time="2024-01-01 11:50",
+        dict(order_filled=True, entry_time="2024-01-01 11:00", exit_time="2024-01-01 11:50",
              pnl_and_cost=-30.0, r_multiple=-0.6, mfe_favorable=0.4, mae_adverse=0.8,
              tier_setup="A", market_state="Trend", session="NY", exit_type="stop order", setup_type="breakout"),
-        dict(compliance="Edge_valid", entry_time="2024-01-01 12:00", exit_time="2024-01-01 12:20",
+        dict(order_filled=True, entry_time="2024-01-01 12:00", exit_time="2024-01-01 12:20",
              pnl_and_cost=30.0, r_multiple=0.6, mfe_favorable=0.9, mae_adverse=0.1,
              tier_setup="B", market_state="Range", session="NY", exit_type="manual", setup_type="range_reversion"),
-        dict(compliance="Invalid_edge", entry_time="2024-01-01 13:00", exit_time="2024-01-01 13:30",
+        dict(order_filled=True, entry_time="2024-01-01 13:00", exit_time="2024-01-01 13:30",
              pnl_and_cost=-20.0, r_multiple=-0.4, mfe_favorable=0.3, mae_adverse=0.5,
              tier_setup="B", market_state="Range", session="NY", exit_type="stop order", setup_type="range_reversion"),
         # Trade abierto / sin resultado realizado: debe excluirse por el filtro por defecto.
-        dict(compliance="Edge_valid", entry_time="2024-01-01 14:00", exit_time=None,
+        dict(order_filled=True, entry_time="2024-01-01 14:00", exit_time=None,
              pnl_and_cost=np.nan, r_multiple=np.nan, mfe_favorable=np.nan, mae_adverse=np.nan,
              tier_setup="A", market_state="Trend", session="London", exit_type=None, setup_type="breakout"),
     ])

@@ -12,13 +12,13 @@ from core.backtest_engine import (
 )
 
 
-def test_reconstruct_execution_outcome_covers_all_compliance_values():
+def test_reconstruct_execution_outcome_covers_all_order_filled_r_multiple_combinations():
     df = pd.DataFrame([
-        dict(calc_edge=0.5, compliance="Edge_valid"),
-        dict(calc_edge=-0.3, compliance="Edge_valid"),
-        dict(calc_edge=0.4, compliance="Invalid_edge"),
-        dict(calc_edge=-0.2, compliance="Invalid_edge"),
-        dict(calc_edge=0.6, compliance="No_edge"),
+        dict(calc_edge=0.5, order_filled=True, r_multiple=1.0),
+        dict(calc_edge=-0.3, order_filled=True, r_multiple=1.0),
+        dict(calc_edge=0.4, order_filled=True, r_multiple=-1.0),
+        dict(calc_edge=-0.2, order_filled=True, r_multiple=-1.0),
+        dict(calc_edge=0.6, order_filled=False, r_multiple=None),
     ])
     out = reconstruct_execution_outcome(df)
     assert out["true_outcome"].tolist() == [1.0, -1.0, -1.0, 1.0, 0.0]
@@ -26,16 +26,16 @@ def test_reconstruct_execution_outcome_covers_all_compliance_values():
 
 def _icd_df():
     return pd.DataFrame([
-        # icd = 0.55 >= 0.5 -> executa; Edge_valid, calc_edge>0 -> true_outcome=+1; proposed=+1 -> win
-        dict(p0_score=2, p1_score=2, calc_edge=0.5, compliance="Edge_valid"),
-        # icd = -0.55 -> executa; Edge_valid, calc_edge<0 -> true_outcome=-1; proposed=-1 -> win
-        dict(p0_score=-2, p1_score=-2, calc_edge=-0.4, compliance="Edge_valid"),
-        # icd = 0.55 -> executa; Invalid_edge invierte true_outcome a -1; proposed=+1 -> loss
-        dict(p0_score=2, p1_score=2, calc_edge=0.3, compliance="Invalid_edge"),
-        # icd = 0.15 -> por debajo de threshold 0.5, no ejecuta (Invalid_edge evitado)
-        dict(p0_score=1, p1_score=0, calc_edge=-0.2, compliance="Invalid_edge"),
-        # No_edge: cuenta en muestra_analizada pero no en trades_totales_legacy
-        dict(p0_score=0, p1_score=0, calc_edge=0.1, compliance="No_edge"),
+        # icd = 0.55 >= 0.5 -> executa; filled+r_multiple>0 mantiene signo -> true_outcome=+1; proposed=+1 -> win
+        dict(p0_score=2, p1_score=2, calc_edge=0.5, order_filled=True, r_multiple=1.0),
+        # icd = -0.55 -> executa; filled+r_multiple>0 mantiene signo -> true_outcome=-1; proposed=-1 -> win
+        dict(p0_score=-2, p1_score=-2, calc_edge=-0.4, order_filled=True, r_multiple=1.0),
+        # icd = 0.55 -> executa; filled+r_multiple<0 invierte true_outcome a -1; proposed=+1 -> loss
+        dict(p0_score=2, p1_score=2, calc_edge=0.3, order_filled=True, r_multiple=-1.0),
+        # icd = 0.15 -> por debajo de threshold 0.5, no ejecuta (trade perdedor evitado)
+        dict(p0_score=1, p1_score=0, calc_edge=-0.2, order_filled=True, r_multiple=-1.0),
+        # Orden nunca llenada: cuenta en muestra_analizada pero no en trades_totales_legacy
+        dict(p0_score=0, p1_score=0, calc_edge=0.1, order_filled=False, r_multiple=None),
     ])
 
 
@@ -84,10 +84,10 @@ def test_sweep_icd_thresholds_returns_one_row_per_threshold():
 
 def test_baseline_legacy_metrics_counts_all_edge_valid_and_invalid_as_executed():
     df = pd.DataFrame([
-        dict(calc_edge=0.5, compliance="Edge_valid"),
-        dict(calc_edge=-0.3, compliance="Edge_valid"),
-        dict(calc_edge=0.4, compliance="Invalid_edge"),
-        dict(calc_edge=0.2, compliance="No_edge"),
+        dict(calc_edge=0.5, order_filled=True, r_multiple=1.0),
+        dict(calc_edge=-0.3, order_filled=True, r_multiple=1.0),
+        dict(calc_edge=0.4, order_filled=True, r_multiple=-1.0),
+        dict(calc_edge=0.2, order_filled=False, r_multiple=None),
     ])
     res = baseline_legacy_metrics(df)
     assert res["status"] == "OK"
@@ -107,7 +107,7 @@ def _confluence_df():
         p2_direction="Long", p2_strength="Strong",
         p3_direction="Long", p3_strength="Strong",
         p4_direction="Long", p4_strength="Strong",
-        calc_edge=0.5, compliance="Edge_valid",
+        calc_edge=0.5, order_filled=True, r_multiple=1.0,
     )
     row_choppy = dict(
         p0_direction="Long", p0_strength="Weak",
@@ -115,7 +115,7 @@ def _confluence_df():
         p2_direction="Short", p2_strength="Weak",
         p3_direction="Neutral", p3_strength="Strong",
         p4_direction="Long", p4_strength="Mid",
-        calc_edge=-0.2, compliance="Invalid_edge",
+        calc_edge=-0.2, order_filled=True, r_multiple=-1.0,
     )
     row_disagreement = dict(
         p0_direction="Long", p0_strength="Strong",
@@ -123,7 +123,7 @@ def _confluence_df():
         p2_direction="Long", p2_strength="Strong",
         p3_direction="Long", p3_strength="Strong",
         p4_direction="Short", p4_strength="Strong",
-        calc_edge=0.3, compliance="Edge_valid",
+        calc_edge=0.3, order_filled=True, r_multiple=1.0,
     )
     return pd.DataFrame([row_full_confluence, row_choppy, row_disagreement])
 

@@ -147,6 +147,8 @@ blast_master/
 
 ### Diagrama ER (7 tablas reales, confirmado por `.schema` en Fase 1)
 
+> **Actualización 2026-08-12 (retiro de `compliance`/`trade_status`):** `unified_department.trade_status` y `tactical_audit.compliance` fueron eliminados de las 3 DBs de cuenta (DROP COLUMN, con backup previo) y del código. Ambos eran señales de ejecución redundantes/potencialmente divergentes de la realidad (`trade_status` era informativo puro sin uso analítico; `compliance` alimentaba el motor de KPIs pero mezclaba "¿se llenó la orden?" con un juicio subjetivo de calidad de ejecución). `tactical_audit.order_filled` (booleano) es ahora la única señal de ejecución, derivada al momento de guardar la auditoría táctica y usada como gate binario en `core/analytics_engine.py:filter_executed_trades` y `core/backtest_engine.py:reconstruct_execution_outcome` (este último usa el signo de `r_multiple`, no una etiqueta manual, para el acierto direccional). `efficiency_audit.specific_bias_compliance` no fue tocado — sigue siendo un campo distinto (validez del sesgo estructural, no de ejecución).
+
 ```mermaid
 erDiagram
     UNIFIED_DEPARTMENT ||--o{ ANALYSIS_LAYER : "trade_id → id, CASCADE"
@@ -161,7 +163,6 @@ erDiagram
         float long_prob
         float short_prob
         float no_trade_prob
-        varchar trade_status
     }
     ANALYSIS_LAYER {
         varchar id PK
@@ -179,6 +180,7 @@ erDiagram
     TACTICAL_AUDIT {
         varchar id PK_FK
         varchar tier_setup
+        boolean order_filled
         int gates_failed
         int confirmations_count
         datetime entry_time
