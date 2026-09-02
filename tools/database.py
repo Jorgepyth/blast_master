@@ -511,6 +511,21 @@ def update_record_state(record_id: str, new_state: LifecycleState, append_payloa
             console.print(f"[bold red]Database Error in update_record_state: {e}[/bold red]")
             return False
 
+def get_unified_created_at(trade_id: str, engine=None) -> Optional[datetime.datetime]:
+    """Devuelve UnifiedDepartment.created_at para trade_id, o None si no existe.
+
+    Usada por el Tactical Audit (cli/main.py) para auto-derivar año/mes/día de
+    Entry Time del momento en que se hizo el unified analysis, sin depender de
+    que el payload del caller lo haya incluido (hay 3 puntos de entrada al
+    flujo táctico y no todos construyen el mismo payload) — consulta directa
+    por trade_id para que el mecanismo aplique igual sin importar el camino.
+    """
+    eng = engine or engine_default
+    with Session(eng) as session:
+        return session.scalar(
+            select(UnifiedDepartment.created_at).where(UnifiedDepartment.id == trade_id)
+        )
+
 def get_records_by_state(state: LifecycleState | List[LifecycleState], engine=None) -> List[dict]:
     eng = engine or engine_default
     with Session(eng) as session:

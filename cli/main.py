@@ -41,7 +41,8 @@ from cli.schemas.tactical import TacticalAnalysis, Hierarchy, Timeframe, Fractal
 from cli.schemas.audit_tactical import TacticalAudit, TierSetup, MarketState, Session, ExitType, TradeDecision, FollowedPlan, PrimaryEmotion, SetupType, HTFTrendContext, TrendContext, ConfirmationStatus, ConfirmationParams, Emotions, ACTIVE_EMOTIONS, BehavioralErrors, SkipReason
 from tools.database import (
     init_db, update_record_state, get_records_by_state,
-    LifecycleState, add_asset, get_assets, to_local_display
+    LifecycleState, add_asset, get_assets, to_local_display,
+    get_unified_created_at
 )
 import json
 import os
@@ -166,6 +167,9 @@ class AuditSession:
                     try: val = [enum_class(i) for i in val]
                     except ValueError: pass
             elif func.__name__ == 'get_mandatory_datetime' and isinstance(val, str):
+                try: val = datetime.datetime.strptime(val, "%Y-%m-%d %H:%M")
+                except ValueError: pass
+            elif func.__name__ == 'ask_entry_time' and isinstance(val, str):
                 try: val = datetime.datetime.strptime(val, "%Y-%m-%d %H:%M")
                 except ValueError: pass
                 
@@ -667,6 +671,17 @@ def determine_market_bias(i_cd: float) -> str:
     else:
         return "Bearish"
 
+def get_dir_val(d):
+    """Mapea Direction (o un string equivalente en contenido, ya que Direction
+    es str+Enum) a su valor firmado. Compartida por los 3 sitios que computan
+    i_cd para evitar divergencia silenciosa entre ellos."""
+    return 1 if d == Direction.LONG else -1 if d == Direction.SHORT else 0
+
+def get_str_val(s):
+    """Mapea Strength (o un string equivalente en contenido) a su peso.
+    Compartida por los 3 sitios que computan i_cd."""
+    return 2 if s == Strength.STRONG else 1 if s == Strength.MID else 0
+
 def get_optional_text(prompt_text, multiline=False):
     message = f"{prompt_text} (Optional, press Enter to skip) >"
     if multiline:
@@ -738,6 +753,37 @@ def get_mandatory_datetime(prompt_text, allow_cancel=False):
         raise GoBackException("Cancelled by user")
     dt = datetime.datetime.strptime(val, "%Y-%m-%d %H:%M")
     return dt
+
+def get_mandatory_time(prompt_text, allow_cancel=False):
+    """Como get_mandatory_datetime pero solo pide HH:MM — usada donde la fecha
+    se deriva de otro lado (ej. Entry Time del Tactical Audit, que toma
+    año/mes/día de UnifiedDepartment.created_at y solo pide la hora al
+    usuario). Retorna un datetime.time."""
+    def validate_time(result):
+        if not result: return False
+        if allow_cancel and result.lower() == 'c': return True
+        try:
+            datetime.datetime.strptime(result, "%H:%M")
+            return True
+        except ValueError:
+            return False
+
+    msg = f"{prompt_text} (HH:MM)"
+    if allow_cancel:
+        msg += " (or 'c' to cancel)"
+    msg += " >"
+
+    val = bind_pause(inquirer.text(
+        message=msg,
+        validate=validate_time,
+        invalid_message="Must be in format HH:MM or 'c'",
+        keybindings={"skip": []},
+        style=INQUIRER_STYLE
+    )).execute()
+
+    if allow_cancel and val.lower() == 'c':
+        raise GoBackException("Cancelled by user")
+    return datetime.datetime.strptime(val, "%H:%M").time()
 
 def flow_flight_sessions():
     global ACTIVE_SESSION, ACTIVE_ENGINE
@@ -2426,9 +2472,6 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
 
             # --- Edge Bias & Probabilities Preview (calculado apenas P0-P4 están completos,
             # antes de pedir Efficiency Timeframe / Mark Price / Validation / Invalidation) ---
-            def get_dir_val(d): return 1 if d == Direction.LONG else -1 if d == Direction.SHORT else 0
-            def get_str_val(s): return 2 if s == Strength.STRONG else 1 if s == Strength.MID else 0
-
             preview_x0 = get_dir_val(session.state.get("p0_dir")) * get_str_val(session.state.get("p0_str"))
             preview_x1 = get_dir_val(session.state.get("p1_dir")) * get_str_val(session.state.get("p1_str"))
             preview_x2 = get_dir_val(session.state.get("p2_dir")) * get_str_val(session.state.get("p2_str"))
@@ -2555,9 +2598,6 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
                 tact_class = session.state["tact_class"]
 
                 # Perform calculations
-                def get_dir_val(d): return 1 if d == Direction.LONG else -1 if d == Direction.SHORT else 0
-                def get_str_val(s): return 2 if s == Strength.STRONG else 1 if s == Strength.MID else 0
-
                 x0 = get_dir_val(p0_dir) * get_str_val(p0_str)
                 x1 = get_dir_val(p1_dir) * get_str_val(p1_str)
                 x2 = get_dir_val(p2_dir) * get_str_val(p2_str)
@@ -3516,7 +3556,21 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
                         entry_p = session.prompt("entry_p", get_mandatory_float, "Entry Price")
                         size = session.prompt("size", get_mandatory_float, "Size")
                         tp = session.prompt("tp", get_mandatory_float, "Take Profit")
-                        entry_time = session.prompt("entry_time", get_mandatory_datetime, "Entry Time")
+
+                        def ask_entry_time():
+                            # Año/mes/día se auto-derivan del created_at del unified analysis
+                            # de este trade_id; el usuario solo ingresa la hora (HH:MM).
+                            created_at = get_unified_created_at(trade_id, engine=get_active_engine())
+                            if created_at is None:
+                                raise RuntimeError(
+                                    f"No se encontró created_at en UnifiedDepartment para "
+                                    f"trade_id={trade_id!r}; no se puede auto-derivar la fecha "
+                                    "de Entry Time."
+                                )
+                            entry_hour = get_mandatory_time("Entry Time")
+                            return datetime.datetime.combine(created_at.date(), entry_hour)
+
+                        entry_time = session.prompt("entry_time", ask_entry_time)
 
                         # BLOQUE 4: Estado pre-trade
                         pre_trade_emotions = session.prompt("pre_trade_emotions", get_mandatory_text, "Pre Trade Emotions")
@@ -4750,25 +4804,20 @@ def flow_repair_analysis_audits():
                     
                 elif comp_choice == "unified":
                     def recalculate_unified_metrics(w):
-                        # Multi-Layer Recalculation Pipeline (Defect 3)
-                        def get_dir_val(d): return 1 if d == "Long" else -1 if d == "Short" else 0
-                        def get_str_val(s): return 2 if s == "Strong" else 1 if s == "Mid" else 0
-
+                        # Multi-Layer Recalculation Pipeline — consolidada con los Sitios 1/2
+                        # de flow_new_analysis() (antes "Defect 3": duplicaba la aritmética y
+                        # comparaba por string en vez de enum; ambas formas son equivalentes
+                        # porque Direction/Strength son str+Enum, confirmado empíricamente
+                        # contra un golden-master de 32 casos antes de esta consolidación).
                         x0 = get_dir_val(w["p0_dir"]) * get_str_val(w["p0_str"])
                         x1 = get_dir_val(w["p1_dir"]) * get_str_val(w["p1_str"])
                         x2 = get_dir_val(w["p2_dir"]) * get_str_val(w["p2_str"])
                         x3 = get_dir_val(w["p3_dir"]) * get_str_val(w["p3_str"])
                         x4 = get_dir_val(w["p4_dir"]) * get_str_val(w["p4_str"])
 
-                        val = (0.30 * x0 + 0.25 * x1 + 0.15 * x2 + 0.10 * x3 + 0.20 * x4) / 2.0
+                        val = calculate_edge_score(x0, x1, x2, x3, x4)
                         w["calc_edge"] = val
-
-                        if abs(val) < 0.26:
-                            w["market_bias"] = "Choppy / Neutral"
-                        elif val >= 0.26:
-                            w["market_bias"] = "Bullish"
-                        else:
-                            w["market_bias"] = "Bearish"
+                        w["market_bias"] = determine_market_bias(val)
 
                         from core.math_engine import calculate_probabilities as _calc_probs
                         _probs = _calc_probs(val)
