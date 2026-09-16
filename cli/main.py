@@ -38,11 +38,11 @@ from InquirerPy.utils import get_style
 from cli.schemas.efficiency import EfficiencyAnalysis, Direction, Strength
 from cli.schemas.audit_efficiency import EfficiencyAudit, StructuralBias, ResolutionType, StructuralResolution, FailureReason
 from cli.schemas.tactical import TacticalAnalysis, Hierarchy, Timeframe, FractalType, TacticalClassification
-from cli.schemas.audit_tactical import TacticalAudit, TierSetup, MarketState, Session, ExitType, TradeDecision, FollowedPlan, PrimaryEmotion, SetupType, HTFTrendContext, TrendContext, ConfirmationStatus, ConfirmationParams, Emotions, ACTIVE_EMOTIONS, BehavioralErrors, SkipReason
+from cli.schemas.audit_tactical import TacticalAudit, TierSetup, MarketState, Session, ExitType, TradeDecision, FollowedPlan, PrimaryEmotion, SetupType, HTFTrendContext, TrendContext, ConfirmationStatus, ConfirmationParams, Emotions, ACTIVE_EMOTIONS, BehavioralErrors, SkipReason, StopDeviationReason, STOP_DEVIATION_REASON_LABELS
 from tools.database import (
     init_db, update_record_state, get_records_by_state,
     LifecycleState, add_asset, get_assets, to_local_display,
-    get_unified_created_at
+    get_unified_created_at, get_unified_structural_invalidation
 )
 import json
 import os
@@ -288,6 +288,21 @@ def get_active_engine():
 
 state = CLIState()
 FLIGHT_SESSIONS_FILE = ".data/flight_sessions.json"
+
+# Todo campo que core/math_engine.calculate_algebraic_metrics multiplique por
+# contract_size va aquí. Cuando el símbolo no está VERIFICADO (contract_size None),
+# el repair flow los deja en None en vez de persistir el valor sin multiplicador.
+# Mantener sincronizado con calculate_algebraic_metrics — evita que un campo nuevo
+# quede desprotegido silenciosamente, como pasó con notional_size_usd.
+MONEY_FIELDS_REQUIRING_CONTRACT_SIZE = (
+    "risk_usd", "capital_at_risk", "notional_size", "notional_size_usd",
+)
+
+# Gate emocional (flow_pending_audits, "camino principal") -- ver ARCHITECTURE.md
+# §15. Independiente del gate de Tier D/F (§14): éste sí admite override, con
+# justificación obligatoria persistida en TacticalAudit.emotional_gate_override_reason.
+# No fusionar ambos gates sin revisar esa decisión.
+ANXIETY_GATE_THRESHOLD = 4
 
 class FlightSessionManager:
     @staticmethod
@@ -689,6 +704,24 @@ def get_optional_text(prompt_text, multiline=False):
     val = bind_pause(inquirer.text(message=message, multiline=multiline, keybindings={"skip": []}, style=INQUIRER_STYLE)).execute()
     return val.strip() if val else None
 
+def ask_stop_deviation_reason():
+    """Selección obligatoria (sin skip) de StopDeviationReason. No usa get_enum_choice()
+    porque el valor persistido (slug corto) y el texto mostrado al operador (largo,
+    STOP_DEVIATION_REASON_LABELS) son distintos -- a diferencia de FailureReason, donde
+    el texto largo vive directo en el .value."""
+    inq_choices = [
+        Choice(r, name=f"[{i+1}] {STOP_DEVIATION_REASON_LABELS[r]}")
+        for i, r in enumerate(StopDeviationReason)
+    ]
+    return bind_pause(inquirer.select(
+        message="Stop Deviation Reason (obligatorio) >",
+        choices=inq_choices,
+        pointer=">",
+        qmark="",
+        keybindings={"skip": []},
+        style=INQUIRER_STYLE
+    )).execute()
+
 def get_mandatory_int(prompt_text, min_val=None, max_val=None):
     def validate_int(result):
         if not result or not result.lstrip('-').isdigit(): return False
@@ -725,6 +758,73 @@ def get_mandatory_float(prompt_text, min_val=None, max_val=None):
         style=INQUIRER_STYLE
     )).execute()
     return float(val)
+
+
+def render_pnl_box(asset, entry_price, size_lots, stop_loss, take_profit):
+    """Cuadro EFÍMERO de P&L potencial (no persiste nada) que se muestra en el wizard
+    tras capturar SL/Entry/Size/TP y antes de Entry Time.
+
+    Delega el cálculo en tools/pnl_calculator (contract_size por instrumento). Si el
+    símbolo no está VERIFICADO / es desconocido, muestra "N/A (símbolo no verificado)"
+    y su motivo -- nunca bloquea el avance del wizard.
+
+    Devuelve la elección del usuario: "accept" | "sl" | "entry_p" | "size" | "tp".
+    """
+    from tools import pnl_calculator as _pnl
+    try:
+        q = _pnl.quantify(asset, entry_price, size_lots, stop_loss, take_profit)
+        err = None
+    except (_pnl.UnverifiedSymbolError, _pnl.UnknownSymbolError) as exc:
+        q, err = None, str(exc)
+
+    try:
+        console.clear(home=True)
+    except TypeError:
+        console.clear()
+
+    # Estilo replicado de "Pre-Flight Validation" de cli-trading-binance
+    # (cli/main.py:95-9x de ese repo): box.HEAVY, Metric cian / Value gris,
+    # add_section() entre grupos, markup semántico por celda, sin Panel envolvente.
+    table = Table(title="Potential P&L (pre-save · not persisted)", box=box.HEAVY)
+    table.add_column("Metric", style="#00aaff")
+    table.add_column("Value", style="#aaaaaa")
+
+    # --- Order Specs ---
+    table.add_row("Symbol", str(q["symbol"]) if q else str(asset))
+    table.add_row("Size (lots)", str(size_lots))
+    table.add_row("Contract Size", str(q["contract_size"]) if q else "—")
+
+    table.add_section()
+
+    # --- Risk Metrics ---
+    if q is None:
+        table.add_row(
+            "Potential P&L",
+            "[#ffffff on #ff0000]N/A (símbolo no verificado)[/#ffffff on #ff0000]",
+            style="bold #ffffff on #ff0000",
+        )
+        table.add_row("Reason", err, style="dim")
+    else:
+        table.add_row("Potential Loss (→ SL)", f"[#ff0055]-${q['loss_usd']:.2f}[/#ff0055]")
+        table.add_row("Potential Gain (→ TP)", f"[#00ff00]+${q['gain_usd']:.2f}[/#00ff00]")
+        if q["rr"] is not None:
+            table.add_row("R:R", f"{q['rr']:.2f}")
+
+    console.print(table)
+
+    return inquirer.select(
+        message="P&L >",
+        choices=[
+            Choice("accept", name="[1] Aceptar y continuar"),
+            Choice("sl", name="[2] Modificar Stop Loss"),
+            Choice("entry_p", name="[3] Modificar Entry Price"),
+            Choice("size", name="[4] Modificar Size"),
+            Choice("tp", name="[5] Modificar Take Profit"),
+        ],
+        pointer=">",
+        qmark="",
+    ).execute()
+
 
 def get_mandatory_datetime(prompt_text, allow_cancel=False):
     def validate_datetime(result):
@@ -1452,6 +1552,8 @@ def flow_review_analysis():
                t.c1_kl_support, t.c2_fractal_std, t.c3_fractal_1m, t.c4_fractal_1h,
                t.c5_kl_target, t.c6_liquidity, t.c7_retracement, t.c8_convergence_15m,
                t.pre_trade_emotions, t.mid_trade_emotions, t.post_trade_emotions,
+               t.risk_usd, t.r_r, t.r_multiple, t.captured_mfe, t.trade_decision,
+               t.size_source, t.size_match_confidence, t.size_migrated_at,
                al.department, al.layer_name, al.direction, al.strength, al.thesis
         FROM unified_department u
         LEFT JOIN efficiency_audit e ON u.id = e.id
@@ -1498,7 +1600,9 @@ def flow_review_analysis():
             "g5_manual_cooldown", "g6_sl_validated", "g7_tp_validated",
             "c1_kl_support", "c2_fractal_std", "c3_fractal_1m", "c4_fractal_1h",
             "c5_kl_target", "c6_liquidity", "c7_retracement", "c8_convergence_15m",
-            "pre_trade_emotions", "mid_trade_emotions", "post_trade_emotions"
+            "pre_trade_emotions", "mid_trade_emotions", "post_trade_emotions",
+            "risk_usd", "r_r", "r_multiple", "captured_mfe", "trade_decision",
+            "size_source", "size_match_confidence", "size_migrated_at"
         ]
         
         record = {}
@@ -1521,83 +1625,57 @@ def flow_review_analysis():
                     "thesis": l_thesis
                 }
 
-        # Perform programmatic metric calculations in Python
+        # ── Métricas monetarias: se MUESTRAN los valores YA PERSISTIDOS ──
+        # risk_usd / notional_size / capital_at_risk / r_r / r_multiple / captured_* /
+        # pnl_and_cost / trade_decision vienen de la fila (Fase 2a/2c ya aplicó
+        # contract_size al guardarlos). Este panel NO los recalcula -> se eliminó la
+        # 4ta copia de la fórmula que ignoraba contract_size (bug: mostraba risk_usd
+        # 1/contract_size del valor real en trades migrados por Track B).
+        from tools import pnl_calculator as _pnl
+        try:
+            _pnl.resolve_spec(record.get("asset"))
+            record["_sym_verified"] = True
+        except (_pnl.UnverifiedSymbolError, _pnl.UnknownSymbolError):
+            record["_sym_verified"] = False
+
         ep = Decimal(str(record["entry_price"])) if record["entry_price"] else Decimal('0.0')
         cp = Decimal(str(record["closing_price"])) if record["closing_price"] else Decimal('0.0')
         sl = Decimal(str(record["stop_loss"])) if record["stop_loss"] else Decimal('0.0')
         tp = Decimal(str(record["take_profit"])) if record["take_profit"] else Decimal('0.0')
         size = Decimal(str(record["size"])) if record["size"] else Decimal('0.0')
-        mfe = Decimal(str(record["mfe_favorable"])) if record["mfe_favorable"] else Decimal('0.0')
-        mae = Decimal(str(record["mae_adverse"])) if record["mae_adverse"] else Decimal('0.0')
-        
-        record["trade_decision"] = None
-        record["notional_size_usd"] = None
-        record["risk_usd"] = None
+
+        if not record.get("trade_decision") and ep != Decimal('0.0') and sl != Decimal('0.0'):
+            record["trade_decision"] = "Long" if ep > sl else "Short"
+
+        # notional_size_usd no es columna -> el panel muestra el notional_size persistido
+        record["notional_size_usd"] = record.get("notional_size")
+
+        # dist_to_sl / dist_to_tp / pnl / cost NO son columnas -> se derivan con la
+        # función única (core.math_engine.calculate_algebraic_metrics), nunca una copia.
         record["dist_to_sl"] = None
         record["dist_to_tp"] = None
-        record["r_r"] = None
         record["pnl"] = None
         record["cost"] = Decimal('0.0')
-        record["r_multiple"] = None
-        record["captured_mfe"] = None
         record["trade_duration"] = None
-        
-        if ep != Decimal('0.0') and sl != Decimal('0.0') and size != Decimal('0.0'):
-            td = "Long" if ep > sl else "Short"
-            record["trade_decision"] = td
-            record["notional_size_usd"] = ep * size
-            record["risk_usd"] = size * abs(ep - sl)
-            
-            if td == "Long":
-                record["capital_at_risk"] = size * (ep - sl)
-            else:
-                record["capital_at_risk"] = size * (sl - ep)
-                
-            if ep != Decimal('0.0'):
-                record["dist_to_sl"] = abs(ep - sl) / ep
-            else:
-                record["dist_to_sl"] = Decimal('0.0')
-                
-            if tp != Decimal('0.0') and ep != Decimal('0.0'):
-                record["dist_to_tp"] = abs(ep - tp) / ep
-                sl_dist_abs = abs(ep - sl)
-                if sl_dist_abs != Decimal('0.0'):
-                    if td == "Long":
-                        record["r_r"] = (tp - ep) / sl_dist_abs
-                    else:
-                        record["r_r"] = (ep - tp) / sl_dist_abs
-                else:
-                    record["r_r"] = Decimal('0.0')
-            
-            if cp != Decimal('0.0'):
-                if td == "Long":
-                    record["pnl"] = (cp - ep) * size
-                else:
-                    record["pnl"] = (ep - cp) * size
-                    
+        if ep != Decimal('0.0') and sl != Decimal('0.0') and size > Decimal('0.0'):
+            try:
+                _cs = _pnl.resolve_spec(record["asset"])["contract_size"] if record["_sym_verified"] else None
+            except (_pnl.UnverifiedSymbolError, _pnl.UnknownSymbolError):
+                _cs = None
+            try:
+                _m = calculate_algebraic_metrics(
+                    record.get("trade_decision") or ("Long" if ep > sl else "Short"),
+                    float(ep), float(sl), float(cp), float(tp), float(size),
+                    float(record["mae_adverse"] or 0.0), float(record["mfe_favorable"] or 0.0),
+                    0.0, contract_size=_cs,
+                )
+                record["dist_to_sl"] = _m["dist_to_sl"]
+                record["dist_to_tp"] = _m["dist_to_tp"]
+                record["pnl"] = _m["pnl"]
                 if record["pnl_and_cost"] is not None:
-                    record["cost"] = record["pnl"] - Decimal(str(record["pnl_and_cost"]))
-                else:
-                    record["cost"] = Decimal('0.0')
-                    
-                sl_dist_abs = abs(ep - sl)
-                if sl_dist_abs != Decimal('0.0'):
-                    if td == "Long":
-                        record["r_multiple"] = (cp - ep) / sl_dist_abs
-                    else:
-                        record["r_multiple"] = (ep - cp) / sl_dist_abs
-                else:
-                    record["r_multiple"] = Decimal('0.0')
-                    
-                if record["r_multiple"] < Decimal('0.0') or mfe == Decimal('0.0'):
-                    record["captured_mfe"] = Decimal('0.0')
-                else:
-                    record["captured_mfe"] = record["r_multiple"] / mfe
-
-                if record["r_multiple"] < Decimal('0.0') and mae > Decimal('0.0'):
-                    record["captured_mae"] = abs(record["r_multiple"]) / mae
-                else:
-                    record["captured_mae"] = Decimal('0.0')
+                    record["cost"] = _m["pnl"] - Decimal(str(record["pnl_and_cost"]))
+            except (ValueError, ArithmeticError):
+                pass
 
         # Map mae_adverse to mae and mfe_favorable to mfe for display compatibility
         record["mae"] = record["mae_adverse"]
@@ -1922,15 +2000,26 @@ def flow_review_analysis():
             tact_text.append(f"    Duration: {record['trade_duration']}\n", style="dim")
             tact_text.append(f"  Session: {record['session']}\n\n", style="dim")
 
+            def fmt_money(val):
+                # valor persistido -> "$X.XX"; NULL -> N/A con el motivo, mismo texto que el wizard
+                if val is not None:
+                    return f"${fmt_f(val)}"
+                return "N/A (símbolo no verificado)" if not record.get("_sym_verified") else "N/A (no calculado)"
+
             # Position Sizing
             tact_text.append("  ── Position Sizing ──\n", style="bold white")
             tact_text.append(f"  Size: {record['size']}          Entry Price: {record['entry_price']}     Closing Price: {record['closing_price']}\n", style="dim")
-            tact_text.append(f"  Stop Loss: {record['stop_loss']}    Take Profit: {record['take_profit']}    Could Hit TP: {record['could_hit_tp']}\n\n", style="dim")
+            tact_text.append(f"  Stop Loss: {record['stop_loss']}    Take Profit: {record['take_profit']}    Could Hit TP: {record['could_hit_tp']}\n", style="dim")
+            if record.get("size_source") == "migrated_mt5_report_v1":
+                tact_text.append(f"  Origen del size: migrado de reporte MT5 ({record.get('size_match_confidence') or 'n/a'}, {str(record.get('size_migrated_at') or '')[:10]})\n", style="yellow")
+            elif record.get("size_source"):
+                tact_text.append(f"  Origen del size: {record['size_source']}\n", style="dim")
+            tact_text.append("\n")
 
             # Risk Metrics
             tact_text.append("  ── Risk Metrics ──\n", style="bold white")
-            tact_text.append(f"  Notional (USD): ${fmt_f(record['notional_size_usd'])}        Risk (USD): ${fmt_f(record['risk_usd'])}\n", style="dim")
-            tact_text.append(f"  Capital @ Risk: ${fmt_f(record['capital_at_risk'])}        ", style="dim")
+            tact_text.append(f"  Notional Size: {fmt_money(record['notional_size_usd'])}        Risk (USD): {fmt_money(record['risk_usd'])}\n", style="dim")
+            tact_text.append(f"  Capital @ Risk: {fmt_money(record['capital_at_risk'])}        ", style="dim")
             tact_text.append(f"Dist → SL: {fmt_f(record.get('dist_to_sl'), 4)}    Dist → TP: {fmt_f(record.get('dist_to_tp'), 4)}\n\n", style="dim")
 
             # P&L
@@ -3250,6 +3339,7 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
                         audit_tactical = TacticalAudit(
                             tactical_id=trade_id,
                             tactical_row_id=existing_tactical_row_id,
+                            asset=payload.get("asset"),
                             order_filled=False,
                             skip_reason=skip_reason,
                             tier_setup=TierSetup.SKIP,
@@ -3408,6 +3498,7 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
                         audit_tactical = TacticalAudit(
                             tactical_id=trade_id,
                             tactical_row_id=existing_tactical_row_id,
+                            asset=payload.get("asset"),
                             order_filled=False,
                             skip_reason=skip_reason,
                             htf_trend_context=htf_trend,
@@ -3551,11 +3642,197 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
                         else:
                             tier_setup = TierSetup.C
 
+                        # --- TIER GATE: display + bloqueo duro D/F (absoluto, sin override) ---
+                        tier_gate_error = None
+                        try:
+                            tier_display_style = {
+                                TierSetup.A: "success", TierSetup.B: "success",
+                                TierSetup.C: "warning",
+                                TierSetup.D: "danger", TierSetup.F: "danger",
+                            }.get(tier_setup)
+                            if tier_display_style is None:
+                                raise ValueError(f"Tier Setup fuera del set esperado A-F: {tier_setup!r}")
+                            console.print(f"[{tier_display_style}]Tier Setup: {tier_setup.value}[/{tier_display_style}]")
+                            tier_gate_blocked = tier_setup in (TierSetup.D, TierSetup.F)
+                        except Exception as _tier_exc:
+                            tier_gate_error = str(_tier_exc)
+                            tier_gate_blocked = True
+
+                        if tier_gate_blocked:
+                            # --- Camino corto: Tier D/F (o fallo de cálculo) — nunca se llega a BLOQUE 3 ---
+                            if tier_gate_error:
+                                console.print(f"[bold red]ERROR: No se pudo determinar el Tier Setup: {tier_gate_error}[/bold red]")
+                            else:
+                                console.print(Panel(
+                                    f"[bold red]TIER {tier_setup.value} — Gate duro activado.[/bold red]\n"
+                                    "Setup de baja calidad estructural: el wizard NO pedirá datos de entrada de orden.",
+                                    border_style="red"
+                                ))
+                            while True:
+                                lesson_tact = session.prompt("tier_gate_lesson_tact", get_mandatory_text, "Tactical Lesson Learned", multiline=True)
+                                visual_path = session.prompt("tier_gate_visual_lesson_path", handle_visual_lesson_assignment, trade_id, payload.get("asset", "Unknown"))
+
+                                audit_tactical = TacticalAudit(
+                                    tactical_id=trade_id,
+                                    tactical_row_id=existing_tactical_row_id,
+                                    asset=payload.get("asset"),
+                                    order_filled=False,
+                                    skip_reason=SkipReason.INVALIDADA_ANTES_DE_LLENAR,
+                                    tier_setup=tier_setup if not tier_gate_error else None,
+                                    htf_trend_context=htf_trend,
+                                    ltf_trend_context=ltf_trend,
+                                    lesson_learned=lesson_tact,
+                                    visual_lesson_path=visual_path,
+                                    gates_failed=gates_failed_cnt,
+                                    confirmations_count=confirmations_count,
+                                    mfe_potencial_estimado=mfe_potencial,
+                                    stop_loss=0.0, entry_price=0.0, size=0.0, take_profit=0.0, cost=0.0, mae=0.0, mfe=0.0,
+                                    g1_trend_15m=g1_trend_15m, g2_fractal_trend=g2_fractal_trend, g3_limit_order=g3_limit_order,
+                                    g4_breathing=g4_breathing, g5_manual_cooldown=g5_manual_cooldown,
+                                    g6_sl_validated=g6_sl_validated, g7_tp_validated=g7_tp_validated,
+                                    c1_kl_support=c1_kl_support, c2_fractal_std=c2_fractal_std, c3_fractal_1m=c3_fractal_1m,
+                                    c4_fractal_1h=c4_fractal_1h, c5_kl_target=c5_kl_target, c6_liquidity=c6_liquidity,
+                                    c7_retracement=c7_retracement, c8_convergence_15m=c8_convergence_15m,
+                                )
+
+                                rev_text = Text()
+                                rev_text.append("Order Filled: No (Bloqueado por Tier Gate)\n")
+                                if tier_gate_error:
+                                    rev_text.append(f"Tier Setup: ERROR ({tier_gate_error})\n", style="bold red")
+                                else:
+                                    rev_text.append(f"Tier Setup: {tier_setup.value}\n", style="bold red")
+                                rev_text.append(f"Gates Failed: {gates_failed_cnt}\n", style="red" if gates_failed_cnt > 0 else "green")
+                                rev_text.append(f"Confirmations Count: {confirmations_count}\n", style="white")
+                                rev_text.append(f"HTF Trend Context: {htf_trend.value if isinstance(htf_trend, Enum) else htf_trend}\n")
+                                rev_text.append(f"LTF Trend Context: {ltf_trend.value if isinstance(ltf_trend, Enum) else ltf_trend}\n")
+                                rev_text.append(f"Tactical Lesson Learned: {lesson_tact}\n")
+                                if visual_path and visual_path != "nan":
+                                    rev_text.append(f"Visual Lesson: {visual_path}\n")
+
+                                try:
+                                    console.clear(home=True)
+                                except TypeError:
+                                    console.clear()
+                                console.print(Panel(rev_text, title="Review: Tactical Audit (Blocked by Tier Gate D/F)", border_style="red"))
+
+                                action_choice = inquirer.select(
+                                    message="Review Action >",
+                                    choices=[
+                                        Choice("save", name="[1] Confirm & Save"),
+                                        Choice("edit", name="[2] Edit a Field"),
+                                        Choice("discard", name="[3] Discard")
+                                    ],
+                                    pointer=">",
+                                    qmark=""
+                                ).execute()
+
+                                if action_choice == "save":
+                                    at_dump = audit_tactical.model_dump()
+                                    string_enum_keys = {
+                                        "tier_setup", "market_state", "session", "exit_type",
+                                        "followed_plan", "primary_emotion", "setup_type",
+                                        "htf_trend_context", "confirmation_status", "ltf_trend_context",
+                                        "pre_trade_emotions", "mid_trade_emotions", "post_trade_emotions",
+                                        "could_hit_tp", "lesson_learned", "trade_decision", "trade_duration",
+                                        "visual_lesson_path"
+                                    }
+                                    for k, v in at_dump.items():
+                                        if v is None and k in string_enum_keys:
+                                            at_dump[k] = "nan"
+                                    new_payload["audit_tactical"] = at_dump
+                                    console.print("[green]Tactical Audit saved (Blocked by Tier Gate).[/green]")
+                                    session.clear_state()
+                                    break
+                                elif action_choice == "discard":
+                                    raise PauseAuditException("Discard requested")
+                                elif action_choice == "edit":
+                                    edit_choices = [
+                                        Choice("tier_gate_htf_trend", name=f"HTF Trend: {htf_trend.value if isinstance(htf_trend, Enum) else htf_trend}"),
+                                        Choice("tier_gate_ltf_trend", name=f"LTF Trend: {ltf_trend.value if isinstance(ltf_trend, Enum) else ltf_trend}"),
+                                        Choice("tier_gate_lesson_tact", name=f"Lesson: {lesson_tact[:30]}..."),
+                                        Choice("tier_gate_visual_lesson_path", name=f"Visual Lesson Path: {session.state.get('tier_gate_visual_lesson_path', 'nan')}"),
+                                        Choice("back", name="[<] Back to Review")
+                                    ]
+                                    field_to_edit = inquirer.select(
+                                        message="Select Field to Edit >",
+                                        choices=edit_choices,
+                                        pointer=">",
+                                        qmark=""
+                                    ).execute()
+                                    if field_to_edit == "back":
+                                        continue
+                                    if field_to_edit == "tier_gate_htf_trend":
+                                        session.state["htf_trend"] = get_enum_choice("Edit HTF Trend Context", HTFTrendContext)
+                                    elif field_to_edit == "tier_gate_ltf_trend":
+                                        session.state["ltf_trend"] = get_enum_choice("Edit LTF Trend Context", TrendContext)
+                                    elif field_to_edit == "tier_gate_lesson_tact":
+                                        session.state["tier_gate_lesson_tact"] = get_mandatory_text("Edit Tactical Lesson Learned", multiline=True)
+                                    elif field_to_edit == "tier_gate_visual_lesson_path":
+                                        visual_path = handle_visual_lesson_assignment(trade_id, payload.get("asset", "Unknown"), session.state.get("tier_gate_visual_lesson_path", "nan"))
+                                        session.state["tier_gate_visual_lesson_path"] = visual_path
+                            break
+
                         # BLOQUE 3: Datos de entrada
                         sl = session.prompt("sl", get_mandatory_float, "Stop Loss")
                         entry_p = session.prompt("entry_p", get_mandatory_float, "Entry Price")
                         size = session.prompt("size", get_mandatory_float, "Size")
                         tp = session.prompt("tp", get_mandatory_float, "Take Profit")
+
+                        # --- Cuadro de P&L potencial (efímero, NO se persiste en journal.db) ---
+                        # Solo (re)aparece si sl/entry_p/size/tp cambiaron desde el último
+                        # "Aceptar y continuar" -- evita reaparecer en cada edit del panel
+                        # final, que re-atraviesa este while True (:3513). Lista (no tupla)
+                        # para que un round-trip JSON de session.state no rompa la comparación.
+                        _pnl_inputs = [sl, entry_p, size, tp]
+                        if session.state.get("_pnl_box_snapshot") != _pnl_inputs:
+                            _pnl_choice = render_pnl_box(payload.get("asset"), entry_p, size, sl, tp)
+                            if _pnl_choice == "accept":
+                                session.state["_pnl_box_snapshot"] = list(_pnl_inputs)
+                            else:
+                                session.state.pop(_pnl_choice, None)          # se re-pregunta en :3623-3626
+                                session.state.pop("_pnl_box_snapshot", None)
+                                continue
+
+                        # --- Stop Deviation Journaling: nunca bloquea, solo audita ---
+                        # Recalculado en cada vuelta de este while True (:3569), igual que
+                        # el gate emocional (:3801) -- si el operador edita SL/Entry Price
+                        # desde el panel de Review, se recalcula fresh sin código adicional.
+                        _structural_invalidation = get_unified_structural_invalidation(
+                            trade_id, engine=get_active_engine()
+                        )
+                        _dir = get_dir_val("Long" if entry_p > sl else "Short")
+                        if _structural_invalidation is None:
+                            stop_slippage_r = None
+                        else:
+                            _riesgo_teorico = _dir * (entry_p - _structural_invalidation)
+                            _riesgo_real = _dir * (entry_p - sl)
+                            if _riesgo_teorico == 0:
+                                stop_slippage_r = None
+                                logging.getLogger(__name__).warning(
+                                    "stop_slippage_r sin calcular (trade_id=%s): "
+                                    "entry_price == structural_invalidation (%.8f)",
+                                    trade_id, entry_p,
+                                )
+                            else:
+                                stop_slippage_r = (_riesgo_teorico - _riesgo_real) / _riesgo_teorico
+
+                        if stop_slippage_r is not None and stop_slippage_r > 0:
+                            console.print(Panel(
+                                f"[bold yellow]Stop Loss más ajustado que la invalidación estructural "
+                                f"(stop_slippage_r={stop_slippage_r:.4f}).[/bold yellow]\n"
+                                "Registrá por qué el stop táctico se desvió del nivel estructural "
+                                "(no bloquea el avance).",
+                                border_style="yellow"
+                            ))
+                            stop_deviation_reason = session.prompt(
+                                "stop_deviation_reason", ask_stop_deviation_reason
+                            )
+                            stop_deviation_note = session.prompt(
+                                "stop_deviation_note", get_optional_text, "Stop Deviation Note"
+                            )
+                        else:
+                            stop_deviation_reason = None
+                            stop_deviation_note = None
 
                         def ask_entry_time():
                             # Año/mes/día se auto-derivan del created_at del unified analysis
@@ -3579,6 +3856,26 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
                         mental_clarity = session.prompt("mental_clarity", get_mandatory_int, "Mental Clarity Level", 1, 5)
                         impatience = session.prompt("impatience", get_mandatory_int, "Impatience Level", 1, 5)
                         anxiety = session.prompt("anxiety", get_mandatory_int, "Anxiety Level", 1, 5)
+
+                        # --- Gate emocional: anxiety_level >= 4, override auditable ---
+                        # Independiente del gate de Tier D/F (que ya cortó el wizard más
+                        # arriba, sin override, si aplicaba) -- ver ARCHITECTURE.md §15.
+                        # Recalculado en cada vuelta de este while True (:3569): si el
+                        # usuario baja el nivel vía "Edit a Field" antes de guardar, el
+                        # override deja de exigirse solo, sin código adicional.
+                        if anxiety is not None and anxiety >= ANXIETY_GATE_THRESHOLD:
+                            console.print(Panel(
+                                f"[bold red]Anxiety Level {anxiety}/5 — gate emocional activado.[/bold red]\n"
+                                "Se requiere una justificación explícita para guardar este registro.",
+                                border_style="red"
+                            ))
+                            emotional_override_reason = session.prompt(
+                                "emotional_gate_override_reason", get_mandatory_text,
+                                "Emotional Gate Override — Justificación obligatoria", multiline=True
+                            )
+                        else:
+                            emotional_override_reason = None
+
                         market_state = session.prompt("market_state", get_enum_choice, "Market State", MarketState)
                         setup_t = session.prompt("setup_t", get_enum_choice, "Setup Type", SetupType)
                         cost = session.prompt("cost", get_mandatory_float, "Cost (Fees/Funding)")
@@ -3595,6 +3892,7 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
                             audit_tactical = TacticalAudit(
                                 tactical_id=trade_id,
                                 tactical_row_id=existing_tactical_row_id,
+                                asset=payload.get("asset"),
                                 order_filled=False,
                                 skip_reason=skip_reason,
                                 htf_trend_context=htf_trend,
@@ -3626,6 +3924,10 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
                                 gates_failed=gates_failed_cnt,
                                 confirmations_count=confirmations_count,
                                 mfe_potencial_estimado=mfe_potencial,
+                                emotional_gate_override_reason=emotional_override_reason,
+                                stop_slippage_r=stop_slippage_r,
+                                stop_deviation_reason=stop_deviation_reason,
+                                stop_deviation_note=stop_deviation_note,
                             )
                         else:
                             # BLOQUE 5 (llenada): datos post-fill
@@ -3645,6 +3947,7 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
                             audit_tactical = TacticalAudit(
                                 tactical_id=trade_id,
                                 tactical_row_id=existing_tactical_row_id,
+                                asset=payload.get("asset"),
                                 order_filled=True,
                                 htf_trend_context=htf_trend,
                                 ltf_trend_context=ltf_trend,
@@ -3685,6 +3988,10 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
                                 gates_failed=gates_failed_cnt,
                                 confirmations_count=confirmations_count,
                                 mfe_potencial_estimado=mfe_potencial,
+                                emotional_gate_override_reason=emotional_override_reason,
+                                stop_slippage_r=stop_slippage_r,
+                                stop_deviation_reason=stop_deviation_reason,
+                                stop_deviation_note=stop_deviation_note,
                             )
 
                         # --- Review Panel (común a ambos desenlaces) ---
@@ -3723,9 +4030,11 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
                         rev_text.append("--- Calculated Algebraic Metrics ---\n", style="bold yellow")
                         rev_text.append(f"Resolved Direction:   {audit_tactical.trade_decision}\n", style="bold cyan")
                         rev_text.append(f"Notional Size:        {audit_tactical.notional_size:.2f}\n", style="white")
-                        rev_text.append(f"Notional Size USD:    {audit_tactical.notional_size:.2f}\n", style="white")
+                        _nsu = audit_tactical.notional_size_usd
+                        rev_text.append(f"Notional Size USD:    {f'{_nsu:.2f}' if _nsu is not None else 'N/A (símbolo no verificado)'}\n", style="white")
                         rev_text.append(f"Capital At Risk:      {audit_tactical.capital_at_risk:.2f}\n", style="white")
-                        rev_text.append(f"Risk USD:             {audit_tactical.risk_usd:.2f}\n", style="white")
+                        _rusd = audit_tactical.risk_usd
+                        rev_text.append(f"Risk USD:             {f'{_rusd:.2f}' if _rusd is not None else 'N/A (símbolo no verificado)'}\n", style="white" if _rusd is not None else "yellow")
                         rev_text.append(f"PnL:                  {audit_tactical.pnl if audit_tactical.pnl is not None else 'N/A'}\n", style="white")
                         rev_text.append(f"PnL and Cost:         {audit_tactical.pnl_and_cost if audit_tactical.pnl_and_cost is not None else 'N/A'}\n", style="white")
                         rev_text.append(f"R:R:                  {audit_tactical.r_r if audit_tactical.r_r is not None else 'N/A'}\n", style="white")
@@ -3784,7 +4093,24 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
                         rev_text.append("--- Internal State Thresholds ---\n", style="bold orange1")
                         rev_text.append(f"Anxiety Level:        {anxiety}\n", style="white")
                         rev_text.append(f"Impatience Level:     {impatience}\n", style="white")
-                        rev_text.append(f"Mental Clarity Level: {mental_clarity}\n\n", style="white")
+                        rev_text.append(f"Mental Clarity Level: {mental_clarity}\n", style="white")
+                        if emotional_override_reason:
+                            rev_text.append(
+                                f"Emotional Gate Override:\n  {format_indented_block(emotional_override_reason, indent_spaces=2, first_line_flush=False, wrap_width=60)}\n",
+                                style="bold red"
+                            )
+                        if stop_slippage_r is not None and stop_slippage_r > 0:
+                            rev_text.append(f"Stop Slippage R:      {stop_slippage_r:.4f}\n", style="yellow")
+                            rev_text.append(
+                                f"Stop Deviation Reason: {stop_deviation_reason.value if stop_deviation_reason else 'N/A'}\n",
+                                style="yellow"
+                            )
+                            if stop_deviation_note:
+                                rev_text.append(
+                                    f"Stop Deviation Note:\n  {format_indented_block(stop_deviation_note, indent_spaces=2, first_line_flush=False, wrap_width=60)}\n",
+                                    style="dim italic"
+                                )
+                        rev_text.append("\n")
 
                         # --- Qualitative Notes ---
                         rev_text.append("--- Qualitative Notes ---\n", style="bold cyan")
@@ -5329,10 +5655,27 @@ def flow_repair_analysis_audits():
                         
                         cost = float(w["cost"]) if w.get("cost") else 0.0
                         
+                        # Resolve the instrument's contract_size (config/contract_specs.py).
+                        # NO VERIFICADO / desconocido / sin asset -> None (calculate_algebraic_metrics
+                        # trata None como multiplicador 1); nunca truena el repair flow.
+                        _cs = None
+                        try:
+                            from tools import pnl_calculator as _pnl
+                            _cs = _pnl.resolve_spec(w.get("asset"))["contract_size"]
+                        except (_pnl.UnverifiedSymbolError, _pnl.UnknownSymbolError) as _e:
+                            logging.getLogger(__name__).warning(
+                                "contract_size sin resolver en repair flow (asset=%r): %s", w.get("asset"), _e)
+
                         # Pass 2: Calculated Math passing the resolved direction as an input parameter
                         try:
-                            metrics = calculate_algebraic_metrics(direction, ep, sl, cp, tp, size, mae, mfe, cost)
+                            metrics = calculate_algebraic_metrics(direction, ep, sl, cp, tp, size, mae, mfe, cost, contract_size=_cs)
                             w.update(metrics)
+                            if _cs is None:
+                                # Símbolo NO VERIFICADO: no persistir ningún campo escalado por
+                                # contract_size sin el multiplicador (sería 1/contract_size del
+                                # valor real). None -- mismo criterio que el validator de audit_tactical.
+                                for _f in MONEY_FIELDS_REQUIRING_CONTRACT_SIZE:
+                                    w[_f] = None
                         except ValueError as e:
                             console.print(f"[bold red]Validation Error: {e}[/bold red]")
                             w.update({
@@ -5430,10 +5773,14 @@ def flow_repair_analysis_audits():
                         # --- Calculated Algebraic Metrics ---
                         rev_text.append("\n--- Calculated Algebraic Metrics ---\n", style="bold yellow")
                         rev_text.append(f"Resolved Direction: {workspace['trade_decision']}\n", style="bold cyan")
-                        rev_text.append(f"Notional Size: {workspace.get('notional_size', 0.0):.2f}\n", style="white")
-                        rev_text.append(f"Notional Size USD: {workspace.get('notional_size_usd', 0.0):.2f}\n", style="white")
-                        rev_text.append(f"Capital At Risk: {workspace.get('capital_at_risk', 0.0):.2f}\n", style="white")
-                        rev_text.append(f"Risk USD: {workspace.get('risk_usd', 0.0):.2f}\n", style="white")
+                        _ns = workspace.get('notional_size')
+                        rev_text.append(f"Notional Size: {f'{_ns:.2f}' if _ns is not None else 'N/A (símbolo no verificado)'}\n", style="white")
+                        _nsu = workspace.get('notional_size_usd')
+                        rev_text.append(f"Notional Size USD: {f'{_nsu:.2f}' if _nsu is not None else 'N/A (símbolo no verificado)'}\n", style="white")
+                        _car = workspace.get('capital_at_risk')
+                        rev_text.append(f"Capital At Risk: {f'{_car:.2f}' if _car is not None else 'N/A (símbolo no verificado)'}\n", style="white")
+                        _rusd = workspace.get('risk_usd')
+                        rev_text.append(f"Risk USD: {f'{_rusd:.2f}' if _rusd is not None else 'N/A (símbolo no verificado)'}\n", style="white" if _rusd is not None else "yellow")
                         rev_text.append(f"PnL: {workspace.get('pnl', 0.0):.2f}\n", style="white")
                         rev_text.append(f"PnL and Cost: {workspace.get('pnl_and_cost', 0.0):.2f}\n", style="white")
                         rev_text.append(f"R:R: {workspace.get('r_r', 0.0):.2f}\n", style="white")
@@ -5806,11 +6153,11 @@ def flow_repair_analysis_audits():
                                         int(workspace["anxiety_level"]),
                                         int(workspace["impatience_level"]),
                                         int(workspace["mental_clarity_level"]),
-                                        float(workspace["risk_usd"]),
+                                        float(workspace["risk_usd"]) if workspace.get("risk_usd") is not None else None,
                                         float(workspace["r_r"]),
                                         float(workspace["pnl_and_cost"]),
-                                        float(workspace["notional_size"]),
-                                        float(workspace["capital_at_risk"]),
+                                        float(workspace["notional_size"]) if workspace.get("notional_size") is not None else None,
+                                        float(workspace["capital_at_risk"]) if workspace.get("capital_at_risk") is not None else None,
                                         workspace["trade_decision"],
                                         json.dumps(workspace["emotions"]) if workspace["emotions"] else None,
                                         json.dumps(workspace["behavioral_errors"]) if workspace["behavioral_errors"] else None,
@@ -5888,11 +6235,11 @@ def flow_repair_analysis_audits():
                                         int(workspace["anxiety_level"]),
                                         int(workspace["impatience_level"]),
                                         int(workspace["mental_clarity_level"]),
-                                        float(workspace["risk_usd"]),
+                                        float(workspace["risk_usd"]) if workspace.get("risk_usd") is not None else None,
                                         float(workspace["r_r"]),
                                         float(workspace["pnl_and_cost"]),
-                                        float(workspace["notional_size"]),
-                                        float(workspace["capital_at_risk"]),
+                                        float(workspace["notional_size"]) if workspace.get("notional_size") is not None else None,
+                                        float(workspace["capital_at_risk"]) if workspace.get("capital_at_risk") is not None else None,
                                         workspace["trade_decision"],
                                         json.dumps(workspace["emotions"]) if workspace["emotions"] else None,
                                         json.dumps(workspace["behavioral_errors"]) if workspace["behavioral_errors"] else None,

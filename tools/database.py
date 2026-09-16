@@ -202,6 +202,8 @@ class TacticalAudit(Base):
     ltf_trend_context: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     confirmation_5m_15m: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     confirmation_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Stop Deviation Journaling (auditable, no bloqueante) -- valor de StopDeviationReason.value
+    stop_deviation_reason: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     # Numeric scales
     anxiety_level: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -222,6 +224,8 @@ class TacticalAudit(Base):
     could_hit_tp: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     take_profit: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
     stop_loss: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
+    # Stop Deviation Journaling: (stop_loss vs unified_department.structural_invalidation)
+    stop_slippage_r: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
     pnl_and_cost: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
     mae_adverse: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
     captured_mae: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
@@ -236,10 +240,20 @@ class TacticalAudit(Base):
     # Text blocks
     lesson_learned: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     visual_lesson_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Justificación obligatoria del gate emocional (anxiety_level >= 4). Gate
+    # independiente del Tier D/F -- ver ARCHITECTURE.md §15.
+    emotional_gate_override_reason: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Stop Deviation Journaling: nota libre opcional, nunca validada
+    stop_deviation_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     pre_trade_emotions: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     mid_trade_emotions: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     post_trade_emotions: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     confirmation_params: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+
+    # Trazabilidad de la migración histórica de `size` (Track B, tools/apply_historical_size_migration.py)
+    size_source: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    size_match_confidence: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    size_migrated_at: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     unified_department: Mapped["UnifiedDepartment"] = relationship(back_populates="tactical_audits")
 
@@ -331,6 +345,17 @@ def init_db(db_url: str = "sqlite:///.data/flight_account_001_xauusd.db"):
                 conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN order_filled BOOLEAN DEFAULT 1"))
             if 'skip_reason' not in columns:
                 conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN skip_reason VARCHAR"))
+            for _sz_col in ('size_source', 'size_match_confidence', 'size_migrated_at'):
+                if _sz_col not in columns:
+                    conn.execute(text(f"ALTER TABLE tactical_audit ADD COLUMN {_sz_col} VARCHAR"))
+            if 'emotional_gate_override_reason' not in columns:
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN emotional_gate_override_reason VARCHAR"))
+            if 'stop_slippage_r' not in columns:
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN stop_slippage_r NUMERIC"))
+            if 'stop_deviation_reason' not in columns:
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN stop_deviation_reason VARCHAR"))
+            if 'stop_deviation_note' not in columns:
+                conn.execute(text("ALTER TABLE tactical_audit ADD COLUMN stop_deviation_note TEXT"))
 
         # Migrate EfficiencyAudit table
         if "efficiency_audit" in inspector.get_table_names():
@@ -525,6 +550,19 @@ def get_unified_created_at(trade_id: str, engine=None) -> Optional[datetime.date
         return session.scalar(
             select(UnifiedDepartment.created_at).where(UnifiedDepartment.id == trade_id)
         )
+
+def get_unified_structural_invalidation(trade_id: str, engine=None) -> Optional[float]:
+    """Devuelve UnifiedDepartment.structural_invalidation para trade_id, o None si no
+    existe / es NULL -- usada por Stop Deviation Journaling (cli/main.py) para computar
+    stop_slippage_r. None se propaga tal cual, nunca se sustituye (Stop Deviation
+    Journaling nunca bloquea el guardado).
+    """
+    eng = engine or engine_default
+    with Session(eng) as session:
+        value = session.scalar(
+            select(UnifiedDepartment.structural_invalidation).where(UnifiedDepartment.id == trade_id)
+        )
+        return float(value) if value is not None else None
 
 def get_records_by_state(state: LifecycleState | List[LifecycleState], engine=None) -> List[dict]:
     eng = engine or engine_default

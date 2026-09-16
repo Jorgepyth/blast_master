@@ -17,9 +17,13 @@ def test_engine():
     return init_db("sqlite:///:memory:")
 
 def test_dynamic_exposure_math():
+    # Fase 2f: notional_size / capital_at_risk aplican contract_size en el validator.
+    # asset XAUUSDT.P -> contract_size 100; valores esperados x100 vs pre-Fase-2f
+    # (notional_size 1000.0 -> 100000.0, capital_at_risk 100.0 -> 10000.0).
     # Long Trade Decision Test
     audit_long = PydanticTacticalAudit(
         tactical_id="trade-1",
+        asset="XAUUSDT.P",
         compliance="Edge_valid",
         entry_price=100.0,
         stop_loss=90.0,
@@ -28,12 +32,13 @@ def test_dynamic_exposure_math():
         cost=0.0
     )
     assert audit_long.trade_decision == "Long"
-    assert audit_long.notional_size == 1000.0
-    assert audit_long.capital_at_risk == 100.0
+    assert audit_long.notional_size == 100000.0        # 100 * 10 * 100
+    assert audit_long.capital_at_risk == 10000.0       # 10 * (100-90) * 100
 
     # Short Trade Decision Test
     audit_short = PydanticTacticalAudit(
         tactical_id="trade-2",
+        asset="XAUUSDT.P",
         compliance="Edge_valid",
         entry_price=100.0,
         stop_loss=110.0,
@@ -42,8 +47,8 @@ def test_dynamic_exposure_math():
         cost=0.0
     )
     assert audit_short.trade_decision == "Short"
-    assert audit_short.notional_size == 1000.0
-    assert audit_short.capital_at_risk == 100.0
+    assert audit_short.notional_size == 100000.0       # 100 * 10 * 100
+    assert audit_short.capital_at_risk == 10000.0      # 10 * (110-100) * 100
 
 def test_backdated_and_exposure_db_persistence(test_engine):
     record_id = "test-backdated-123"
@@ -99,8 +104,10 @@ def test_backdated_and_exposure_db_persistence(test_engine):
     }
     
     # Calculate using Pydantic model
+    # Fase 2f: asset XAUUSDT.P -> contract_size 100; notional_size / capital_at_risk x100.
     pyd_ta = PydanticTacticalAudit(
         tactical_id=record_id,
+        asset="XAUUSDT.P",
         cost=0.0,
         **audit_tact_payload
     )
@@ -120,8 +127,8 @@ def test_backdated_and_exposure_db_persistence(test_engine):
         assert record.state == LifecycleState.READY_FOR_NOTION.value
         assert len(record.tactical_audits) == 1
         ta = record.tactical_audits[0]
-        assert ta.notional_size == 25000.0
-        assert ta.capital_at_risk == 500.0
+        assert ta.notional_size == 2500000.0      # 50000 * 0.5 * 100  (pre-2f: 25000.0)
+        assert ta.capital_at_risk == 50000.0      # 0.5 * (50000-49000) * 100  (pre-2f: 500.0)
         assert ta.mae_adverse == 1.0
         assert ta.mfe_favorable == 2.0
         # Long trade: r_multiple = (closing_price - entry_price) / abs(entry_price - stop_loss)

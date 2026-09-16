@@ -120,7 +120,7 @@ def test_flow_repair_analysis_audits_tactical_math_and_parameterized_updates(moc
     with Session(in_memory_db) as session:
         record = UnifiedDepartment(
             id="trade-5678",
-            asset="BTC/USDT",
+            asset="XAUUSDT.P",  # VERIFICADO -> contract_size=100 (Fase 2b/2c)
             market_bias="Bullish",
             calc_edge=0.45,
             edge_description="My long trade",
@@ -212,13 +212,74 @@ def test_flow_repair_analysis_audits_tactical_math_and_parameterized_updates(moc
         ta = session.execute(select(TacticalAudit).where(TacticalAudit.trade_id == "trade-5678")).scalar()
         assert ta is not None
         assert ta.entry_price == 105.0
-        assert ta.notional_size == 210.0
-        assert ta.capital_at_risk == 20.0
-        assert ta.risk_usd == 20.0
-        assert ta.pnl_and_cost == 10.0
+        # Fase 2b/2c/2e: notional_size / capital_at_risk / risk_usd / pnl_and_cost
+        # escalan por contract_size=100 (XAUUSDT.P). r_r / r_multiple / captured_* son
+        # ratios -> NO escalan.
+        assert ta.notional_size == 21000.0   # 105.0 * 2.0 * 100
+        assert ta.capital_at_risk == 2000.0  # 2.0 * (105.0 - 95.0) * 100
+        assert ta.risk_usd == 2000.0         # 2.0 * |105.0 - 95.0| * 100
+        assert ta.pnl_and_cost == 1000.0     # (110.0 - 105.0) * 2.0 * 100 - cost(0)  [Fase 2e: antes 10.0]
         assert ta.r_r == 1.5
         assert ta.r_multiple == 0.5
         assert ta.captured_mfe == 0.25
+
+
+@patch("tools.database.engine_default")
+@patch("InquirerPy.inquirer.select")
+def test_flow_repair_analysis_audits_unverified_symbol_persists_null_risk(mock_select, mock_engine_default, in_memory_db):
+    """Fase 2c -- capa de PERSISTENCIA: correr el repair flow completo sobre una fila
+    cuyo `asset` no resuelve a un símbolo VERIFICADO y confirmar, leyendo la fila real
+    de la DB por SQL crudo, que risk_usd / capital_at_risk / notional_size llegan como
+    NULL en la base (no el valor sin contract_size)."""
+    from sqlalchemy import text
+    mock_engine_default.return_value = in_memory_db
+    tools.database.engine_default = in_memory_db
+
+    with Session(in_memory_db) as session:
+        session.add(UnifiedDepartment(
+            id="trade-nv", asset="BTC/USDT",  # ni alias ni clave en CONTRACT_SPECS -> UnknownSymbolError
+            market_bias="Bullish", calc_edge=0.4, edge_description="x", p4_hierarchy="x",
+            p1_timeframe="5M", p1_type="1st_iteration", nodes_l1=1, nodes_l2=1,
+            tactical_classification="Continuation_Pressure",
+            long_prob=0.7, short_prob=0.2, no_trade_prob=0.1,
+            created_at=datetime.datetime.utcnow(), updated_at=datetime.datetime.utcnow(),
+        ))
+        session.add(EfficiencyAudit(
+            id="trade-nv", bias_a="Bullish", resolution_type="Confirmed", real_bias_b="Bullish",
+            structural_resolution="x", failure_reason="N/A", specific_bias_compliance="Valid",
+            false_regime_rate="True Positive", lesson_learned="no lesson",
+        ))
+        session.add(TacticalAudit(
+            trade_id="trade-nv", order_filled=True, entry_price=100.0, closing_price=110.0,
+            size=2.0, stop_loss=95.0, take_profit=120.0, mae_adverse=0.1, mfe_favorable=2.0,
+            could_hit_tp="yes", risk_usd=10.0, r_r=4.0, pnl_and_cost=20.0, notional_size=200.0,
+            capital_at_risk=10.0, trade_decision="Long", lesson_learned="nice win",
+        ))
+        session.commit()
+
+    mock_prompt = MagicMock()
+    mock_select.return_value = mock_prompt
+    mock_prompt.execute.side_effect = ["tactical", "edit", "entry_price", "save", "back"]
+
+    with patch("cli.main.get_mandatory_text", side_effect=["1", "b"]), \
+         patch("cli.main.get_mandatory_float", return_value=105.0), \
+         patch("builtins.input", return_value=""):
+        flow_repair_analysis_audits()
+
+    with Session(in_memory_db) as session:
+        row = session.execute(text(
+            "SELECT risk_usd, capital_at_risk, notional_size, entry_price "
+            "FROM tactical_audit WHERE trade_id = 'trade-nv'")).one()
+    assert row.entry_price == 105.0            # el edit se persistió
+    assert row.risk_usd is None               # NULL en la DB, no 2.0*10 = 20.0
+    assert row.capital_at_risk is None        # NULL en la DB, no 20.0
+    assert row.notional_size is None          # NULL en la DB, no 105.0*2.0 = 210.0
+    # notional_size_usd también se anula en el workspace (MONEY_FIELDS_REQUIRING_CONTRACT_SIZE)
+    # pero NO es columna de tactical_audit -> no hay fila SQL que verificar. Guardamos que
+    # la constante lo cubra, para que un futuro que lo persista no lo deje desprotegido.
+    from cli.main import MONEY_FIELDS_REQUIRING_CONTRACT_SIZE
+    assert "notional_size_usd" in MONEY_FIELDS_REQUIRING_CONTRACT_SIZE
+
 
 @patch("tools.database.engine_default")
 @patch("InquirerPy.inquirer.select")

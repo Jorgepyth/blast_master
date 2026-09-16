@@ -79,7 +79,7 @@ def calculate_structural_entry(validation_price, invalidation_price) -> Decimal:
     return (dvp + target_rr * dip) / (Decimal('1') + target_rr)
 
 # Funciones heredadas (No modificar)
-def calculate_algebraic_metrics(direction: str, ep: float, sl: float, cp: float, tp: float, size: float, mae: float, mfe: float, cost: float = 0.0):
+def calculate_algebraic_metrics(direction: str, ep: float, sl: float, cp: float, tp: float, size: float, mae: float, mfe: float, cost: float = 0.0, contract_size=None):
     dep = Decimal(str(ep))
     dsl = Decimal(str(sl))
     dcp = Decimal(str(cp))
@@ -96,8 +96,9 @@ def calculate_algebraic_metrics(direction: str, ep: float, sl: float, cp: float,
     if dsize <= Decimal('0.0'):
         raise ValueError("El tamaño de la posición (Size) debe ser mayor a cero.")
 
-    notional_size = dep * dsize
-    notional_size_usd = dep * dsize
+    _cs = Decimal(str(contract_size)) if contract_size is not None else Decimal("1")
+    notional_size = dep * dsize * _cs
+    notional_size_usd = dep * dsize * _cs
     sl_dist = abs(dep - dsl)
     tp_dist = abs(dep - dtp)
     
@@ -105,15 +106,15 @@ def calculate_algebraic_metrics(direction: str, ep: float, sl: float, cp: float,
     dist_to_tp = tp_dist / dep if dep != Decimal('0.0') else Decimal('0.0')
     
     if direction == "Long":
-        capital_at_risk = dsize * (dep - dsl)
-        risk_usd = dsize * sl_dist
-        pnl = (dcp - dep) * dsize
+        capital_at_risk = dsize * (dep - dsl) * _cs
+        risk_usd = dsize * sl_dist * _cs
+        pnl = (dcp - dep) * dsize * _cs
         r_r = (dtp - dep) / sl_dist if sl_dist != Decimal('0.0') else Decimal('0.0')
         r_multiple = (dcp - dep) / sl_dist if sl_dist != Decimal('0.0') else Decimal('0.0')
     else:
-        capital_at_risk = dsize * (dsl - dep)
-        risk_usd = dsize * sl_dist
-        pnl = (dep - dcp) * dsize
+        capital_at_risk = dsize * (dsl - dep) * _cs
+        risk_usd = dsize * sl_dist * _cs
+        pnl = (dep - dcp) * dsize * _cs
         r_r = (dep - dtp) / sl_dist if sl_dist != Decimal('0.0') else Decimal('0.0')
         r_multiple = (dep - dcp) / sl_dist if sl_dist != Decimal('0.0') else Decimal('0.0')
         

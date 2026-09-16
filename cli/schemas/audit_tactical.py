@@ -1,3 +1,4 @@
+import logging
 from enum import Enum
 from typing import Optional, List, Any
 from datetime import datetime, timezone, timedelta
@@ -181,9 +182,34 @@ class CognitivePatterns(str, Enum):
     NA = "N/A"
     SKIP = "Skip"
 
+class StopDeviationReason(str, Enum):
+    RISK_BUDGET_CONSTRAINT = "risk_budget_constraint"
+    ALT_INVALIDATION_LEVEL = "alt_invalidation_level"
+    TIME_STOP_SUBSTITUTE   = "time_stop_substitute"
+    DISCRETIONARY_NO_BASIS = "discretionary_no_basis"
+    SUSPECTED_DATA_ERROR   = "suspected_data_error"
+    OTHER_CODED            = "other_coded"
+
+# Texto completo mostrado al operador (cli/main.py:ask_stop_deviation_reason). El
+# `.value` de arriba es lo que se persiste; este dict es solo de presentación --
+# a diferencia de FailureReason (cli/schemas/audit_efficiency.py), donde el texto
+# largo vive directo en el .value.
+STOP_DEVIATION_REASON_LABELS: dict = {
+    StopDeviationReason.RISK_BUDGET_CONSTRAINT: "Restricción de riesgo/tamaño -- Tu riesgo máximo permitido ($/%) o el tamaño mínimo de lote disponible no te dejaban usar la distancia completa hasta structural_invalidation sin exceder el riesgo. En vez de reducir el tamaño de posición, acortaste el stop.",
+    StopDeviationReason.ALT_INVALIDATION_LEVEL: "Nivel de invalidación alternativo -- Identificaste un nivel técnico más cercano al entry (micro-estructura, order block, FVG de un timeframe menor) que consideras invalidación válida para esta operación, distinto al nivel macro registrado en el análisis estructural de Fase 1.",
+    StopDeviationReason.TIME_STOP_SUBSTITUTE: "Sustituto de time-stop -- Tu plan real es salir por comportamiento de precio/tiempo antes de llegar a la invalidación estructural completa. El stop de precio es un límite de seguridad, no tu criterio de salida principal.",
+    StopDeviationReason.DISCRETIONARY_NO_BASIS: "Discrecional sin base técnica -- No hay un nivel, regla o cálculo que respalde el stop más angosto. Fue una decisión en el momento (comodidad, ansiedad, deseo de reducir exposición) sin justificación técnica.",
+    StopDeviationReason.SUSPECTED_DATA_ERROR: "Posible error de captura -- Sospechas que el stop que tecleaste, o el structural_invalidation guardado en el análisis original, tiene un error. Marca esto para revisión manual.",
+    StopDeviationReason.OTHER_CODED: "Otra razón -- Ninguna de las anteriores aplica.",
+}
+
 class TacticalAudit(BaseModel):
     tactical_id: str
     tactical_row_id: Optional[str] = None  # existing tactical_audit.id being edited; None = create a new row
+    # Instrument symbol (unified_department.asset). Nullable so existing construction
+    # sites that don't pass it still work. Used by the validator to resolve
+    # contract_size via tools/pnl_calculator for risk_usd / notional_size_usd.
+    asset: Optional[str] = None
     order_filled: bool = True
     skip_reason: Optional[SkipReason] = None
     entry_time: Optional[datetime] = None
@@ -198,6 +224,9 @@ class TacticalAudit(BaseModel):
     setup_type: Optional[SetupType] = None
     htf_trend_context: Optional[HTFTrendContext] = None
     confirmation_status: Optional[ConfirmationStatus] = None
+    # Stop Deviation Journaling (auditable, no bloqueante) -- solo se puebla cuando
+    # stop_slippage_r > 0. Ver cli/main.py (ask_stop_deviation_reason).
+    stop_deviation_reason: Optional[StopDeviationReason] = None
 
     # New manual categorical/text fields
     ltf_trend_context: Optional[TrendContext] = None
@@ -225,12 +254,23 @@ class TacticalAudit(BaseModel):
     could_hit_tp: Optional[str] = None
     take_profit: Optional[float] = None
     stop_loss: Optional[float] = None
+    # Stop Deviation Journaling: (stop_loss vs unified_department.structural_invalidation),
+    # calculado siempre en cli/main.py cuando hay dato base; None si no hay
+    # structural_invalidation. Nunca bloquea el guardado.
+    stop_slippage_r: Optional[float] = None
     mae: Optional[float] = Field(default=None, ge=0.0, le=10.0)
     mfe: Optional[float] = Field(default=None, ge=0.0, le=10.0)
 
     # Text blocks
     lesson_learned: Optional[str] = None
     visual_lesson_path: Optional[str] = None
+    # Justificación obligatoria cuando el gate emocional (anxiety_level >= 4,
+    # cli/main.py) se dispara. Gate independiente del Tier D/F -- ver
+    # ARCHITECTURE.md §15.
+    emotional_gate_override_reason: Optional[str] = None
+    # Stop Deviation Journaling: nota libre opcional, nunca validada ni usada en
+    # reportes cuantitativos -- contexto humano suplementario.
+    stop_deviation_note: Optional[str] = None
 
     # Motor B (Gates)
     g1_trend_15m: Optional[bool] = False
@@ -289,17 +329,42 @@ class TacticalAudit(BaseModel):
             td = "Long" if ep > sl else "Short"
             self.trade_decision = td
 
-            # notional_size_usd = entry_price * size
-            self.notional_size_usd = ep * size
-            self.notional_size = ep * size
+            # Campos monetarios (notional_size, notional_size_usd, risk_usd,
+            # capital_at_risk, y más abajo pnl / pnl_and_cost): fórmula
+            # `precio · size · contract_size`. El contract_size del instrumento se
+            # resuelve una sola vez vía tools/pnl_calculator (config/contract_specs.py).
+            # Sin asset, o símbolo NO VERIFICADO / desconocido -> _cs = None: TODOS
+            # estos campos quedan en None + warn-log; el resto del tactical_audit se
+            # guarda igual (nunca bloquea el guardado).
+            # Fase 2f (2026-09-06): notional_size / capital_at_risk / pnl dejaron de
+            # ignorar contract_size (antes usaban `ep*size` / `size*(ep-sl)` / etc.
+            # crudos, 100x mal en XAUUSDT.P). risk_usd / notional_size_usd ya lo
+            # aplicaban desde Fase 2a.
+            from decimal import Decimal as _D
+            from tools import pnl_calculator as _pnl
+            try:
+                _cs = _pnl.resolve_spec(self.asset)["contract_size"]
+            except (_pnl.UnverifiedSymbolError, _pnl.UnknownSymbolError) as _e:
+                _cs = None
+                logging.getLogger(__name__).warning(
+                    "campos monetarios sin calcular (tactical_id=%s, asset=%r): %s",
+                    self.tactical_id, self.asset, _e,
+                )
 
-            # risk_usd = size * abs(entry_price - stop_loss)
-            self.risk_usd = size * abs(ep - sl)
-            
-            if td == "Long":
-                self.capital_at_risk = size * (ep - sl)
+            if _cs is not None:
+                _epd, _sld, _szd = _D(str(ep)), _D(str(sl)), _D(str(size))
+                self.notional_size = _epd * _szd * _cs
+                self.notional_size_usd = _epd * _szd * _cs
+                self.risk_usd = abs(_epd - _sld) * _szd * _cs
+                if td == "Long":
+                    self.capital_at_risk = _szd * (_epd - _sld) * _cs
+                else:
+                    self.capital_at_risk = _szd * (_sld - _epd) * _cs
             else:
-                self.capital_at_risk = size * (sl - ep)
+                self.notional_size = None
+                self.notional_size_usd = None
+                self.risk_usd = None
+                self.capital_at_risk = None
 
             # dist_to_sl = abs(entry_price - stop_loss) / entry_price
             if ep != 0:
@@ -322,14 +387,20 @@ class TacticalAudit(BaseModel):
                     self.r_r = 0.0
 
             if cp is not None:
-                # pnl = (closing_price - entry_price) * size [Invert terms for Short]
-                if td == "Long":
-                    self.pnl = (cp - ep) * size
+                # pnl = (closing_price - entry_price) * size * contract_size [Invert terms for Short]
+                # Fase 2f: sin contract_size resuelto (_cs None) -> pnl / pnl_and_cost None,
+                # mismo criterio que el resto de los campos monetarios.
+                if _cs is not None:
+                    _epd, _cpd, _szd = _D(str(ep)), _D(str(cp)), _D(str(size))
+                    if td == "Long":
+                        self.pnl = (_cpd - _epd) * _szd * _cs
+                    else:
+                        self.pnl = (_epd - _cpd) * _szd * _cs
+                    # pnl_and_cost = pnl - cost
+                    self.pnl_and_cost = self.pnl - _D(str(cost))
                 else:
-                    self.pnl = (ep - cp) * size
-
-                # pnl_and_cost = pnl - cost
-                self.pnl_and_cost = self.pnl - cost
+                    self.pnl = None
+                    self.pnl_and_cost = None
 
                 # r_multiple = (closing_price - entry_price) / abs(entry_price - stop_loss) [Invert numerator for Short]
                 sl_dist_abs = abs(ep - sl)

@@ -314,3 +314,25 @@ stateDiagram-v2
 - **Tier Setup** — Clasificación de calidad de un setup de trading. Valores reales: `A, B, C, D, F, SKIP` (`cli/schemas/audit_tactical.py:13`) — sin nivel "E". `[VERIFICADO]`.
 - **Flight Session** — Unidad de sesión operativa por cuenta, gestionada por `FlightSessionManager` (`cli/main.py:288`), que crea/nombra un archivo `.db` independiente por cuenta con el patrón `flight_account_{account_index}_{sanitized_nickname}.db`. `[VERIFICADO]`.
 - **`LifecycleState`** — Máquina de estados del ciclo de vida de un trade (8 valores declarados, `tools/database.py:10-17`). Ver §5 para el diagrama y qué transiciones tienen evidencia real de escritura.
+
+## 14. Tier D/F — gate duro en Tactical Audit
+
+**Por qué:** una auditoría RCA sobre 35 trades ejecutados encontró que 15 (43%) fueron tier D o F, con -8.02R agregado, contra +14.90R de tier A (profit factor_R 3.46). `tier_setup` se calculaba pero era puramente informativo — no bloqueaba nada. Esta feature lo convierte en un gate duro, sin override/flag/env var, que detiene el wizard de `flow_pending_audits` (rama `tac`) antes de pedir cualquier campo de entrada de orden (SL, Entry Price, Size, TP).
+
+**Ubicación exacta:** `cli/main.py:3610-3763`, dentro de `flow_pending_audits()`, rama "camino principal" (`else:` de `if abort_trade:`, `:3568`), justo después de que el if/elif existente calcula `tier_setup` (`:3610-3619` — aritmética inline sobre `gates_failed_cnt`/`conf_status`/`confirmations_count`, **no** usa `calc_edge`/P0-P4, que pertenecen al edge score de `audit_efficiency`, algo distinto) y antes de "BLOQUE 3: Datos de entrada" (`:3765` en adelante, `sl`/`entry_p`/`size`/`tp`).
+
+**Display:** una línea `console.print` con el tier, coloreada por grado (`success` para A/B, `warning` para C, `danger` para D/F — estilos ya definidos en `blast_theme`, mismo patrón usado para `edge_style`/`gf_style`/`bias_style`). Para A/B/C es lo único que pasa; el wizard sigue derecho a BLOQUE 3 sin fricción adicional.
+
+**Gate:** si `tier_setup in (TierSetup.D, TierSetup.F)`, se entra a una sub-rama estructuralmente igual a la ya existente `abort_trade` (`:3467-3566`) — pide Lesson Learned + Visual Lesson Path, construye un `TacticalAudit` con `order_filled=False`, placeholders `0.0` en los campos monetarios (`stop_loss`/`entry_price`/`size`/`take_profit`/`cost`/`mae`/`mfe`), panel de review en rojo con Save/Edit (solo campos reflexivos)/Discard, y al guardar cae en el mismo cierre compartido de siempre (`new_payload["audit_tactical"] = at_dump; session.clear_state(); break`). Ningún camino desde ahí llega a BLOQUE 3.
+
+**Sin cambio de schema:** persiste reutilizando `SkipReason.INVALIDADA_ANTES_DE_LLENAR` (valor ya existente) + el `tier_setup` real (`D`/`F`, o `None` si el cálculo falló) + `order_filled=False` — combinación suficiente para identificar estos registros sin ambigüedad. Se descartó agregar un status nuevo tipo `blocked_tier_gate`: hay precedente directo (`abort_trade`/`no_trade` ya guardan este mismo tipo de registro — análisis completo, sin ejecución) y el RCA que motiva la feature necesita estos datos para expectancy/detección de "forzar entrada" sin requerir ninguna migración.
+
+**Fail-closed:** el display + chequeo del gate está envuelto en un `try/except Exception` — cualquier excepción, o un `tier_setup` fuera de `{A,B,C,D,F}`, se trata exactamente como D/F (bloqueado, error mostrado explícitamente, `tier_setup=None` persistido ya que no hay un grado real que fabricar).
+
+**Sin override:** ningún flag/env var/modo debug puede saltarse el bloqueo (verificado por grep en `cli/`, `tools/`, `core/`, `tests/`).
+
+**Loophole cerrado por construcción, no por código extra:** el menú "Edit a Field" del panel de review del camino principal (`:4086`, "Confirmation Status") permite elegir `S7_REVENGE_FORCED` sin la exclusión que sí tiene el prompt inicial de `conf_status` (`:3588`). Pero como el `while True:` que envuelve BLOQUE 2 en adelante (`:3569`) recalcula `tier_setup` desde cero en cada vuelta — incluidas las que siguen a cualquier edit, ya que ninguna rama de edición hace `break`, solo `continue` o cae al final del cuerpo del loop —, el gate se vuelve a evaluar automáticamente con el `conf_status` editado y bloquea igual, aunque BLOQUE 3 ya se hubiera respondido en una vuelta anterior (ese intento nunca se persiste). Cubierto por `tests/test_tactical_tier_gate.py::test_tier_gate_refires_after_edit_menu_forces_s7`.
+
+**Tests:** `tests/test_tactical_tier_gate.py` (5 casos) — tier A/B/C sin fricción hasta Stop Loss; tier F vía "Forzar Entrada" bloquea antes de BLOQUE 3; fallo de cálculo simulado → fail-closed con `tier_setup=None`; el menú de edición de la rama bloqueada no ofrece ningún campo de orden; el loophole de re-edición de `conf_status` a S7 se cierra solo por el recálculo del loop, sin código adicional.
+
+**No se tocó:** `calc_edge`/P0-P4, ningún gate G1-G7/C1-C8 existente (incluida la rama `abort_trade` misma), el bug de `size==1` vs `0.01`.
