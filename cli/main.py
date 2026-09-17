@@ -705,12 +705,23 @@ def get_optional_text(prompt_text, multiline=False):
     return val.strip() if val else None
 
 def ask_stop_deviation_reason():
-    """Selección obligatoria (sin skip) de StopDeviationReason. No usa get_enum_choice()
-    porque el valor persistido (slug corto) y el texto mostrado al operador (largo,
-    STOP_DEVIATION_REASON_LABELS) son distintos -- a diferencia de FailureReason, donde
-    el texto largo vive directo en el .value."""
+    """Selección obligatoria (sin skip) de StopDeviationReason. InquirerPy no envuelve
+    líneas largas -- en una terminal angosta, el texto completo de cada razón
+    (STOP_DEVIATION_REASON_LABELS) se corta antes de terminar la frase. Por eso se
+    imprime primero un panel Rich (que sí envuelve) con las 6 razones completas, y la
+    lista de selección solo muestra el título corto de cada una (la parte antes de
+    " -- " en el label). No usa get_enum_choice() porque el valor persistido (slug
+    corto) y el texto mostrado al operador son distintos -- a diferencia de
+    FailureReason, donde el texto largo vive directo en el .value."""
+    ref_text = Text()
+    for i, r in enumerate(StopDeviationReason):
+        title, _, detail = STOP_DEVIATION_REASON_LABELS[r].partition(" -- ")
+        ref_text.append(f"[{i+1}] {title}\n", style="bold yellow")
+        ref_text.append(f"    {detail}\n\n", style="white")
+    console.print(Panel(ref_text, title="Stop Deviation Reason — opciones", border_style="yellow"))
+
     inq_choices = [
-        Choice(r, name=f"[{i+1}] {STOP_DEVIATION_REASON_LABELS[r]}")
+        Choice(r, name=f"[{i+1}] {STOP_DEVIATION_REASON_LABELS[r].partition(' -- ')[0]}")
         for i, r in enumerate(StopDeviationReason)
     ]
     return bind_pause(inquirer.select(
