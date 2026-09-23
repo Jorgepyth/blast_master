@@ -80,6 +80,59 @@ notebooks de `jupyter/`). No agregar `MetaTrader5` a `requirements.txt` de este
 repo — documentarlo en un `requirements-windows.txt` separado o en el propio
 script externo, nunca en la dependencia gestionada por este entorno/CI.
 
+**Reloj de las velas exportadas (trampa verificada 2026-09-22):** `copy_rates_range`
+devuelve la **hora del servidor del broker** (UTC+3 en verano, UTC+2 en invierno)
+codificada como si fuera UTC, no UTC real. Todo CSV exportado antes del 2026-09-22 está
+corrido +3h: las entradas llenadas reales caían dentro de su vela 15M en 2/29 casos sin
+desplazar, contra 26/34 con +3h. `windows_export/export_p2_ohlc.py` ahora convierte desde
+la hora del servidor (`--server-utc-offset`, que por defecto se detecta del último tick y
+exige mercado abierto), y `tools/p2_backtest.py:calibrate_clock_offset()` valida el reloj
+contra fills + `mark_price` y aborta los pipelines si no cuadra. Para US100 el símbolo MT5
+es `USTEC`, y su historia semanal (732 velas) no alcanza el mínimo de 800 de los modelos P2.
+
+## Auditoría de análisis de datos (`jupyter/*.ipynb`)
+
+**Los notebooks de `jupyter/` no están auditados, y ya se encontraron bugs que invierten
+conclusiones escritas en ellos.** Antes de reusar un número, una tabla o una "Lectura de
+los resultados" de un notebook, verificá cómo se calculó. Una sesión futura dedicada puede
+recorrerlos sección por sección con el checklist de abajo. Todo acceso a las DBs reales,
+en solo lectura (`sqlite3 "file:.data/...db?mode=ro"`).
+
+Bugs ya encontrados, como ejemplo de qué buscar:
+- **`core/edge_analysis.py:analisis_edge()` cuenta todo análisis Choppy como pérdida.**
+  `get_market_outcome()` da `Market_Outcome=0` para Choppy, y `sign(Px) != 0` se anota
+  como fallo. Reproducido 2026-09-22: el win rate de P2 da 20/42 = 47.6%, pero 16 de los
+  42 son pérdidas automáticas por Choppy. Sin ese efecto da 20/26 = 76.9%. Afecta a los
+  cinco parámetros (P0 52→71%, P1 44→68%, P3 45→66%, P4 40→67%) y también a Net Profit,
+  Profit Factor, Participación y Correlación. La conclusión de la Sección 7 de
+  `custom_analysis.ipynb` (*"P2, P3, P4 por debajo de 50%, restan al compuesto"*) **no se
+  sostiene**. **Sin corregir todavía**: es código de producción y cambia la Sección 7, así
+  que espera decisión del usuario. `profit_factor_by_edge_bins()` tiene el artefacto espejo
+  (Choppy `0 == 0` cuenta como acierto), ya señalado en la propia celda 86.
+- **Cualquier análisis sobre CSV de MT5 exportados antes del 2026-09-22** está contaminado
+  por el desfase de +3h (sección anterior).
+- **Etiquetas de exclusión cruzadas en `tools/p2_backtest.py`** (corregido): 25 de 26
+  análisis "sin filas tácticas" sí tenían filas, con `entry_time` nulo.
+- **Lectura de DBs no migradas:** una cuenta que el CLI no abrió desde la última migración
+  aditiva de `init_db()` no tiene las columnas nuevas (US100 no tenía `stop_slippage_r` y
+  3 más). `SELECT` de la entidad ORM completa falla con "no such column". El código de
+  análisis de solo lectura debe pedir columnas explícitas, nunca migrar.
+
+Checklist para auditar un análisis:
+1. **¿Contra qué verdad se mide?** Coexisten tres ground truths que no son intercambiables:
+   la etiqueta `market_bias` × `specific_bias_compliance` (`get_market_outcome`), el precio
+   (qué nivel estructural tocó primero, `core/p2_ground_truth.py`) y el signo de
+   `r_multiple` (el trade real). Coinciden en dirección ~86% (etiqueta vs precio) y ~70%
+   (precio vs trade).
+2. **¿Cómo trata Choppy, los ceros y los NaN?** Ya aparecieron los dos artefactos opuestos:
+   Choppy como victoria automática y como derrota automática.
+3. **¿Hay look-ahead?** Cualquier dato con timestamp ≥ al del anchor, o velas con el reloj
+   corrido.
+4. **¿Qué filas entran y por qué?** Tamaño de muestra e intervalo de confianza. Con n de
+   decenas, diferencias de 10 puntos suelen ser ruido (`core/stats_tests.py`).
+5. **Reproducí el número titular desde la DB por fuera del notebook** antes de creerlo.
+   Los outputs guardados pueden ser de un snapshot viejo de la DB.
+
 ## Estándar de este repo para research/arquitectura
 
 Este proyecto ha tenido descripciones de arquitectura contradictorias entre sesiones (ver ARCHITECTURE.md, encabezado). El estándar establecido: **ningún claim arquitectónico se acepta sin comando verificado**, citado con archivo:línea. No repitas narrativa de sesiones anteriores (incluida la de este mismo archivo) sin volver a verificarla si ha pasado tiempo o el código pudo haber cambiado — trata este documento como snapshot verificado en su fecha de generación, no como fuente perpetua de verdad.
