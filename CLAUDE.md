@@ -111,6 +111,18 @@ Bugs ya encontrados, como ejemplo de qué buscar:
   (Choppy `0 == 0` cuenta como acierto), ya señalado en la propia celda 86.
 - **Cualquier análisis sobre CSV de MT5 exportados antes del 2026-09-22** está contaminado
   por el desfase de +3h (sección anterior).
+- **Look-ahead por la vela en formación** (corregido 2026-09-23). `time` en los CSV de MT5 es
+  la hora de **apertura** de la vela. `CsvOHLCProvider` filtraba `time < as_of`, así que la
+  vela todavía abierta entraba con su cierre, máximo y mínimo finales. En 1W, un análisis de un
+  miércoles veía el cierre del viernes. Ahora se usa `closed_bars()` (`time + duración <=
+  as_of`), con tests en `tests/test_p2_closed_bars.py`. Todo número de modelos P2 o de
+  baselines de tendencia calculado antes de ese día está inflado. Ejemplo: el consenso de P2
+  daba 83% y, corregido, da 70%.
+- **Ancla tardía** (corregido 2026-09-23). `resolve_anchor()` ancla en la primera `entry_time`.
+  Esa hora llega una mediana de 30 min después del análisis y puede ser la de una orden nunca
+  llenada. Para juzgar una decisión del análisis (P2, edge), medí desde el momento del análisis:
+  `anchor_mode="analysis"`, que es `created_at` − 15 min. Nunca desde la entrada. `created_at`
+  es el instante de "Confirm & Save", posterior a la carga de P2.
 - **Etiquetas de exclusión cruzadas en `tools/p2_backtest.py`** (corregido): 25 de 26
   análisis "sin filas tácticas" sí tenían filas, con `entry_time` nulo.
 - **Lectura de DBs no migradas:** una cuenta que el CLI no abrió desde la última migración

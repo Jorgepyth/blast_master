@@ -65,7 +65,10 @@ from core.stats_tests import (
 )
 from tools.database import TacticalAudit
 from tools.p2_backtest import (
+    ANCHOR_MODE_ANALYSIS,
+    ANCHOR_MODE_EXECUTION,
     DEFAULT_DB_PATH,
+    describe_anchor_mode,
     OHLC_DIR_ENV_VAR,
     ClockCalibration,
     ExclusionRecord,
@@ -104,7 +107,7 @@ class EvalRow:
     asset: Optional[str]
     trade_id: str
     anchor: datetime
-    anchor_source: str               # "tactical_audit" | "mark_price"
+    anchor_source: str               # "tactical_audit" | "mark_price" | "analysis_time"
     ref_price: float
     calc_edge: float                 # el persistido
     edge_bias: str                   # determine_market_bias(calc_edge)
@@ -118,6 +121,13 @@ class EvalRow:
     r_multiple: Optional[float] = None
     trade_dir: Optional[str] = None  # signo de entry_price - stop_loss
     stop_slippage_r: Optional[float] = None
+    # Tiene al menos una fila táctica con entry_time. Con el ancla de análisis
+    # ya no se deduce de anchor_source, que es "analysis_time" para todos.
+    has_execution: bool = False
+
+    def __post_init__(self) -> None:
+        if self.anchor_source == "tactical_audit":
+            self.has_execution = True
 
     @property
     def resolved(self) -> bool:
@@ -144,7 +154,7 @@ class AccountData:
 def point_in_time_baselines(provider: object, as_of: datetime) -> Dict[str, Optional[str]]:
     """
     Reglas ingenuas calculadas SOLO con velas anteriores al anchor (el
-    provider aplica el candado estricto time < as_of):
+    provider solo entrega velas ya cerradas en el anchor, ver CsvOHLCProvider.closed_bars):
       B1: precio vs EMA200 en 1D   (primario, pregunta 1b)
       B2: precio vs EMA200 en 4H
       B3: signo del retorno de las últimas MOMENTUM_BARS velas de 4H
@@ -192,9 +202,10 @@ def build_account_rows(
     provider: object,
     account: str,
     include_no_execution: bool = True,
+    anchor_mode: str = ANCHOR_MODE_EXECUTION,
 ) -> Tuple[List[EvalRow], List[ExclusionRecord]]:
     p2_rows, exclusions = assemble_p2_systematic_rows(
-        session, provider, include_no_execution=include_no_execution
+        session, provider, include_no_execution=include_no_execution, anchor_mode=anchor_mode
     )
     available = _tactical_columns(session)
     rows: List[EvalRow] = []
@@ -215,9 +226,12 @@ def build_account_rows(
             gt_incompleto=r.ground_truth_incompleto,
             baselines=point_in_time_baselines(provider, r.timestamp_entry),
         )
-        if r.timestamp_source == "tactical_audit":
+        # El resultado del trade real (pregunta 3) no depende del ancla: se
+        # busca la primera ejecución de cada análisis en los dos modos.
+        if r.timestamp_source in ("tactical_audit", "analysis_time"):
             ex = _anchor_execution(session, r.trade_id, available)
             if ex is not None:
+                row.has_execution = True
                 row.order_filled = ex.order_filled
                 row.r_multiple = float(ex.r_multiple) if ex.r_multiple is not None else None
                 slip = getattr(ex, "stop_slippage_r", None)
@@ -466,7 +480,7 @@ def executed_frame(rows: Sequence[EvalRow]) -> pd.DataFrame:
         "gt_incompleto": r.gt_incompleto, "trade_dir": r.trade_dir,
         "stop_slippage_r": r.stop_slippage_r,
         **{f"{k.lower()}_score": r.scores.get(k) for k in LAYERS},
-    } for r in rows if r.anchor_source == "tactical_audit" and r.order_filled is not None]
+    } for r in rows if r.has_execution and r.order_filled is not None]
     df = pd.DataFrame(recs)
     if df.empty:
         return df
@@ -627,7 +641,8 @@ def _acc_line(rows: Sequence[EvalRow], pred) -> Tuple[int, int]:
     return ok, n
 
 
-def render_report(accounts: Sequence[AccountData], seed: int, generated_at: datetime) -> str:
+def render_report(accounts: Sequence[AccountData], seed: int, generated_at: datetime,
+                  anchor_mode: str = ANCHOR_MODE_ANALYSIS) -> str:
     rows = [r for a in accounts for r in a.rows]
     executed = executed_frame(rows)
     q1 = run_question_1(rows, seed)
@@ -646,11 +661,14 @@ def render_report(accounts: Sequence[AccountData], seed: int, generated_at: date
       "Las preguntas 1a/1b/1c se corrigen juntas por Holm; todo lo marcado exploratorio no "
       "entra en el veredicto.")
     A("")
+    A(f"**Ancla:** {describe_anchor_mode(anchor_mode)} Indicadores y baselines usan solo velas "
+      "ya cerradas en el ancla (corregido 2026-09-23).")
+    A("")
 
     # --- Muestra ----------------------------------------------------------
     A("## Muestra")
     A("")
-    A("| Cuenta | Activo | Reloj de velas | Con ejecución | Sin ejecución (`mark_price`) | Resueltos | Apuestas del edge | Con R real |")
+    A("| Cuenta | Activo | Reloj de velas | Con ejecución | Sin ejecución | Resueltos | Apuestas del edge | Con R real |")
     A("|---|---|---|---|---|---|---|---|")
     for a in accounts:
         if a.skipped:
@@ -659,15 +677,15 @@ def render_report(accounts: Sequence[AccountData], seed: int, generated_at: date
         asset = next((r.asset for r in a.rows if r.asset), "—")
         clk = "—" if a.clock is None else ("OK" if a.clock.aligned else
                                            "sin calibrar" if a.clock.aligned is None else "❌")
-        ex = sum(1 for r in a.rows if r.anchor_source == "tactical_audit")
-        mk = sum(1 for r in a.rows if r.anchor_source == "mark_price")
+        ex = sum(1 for r in a.rows if r.has_execution)
+        mk = sum(1 for r in a.rows if not r.has_execution)
         res = sum(1 for r in a.rows if r.resolved)
         bets = len(edge_bets(a.rows))
         rr = int((executed["account"] == a.label).sum()) if not executed.empty else 0
         A(f"| {a.label} | {asset} | {clk} | {ex} | {mk} | {res} | {bets} | {rr} |")
     tot_bets = len(edge_bets(rows))
-    A(f"| **Total** | | | {sum(1 for r in rows if r.anchor_source == 'tactical_audit')} "
-      f"| {sum(1 for r in rows if r.anchor_source == 'mark_price')} "
+    A(f"| **Total** | | | {sum(1 for r in rows if r.has_execution)} "
+      f"| {sum(1 for r in rows if not r.has_execution)} "
       f"| {sum(1 for r in rows if r.resolved)} | **{tot_bets}** | **{len(executed)}** |")
     A("")
     excl = Counter(e.reason for a in accounts for e in a.exclusions)
@@ -912,7 +930,8 @@ def parse_account(spec: str) -> Tuple[str, str]:
     return db, ohlc
 
 
-def load_account(db_path: str, ohlc_dir: str, include_no_execution: bool) -> AccountData:
+def load_account(db_path: str, ohlc_dir: str, include_no_execution: bool,
+                 anchor_mode: str = ANCHOR_MODE_EXECUTION) -> AccountData:
     label = os.path.splitext(os.path.basename(db_path))[0].replace("flight_account_", "")
     acc = AccountData(label=label, db_path=db_path, ohlc_dir=ohlc_dir)
     if not os.path.isdir(ohlc_dir):
@@ -922,7 +941,8 @@ def load_account(db_path: str, ohlc_dir: str, include_no_execution: bool) -> Acc
     session = open_readonly_session(db_path)
     try:
         acc.clock = calibrate_clock_offset(session, provider)
-        acc.rows, acc.exclusions = build_account_rows(session, provider, label, include_no_execution)
+        acc.rows, acc.exclusions = build_account_rows(session, provider, label, include_no_execution,
+                                                      anchor_mode)
     finally:
         session.close()
     return acc
@@ -940,6 +960,10 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--out", default=os.path.join(ROOT_DIR, "jupyter", "edge_evaluation_report.md"))
     parser.add_argument("--allow-clock-misalignment", action="store_true",
                         help="Generar el reporte aunque el reloj de velas no cuadre. Solo diagnóstico.")
+    parser.add_argument("--anchor", choices=(ANCHOR_MODE_ANALYSIS, ANCHOR_MODE_EXECUTION),
+                        default=ANCHOR_MODE_ANALYSIS,
+                        help="analysis (default): created_at - 15 min. execution: regla "
+                             "pre-registrada original (primera entry_time), que llega tarde.")
     args = parser.parse_args(argv)
 
     specs = args.account
@@ -948,7 +972,7 @@ def main(argv: Optional[list] = None) -> int:
         load_dotenv(os.path.join(ROOT_DIR, ".env"))
         specs = [(DEFAULT_DB_PATH, os.getenv(OHLC_DIR_ENV_VAR, ""))]
 
-    accounts = [load_account(db, ohlc, args.include_no_execution) for db, ohlc in specs]
+    accounts = [load_account(db, ohlc, args.include_no_execution, args.anchor) for db, ohlc in specs]
     for a in accounts:
         if a.skipped:
             print(f"[{a.label}] omitida: {a.skipped}", file=sys.stderr)
@@ -960,7 +984,7 @@ def main(argv: Optional[list] = None) -> int:
               "offset de servidor correcto.", file=sys.stderr)
         return 2
 
-    report = render_report(accounts, args.seed, datetime.now())
+    report = render_report(accounts, args.seed, datetime.now(), args.anchor)
     with open(args.out, "w", encoding="utf-8") as fh:
         fh.write(report)
     print(f"Reporte escrito en {args.out}.")

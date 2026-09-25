@@ -49,7 +49,7 @@ import argparse
 import sys
 from collections import Counter
 from dataclasses import dataclass, field, fields as dataclasses_fields
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Dict, List, Optional, Protocol, Sequence, Tuple
 
@@ -383,12 +383,28 @@ class CsvOHLCProvider:
         self._cache[timeframe] = df
         return df
 
+    def closed_bars(self, timeframe: str, as_of: datetime) -> pd.DataFrame:
+        """
+        Velas YA CERRADAS en as_of: time + duración(TF) <= as_of. `time` es la
+        hora de APERTURA (convención de MT5), así que filtrar por time < as_of
+        dejaría entrar la vela en formación con su cierre, máximo y mínimo
+        finales, que ocurren después de as_of. Ese fue el bug de look-ahead
+        corregido el 2026-09-23: en 1W, un análisis de un miércoles veía el
+        cierre del viernes. Una vela que cierra exactamente en as_of cuenta.
+        """
+        df = self._load_tf(timeframe)
+        return df[df["time"] + pd.Timedelta(minutes=TIMEFRAME_MINUTES[timeframe]) <= pd.Timestamp(as_of)]
+
     def get_past_closes(self, timeframe: str, as_of: datetime, n: int) -> List[float]:
-        """Últimos n cierres ESTRICTAMENTE antes de as_of (mismo candado que el snapshot)."""
+        """Últimos n cierres de velas ya cerradas en as_of (mismo candado que el snapshot)."""
         if not self.has_timeframe(timeframe):
             return []
-        df = self._load_tf(timeframe)
-        return [float(v) for v in df.loc[df["time"] < as_of, "close"].tail(n)]
+        return [float(v) for v in self.closed_bars(timeframe, as_of)["close"].tail(n)]
+
+    def last_closed_close(self, timeframe: str, as_of: datetime) -> Optional[float]:
+        """Cierre de la última vela ya cerrada en as_of: el precio que se veía en ese momento."""
+        closes = self.get_past_closes(timeframe, as_of, 1)
+        return closes[-1] if closes else None
 
     def bar_containing(self, timeframe: str, t: datetime) -> Optional[Tuple[float, float]]:
         """(high, low) de la vela cuyo intervalo [open, open+duración) contiene t."""
@@ -406,10 +422,8 @@ class CsvOHLCProvider:
     def get_indicator_snapshot(self, timeframe: str, as_of: datetime) -> Optional[TFIndicatorSnapshot]:
         if not self.has_timeframe(timeframe):
             return None
-        df = self._load_tf(timeframe)
-        # Doble candado point-in-time: estrictamente antes del anchor,
-        # nunca se usa una vela con time >= as_of.
-        past = df[df["time"] < as_of]
+        # Candado point-in-time: solo velas cerradas en el anchor (ver closed_bars).
+        past = self.closed_bars(timeframe, as_of)
         bars_available = len(past)
         if bars_available == 0:
             return None
@@ -659,8 +673,42 @@ def evaluate_match(
 @dataclass
 class AnchorResolution:
     timestamp_entry: datetime
-    timestamp_source: str  # "tactical_audit" | "created_at_fallback"
+    # "tactical_audit" | "created_at_fallback" | "mark_price" | "analysis_time"
+    timestamp_source: str
     entry_price: Optional[float]
+
+
+ANCHOR_MODE_EXECUTION = "execution"
+ANCHOR_MODE_ANALYSIS = "analysis"
+# created_at es el "Confirm & Save" del wizard, que llega después de cargar P2,
+# Mark Price, niveles y Edge Description (cli/main.py, flow_new_analysis). El
+# ancla se retrasa hacia el momento en que se decidió P2. Decidido por el
+# usuario el 2026-09-23; entre 0 y 30 min los resultados casi no cambian.
+ANALYSIS_ANCHOR_LEAD = timedelta(minutes=15)
+ANCHOR_PRICE_TIMEFRAMES: Tuple[str, ...] = ("15M", "30M", "1H")
+
+
+def describe_anchor_mode(anchor_mode: str) -> str:
+    if anchor_mode == ANCHOR_MODE_ANALYSIS:
+        minutes = int(ANALYSIS_ANCHOR_LEAD.total_seconds() // 60)
+        return (f"hora del análisis (`created_at` − {minutes} min), con el cierre de la última vela "
+                "cerrada como precio de partida; los retroactivos quedan fuera.")
+    return ("primera `entry_time` del Tactical Audit (o `created_at` + `mark_price` sin ejecución). "
+            "Llega una mediana de 30 min tarde respecto de la decisión de P2.")
+
+
+def _analysis_anchor_price(provider: Optional["OHLCProvider"], as_of: datetime) -> Optional[float]:
+    """Precio visible en as_of: cierre de la última vela cerrada de la menor TF disponible."""
+    if provider is None:
+        raise ValueError("anchor_mode='analysis' necesita un ohlc_provider para el precio de partida")
+    for tf in ANCHOR_PRICE_TIMEFRAMES:
+        if hasattr(provider, "has_timeframe") and not provider.has_timeframe(tf):
+            continue
+        getter = getattr(provider, "last_closed_close", None)
+        price = getter(tf, as_of) if getter else None
+        if price is not None:
+            return price
+    return None
 
 
 def resolve_anchor(session: Session, trade_id: str, created_at: datetime) -> AnchorResolution:
@@ -756,8 +804,26 @@ def assemble_p2_systematic_rows(
     session: Session,
     ohlc_provider: Optional[OHLCProvider] = None,
     include_no_execution: bool = False,
+    anchor_mode: str = ANCHOR_MODE_EXECUTION,
+    analysis_lead: Optional[timedelta] = None,
 ) -> Tuple[List[P2SystematicRow], List[ExclusionRecord]]:
     """
+    anchor_mode (2026-09-23):
+      - ANCHOR_MODE_EXECUTION (default, regla original): primera entry_time
+        del Tactical Audit, o created_at + mark_price con include_no_execution.
+        Llega tarde: la entrada ocurre una mediana de 30 min DESPUÉS de que el
+        operador decidió P2, así que el modelo y el ground truth ven un tramo
+        del movimiento posterior a la decisión.
+      - ANCHOR_MODE_ANALYSIS (la que usan el cuaderno y los reportes): el
+        momento del análisis, created_at - ANALYSIS_ANCHOR_LEAD, para todo
+        análisis con niveles, se haya ejecutado o no. created_at es el instante
+        de "Confirm & Save", posterior a la carga de P2; la DB no guarda la
+        hora de inicio. El precio de partida es el cierre de la última vela
+        cerrada (15M, o la menor disponible). Los retroactivos quedan fuera:
+        su created_at no es la hora del análisis. include_no_execution no
+        aplica en este modo. analysis_lead reemplaza los 15 min por defecto
+        (para medir la sensibilidad al minuto exacto).
+
     Recorre unified_department, aplica el scope filter (entry_price,
     edge_validation_price y structural_invalidation no nulos — n=47 de 81
     confirmado empíricamente esta sesión) y arma una fila por trade en
@@ -805,6 +871,23 @@ def assemble_p2_systematic_rows(
                 reason="missing_edge_validation_price_or_structural_invalidation",
             ))
             continue
+
+        if anchor_mode == ANCHOR_MODE_ANALYSIS:
+            if trade.is_backdated:
+                exclusions.append(ExclusionRecord(trade_id=trade.id, reason="backdated_no_analysis_time"))
+                continue
+            analysis_at = trade.created_at - (ANALYSIS_ANCHOR_LEAD if analysis_lead is None else analysis_lead)
+            price = _analysis_anchor_price(ohlc_provider, analysis_at)
+            if price is None:
+                exclusions.append(ExclusionRecord(trade_id=trade.id, reason="no_closed_bar_at_analysis_time"))
+                continue
+            anchor = AnchorResolution(
+                timestamp_entry=analysis_at,
+                timestamp_source="analysis_time",
+                entry_price=price,
+            )
+        elif anchor_mode != ANCHOR_MODE_EXECUTION:
+            raise ValueError(f"anchor_mode desconocido: {anchor_mode!r}")
 
         if anchor.entry_price is None:
             sin_ejecucion = anchor.timestamp_source == "created_at_fallback"
@@ -1126,6 +1209,7 @@ def render_report(
     generated_at: datetime,
     provider: Optional[object] = None,
     clock: Optional[ClockCalibration] = None,
+    anchor_mode: str = ANCHOR_MODE_EXECUTION,
 ) -> str:
     """
     Markdown de solo lectura. Responde la pregunta del proyecto: ¿el P2
@@ -1157,9 +1241,13 @@ def render_report(
              "operador puso a ojo?")
     L.append("")
     L.append("**Ground truth:** geométrico, sin juicio humano — qué nivel tocó primero el "
-             "precio después de la entrada (`edge_validation_price` = tesis confirmada, "
+             "precio después del ancla (`edge_validation_price` = tesis confirmada, "
              "`structural_invalidation` = tesis rota), sobre velas "
              f"{FORWARD_PATH_TIMEFRAME} reales de MT5, tope {FORWARD_PATH_MAX_BARS} velas.")
+    L.append("")
+    L.append(f"**Ancla:** {describe_anchor_mode(anchor_mode)} Los indicadores usan solo velas "
+             "ya cerradas en el ancla (corregido 2026-09-23: antes entraba la vela en formación "
+             "con su cierre final).")
     L.append("")
     L.append("**Abstenciones:** un bias `Choppy / Neutral` no es apuesta direccional, así que "
              "no cuenta ni como acierto ni como fallo (decisión aprobada 2026-09-21). Se "
@@ -1334,6 +1422,10 @@ def main(argv: Optional[list] = None) -> int:
                         help="Opcional: CSV con una fila por trade.")
     parser.add_argument("--allow-clock-misalignment", action="store_true",
                         help="Genera el reporte aunque el chequeo de reloj falle. Solo para diagnóstico.")
+    parser.add_argument("--anchor", choices=(ANCHOR_MODE_ANALYSIS, ANCHOR_MODE_EXECUTION),
+                        default=ANCHOR_MODE_ANALYSIS,
+                        help="analysis (default): created_at - 15 min, todo análisis con niveles. "
+                             "execution: regla original, primera entry_time (llega tarde).")
     args = parser.parse_args(argv)
 
     try:
@@ -1354,11 +1446,11 @@ def main(argv: Optional[list] = None) -> int:
                   "resultado estaría contaminado. Usar --allow-clock-misalignment solo para "
                   "diagnóstico.", file=sys.stderr)
             return 2
-        rows, exclusions = assemble_p2_systematic_rows(session, provider)
+        rows, exclusions = assemble_p2_systematic_rows(session, provider, anchor_mode=args.anchor)
     finally:
         session.close()
 
-    report = render_report(rows, exclusions, datetime.now(), provider, clock)
+    report = render_report(rows, exclusions, datetime.now(), provider, clock, anchor_mode=args.anchor)
     with open(args.out, "w", encoding="utf-8") as fh:
         fh.write(report)
     print(f"Reporte escrito en {args.out} ({len(rows)} trades en alcance, "
