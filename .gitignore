@@ -8,6 +8,9 @@
 .tmp/
 *.sqlite
 
+# Datos de migracion: reportes de historial MT5 reales (data financiera, nunca a git)
+tools/migration_data/
+
 # Python
 __pycache__/
 *.py[cod]
