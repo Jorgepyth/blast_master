@@ -130,6 +130,13 @@ Bugs ya encontrados, como ejemplo de qué buscar:
   3 más). `SELECT` de la entidad ORM completa falla con "no such column". El código de
   análisis de solo lectura debe pedir columnas explícitas, nunca migrar.
 
+**Criterios de acierto (decididos 2026-09-27, spec 002).** Todo win rate se mide con **S1** como
+cifra principal: el primer toque de validation o invalidation desde el ancla, sin límite de tiempo.
+Al lado va **S4**: lo mismo, pero solo si el toque ocurre dentro de 48 h, informando cuántos quedan
+fuera. **Overlap** (hubo un análisis nuevo antes de la resolución) es solo una etiqueta: nunca
+excluye análisis. Los retroactivos quedan fuera por defecto (R11). Descartados: S2, S3 y S3b.
+Definiciones, ejemplos y motivos en `docs/criterios-de-acierto.md`.
+
 Checklist para auditar un análisis:
 1. **¿Contra qué verdad se mide?** Coexisten tres ground truths que no son intercambiables:
    la etiqueta `market_bias` × `specific_bias_compliance` (`get_market_outcome`), el precio
@@ -144,6 +151,8 @@ Checklist para auditar un análisis:
    decenas, diferencias de 10 puntos suelen ser ruido (`core/stats_tests.py`).
 5. **Reproducí el número titular desde la DB por fuera del notebook** antes de creerlo.
    Los outputs guardados pueden ser de un snapshot viejo de la DB.
+6. **¿Usa S1/S4 y trata Overlap como etiqueta?** Si usa otro criterio, tiene que decirlo y
+   justificarlo.
 
 ## Estándar de este repo para research/arquitectura
 
