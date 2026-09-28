@@ -1078,6 +1078,51 @@ class ClockCalibration:
                 "(windows_export/export_p2_ohlc.py --server-utc-offset).")
 
 
+def evaluate_clock_entries(
+    entries: Sequence[Tuple[datetime, float]],
+    provider: object,
+    tf: str,
+    offsets: Sequence[int],
+) -> Dict[int, float]:
+    """
+    Para cada desplazamiento `off` (horas), la fracción de `entries` cuyo precio
+    cae dentro de la vela de `tf` que contiene `entry_time + off`h (sobre las
+    entradas para las que esa vela existe -- `found`, no sobre el total de
+    `entries`). Extraído de `calibrate_clock_offset` (spec 002, T10) sin cambiar
+    el resultado -- lo reusan `calibrate_clock_offset` y (para verificar un
+    export del banco de velas por referencias, N29) `tools/candle_bank.py`.
+    """
+    rates: Dict[int, float] = {}
+    for off in offsets:
+        inside = found = 0
+        for entry_time, entry_price in entries:
+            bar = provider.bar_containing(tf, entry_time + pd.Timedelta(hours=off))
+            if bar is None:
+                continue
+            found += 1
+            high, low = bar
+            if low <= float(entry_price) <= high:
+                inside += 1
+        rates[off] = inside / found if found else 0.0
+    return rates
+
+
+def count_entries_in_range(
+    entries: Sequence[Tuple[datetime, float]],
+    start: datetime,
+    end: datetime,
+) -> int:
+    """
+    Cuántas `entries` (mismo formato que `evaluate_clock_entries`: pares
+    `(timestamp, precio)`) tienen su timestamp dentro de `[start, end]`,
+    inclusive en los dos bordes. Usado por `tools/candle_bank.py` para la
+    regla de "al menos 10 referencias dentro del rango exportado" (N29,
+    plan.md §3.8 paso 4) -- distinto de `CLOCK_MIN_ENTRIES`, que exige 10
+    referencias en TODA la cuenta, sin acotar a un rango exportado.
+    """
+    return sum(1 for entry_time, _ in entries if start <= entry_time <= end)
+
+
 def calibrate_clock_offset(
     session: Session,
     provider: object,
@@ -1116,18 +1161,7 @@ def calibrate_clock_offset(
     if len(entries) < CLOCK_MIN_ENTRIES:
         return ClockCalibration(tf, len(entries), {}, None, None)
 
-    rates: Dict[int, float] = {}
-    for off in offsets:
-        inside = found = 0
-        for entry_time, entry_price in entries:
-            bar = provider.bar_containing(tf, entry_time + pd.Timedelta(hours=off))
-            if bar is None:
-                continue
-            found += 1
-            high, low = bar
-            if low <= float(entry_price) <= high:
-                inside += 1
-        rates[off] = inside / found if found else 0.0
+    rates = evaluate_clock_entries(entries, provider, tf, offsets)
 
     best = max(rates, key=lambda o: (rates[o], -abs(o)))
     aligned = best == 0 or rates.get(0, 0.0) >= rates[best] - CLOCK_MISALIGNMENT_MARGIN

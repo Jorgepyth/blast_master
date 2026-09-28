@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from tools.database import Base, TacticalAudit, UnifiedDepartment
@@ -17,6 +17,8 @@ from tools.p2_backtest import (
     CLOCK_MIN_ENTRIES,
     CsvOHLCProvider,
     calibrate_clock_offset,
+    count_entries_in_range,
+    evaluate_clock_entries,
 )
 
 T0 = datetime(2026, 6, 1, 0, 0)
@@ -119,3 +121,41 @@ def test_bar_containing_respeta_el_intervalo(tmp_path):
     assert prov.bar_containing("15M", T0 + timedelta(minutes=14)) == (1000.9, 1000.0)
     assert prov.bar_containing("15M", T0 + timedelta(minutes=15)) == (1001.9, 1001.0)
     assert prov.bar_containing("15M", T0 - timedelta(minutes=1)) is None
+
+
+# --- T10 (spec 002, RF-2, RF-2b, RF-4f): evaluate_clock_entries / count_entries_in_range ---
+
+def test_evaluate_clock_entries_matches_calibrate_clock_offset(tmp_path, session):
+    """evaluate_clock_entries(), extraída de calibrate_clock_offset, da exactamente
+    los mismos rate_by_offset (y el mismo best_offset) que la función completa --
+    T10 exige que la extracción no cambie el resultado."""
+    _fills(session)
+    provider = _write_15m_csv(tmp_path, lag_hours=3)
+    offsets = range(-2, 4)
+
+    c = calibrate_clock_offset(session, provider, offsets=offsets, include_mark_price=False)
+
+    # Mismas entries que arma calibrate_clock_offset internamente (sin mark_price).
+    entries = list(session.execute(
+        select(TacticalAudit.entry_time, TacticalAudit.entry_price).where(
+            TacticalAudit.order_filled == True,  # noqa: E712
+            TacticalAudit.entry_time.isnot(None),
+            TacticalAudit.entry_price > 0,
+        )
+    ).all())
+    rates = evaluate_clock_entries(entries, provider, "15M", offsets)
+
+    assert rates == c.rate_by_offset
+    assert max(rates, key=lambda o: (rates[o], -abs(o))) == c.best_offset == 3
+
+
+def test_count_entries_in_range_counts_only_within_inclusive_bounds():
+    entries = [(T0 + timedelta(hours=h), 1000.0 + h) for h in range(10)]  # T0 .. T0+9h
+
+    assert count_entries_in_range(entries, T0 + timedelta(hours=2), T0 + timedelta(hours=5)) == 4
+    # Bordes inclusivos: un solo punto que coincide con una entrada cuenta.
+    assert count_entries_in_range(entries, T0, T0) == 1
+    # Rango que no cubre ninguna entrada.
+    assert count_entries_in_range(entries, T0 - timedelta(hours=5), T0 - timedelta(hours=1)) == 0
+    # Rango que las cubre todas.
+    assert count_entries_in_range(entries, T0 - timedelta(hours=1), T0 + timedelta(hours=20)) == 10

@@ -134,10 +134,21 @@
       formación excluida, una vela que cierra justo en el ancla, y los bordes antes/después del rango.
       `pytest -q tests/test_p2_*.py`: `118 passed in 1.58s`. SUITE: `454 passed, 1 skipped, 97 warnings in
       14.23s`; sin `.data/`.
-- [ ] T10. Extraer `evaluate_clock_entries(entries, provider, tf, offsets)` de `calibrate_clock_offset`, sin
+- [x] T10. Extraer `evaluate_clock_entries(entries, provider, tf, offsets)` de `calibrate_clock_offset`, sin
       cambiar su resultado, y agregar `count_entries_in_range()`. (RF-2, RF-2b, RF-4f)
       Hecho cuando: `tests/test_p2_clock.py` sigue en verde sin cambios; un test nuevo prueba que las dos rutas dan el
       mismo resultado y cuenta referencias dentro del rango. SUITE en verde.
+      **Hecho 2026-09-28:** `evaluate_clock_entries()` es exactamente el bucle interno de `calibrate_clock_offset`
+      (el `for off in offsets: ...` que arma `rates`), movido tal cual a una función aparte;
+      `calibrate_clock_offset` ahora la llama en lugar de tener el bucle inline. `count_entries_in_range()` es
+      nueva, para la regla de "≥10 referencias dentro del rango exportado" (N29, plan.md §3.8 paso 4) que usará
+      `tools/candle_bank.py` — distinta de `CLOCK_MIN_ENTRIES`, que exige 10 en toda la cuenta sin acotar a un
+      rango. Los 6 tests existentes de `tests/test_p2_clock.py` no se tocaron. 2 tests nuevos: uno arma las mismas
+      `entries` que arma `calibrate_clock_offset` internamente y compara `evaluate_clock_entries(...)` contra
+      `c.rate_by_offset` (iguales, con CSV corrido +3h para que `best_offset` no sea 0 por casualidad); otro
+      prueba `count_entries_in_range` con bordes inclusivos, un rango vacío y uno que cubre todo.
+      `pytest -q tests/test_p2_clock.py`: `8 passed in 1.10s`. `pytest -q tests/test_p2_*.py`: `120 passed in
+      1.38s`. SUITE: `456 passed, 1 skipped, 97 warnings in 14.32s`; sin `.data/`.
 - [ ] T11. `tools/candle_bank.py`, parte 1: lectura y escritura atómica de un `{TF}.csv` (temporal + `os.replace`) y
       la fusión por `time`, conservando la vela existente. (RF-1, RF-1b)
       Hecho cuando: los tests prueban que ninguna vela previa desaparece ni cambia, que la cobertura hacia atrás no
