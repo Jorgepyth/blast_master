@@ -103,12 +103,25 @@
 
 ## Etapa 2 — Banco de velas y reloj
 
-- [ ] T8. `config/auto_resolution.py` con todas las constantes de la spec y los códigos de motivo; resolución de
+- [x] T8. `config/auto_resolution.py` con todas las constantes de la spec y los códigos de motivo; resolución de
       rutas desde `.env` (`CANDLE_BANK_DIR`, `MT5_INCOMING_DIR`, `ACCOUNTS_DATA_DIR`, `WINDOWS_PYTHON`,
       `EXPORTER_WIN_PATH`, `AUTO_EXPORT`, `BROKER_DST_RULE`), siempre como rutas absolutas; y `.env.template`
       actualizado. Incluye `P2_LOG_MODELS = {"D": "2026-09-27"}` (N42). (Configuración, RF-20, RF-15b, RF-12e)
       Hecho cuando: un test verifica los valores (48 h, 0.5R, 1R, 20 min, 0.1%, 10 velas, 2160), que cada fecha de
       `P2_LOG_MODELS` es una fecha ISO válida, y que las rutas sean absolutas aunque se corra desde `tmp_path`. SUITE
+      en verde.
+      **Hecho 2026-09-28:** `config/auto_resolution.py` nuevo, con `ROOT_DIR` anclado a `__file__` (nunca a `cwd`,
+      mismo patrón que `tools/backup.py:38-43`, incluido su propio `load_dotenv()`) y `os.path.abspath()` en cada
+      ruta, así son absolutas sin importar desde dónde se importe el módulo. `CLOCK_MIN_ENTRIES` (la otra regla de
+      "10") ya existe en `tools/p2_backtest.py:1045` — no se duplicó. Motivos con parámetro (`insufficient_history`,
+      `unknown_model`, `timeframe_not_in_bank`, `model_recipe_changed`) como funciones, no f-strings sueltos.
+      `.env.template` actualizado con las 7 variables nuevas, comentadas, sin valores reales.
+      `tests/test_config_auto_resolution.py` nuevo: los valores de negocio, las 2 tablas (cuentas, símbolos),
+      `P2_LOG_MODELS` y que su fecha sea ISO válida (`date.fromisoformat`), los 8 códigos de motivo E1-E8 y sus
+      plantillas, el orden de `RESOLUTION_TIME_SOURCE_VALUES` contra `plan.md:68-69`, y — reimportando el módulo
+      en caliente estando `chdir`'ado a un `tmp_path` sin las variables de entorno — que las rutas siguen siendo
+      absolutas y siguen apuntando al repo real, no a `tmp_path`. `pytest -q tests/test_config_auto_resolution.py`:
+      `12 passed in 0.03s`. SUITE: `447 passed, 1 skipped, 97 warnings in 7.09s`; sin `.data/`.
       en verde.
 - [ ] T9. En `tools/p2_backtest.py`, agregar `5M` y `1M` a `TIMEFRAME_MINUTES`. (RF-15, RF-4f)
       Hecho cuando: `closed_bars` y `bar_containing` funcionan con un fixture de 5M y otro de 1M
