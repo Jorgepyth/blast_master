@@ -9,12 +9,12 @@ hubo superposición (típicamente, el primer export de un símbolo). Parte 5
 (T15): filtro por estación de horario, `status.json`, y una fusión con chequeo
 de que ninguna vela del banco se pierda o cambie (si el chequeo falla, no
 escribe nada -- el banco queda exactamente como estaba). Parte 6 (T16):
-`import_legacy()`, el único lugar de este módulo que arma una orquestación
-completa -- de solo lectura sobre el origen -- para poblar el banco la
-primera vez desde los CSV que ya existían antes de esta spec. Nada acá arma
-todavía la orquestación de un export NUEVO ("candado → verificar → filtrar →
-fusionar → status.json"); eso es de una tarea posterior, que compone estas
-mismas piezas para ese caso.
+`import_legacy()`, que puebla el banco la primera vez desde los CSV que ya
+existían antes de esta spec. Parte 7 (T20): `merge_incoming_run()`, la
+orquestación de un export NUEVO ("verificar → filtrar → fusionar"), que
+compone las piezas anteriores. NO toma el candado por símbolo: quien la llama
+(`tools/candle_sync.py`) ya lo tiene, porque el candado tiene que tomarse
+ANTES de lanzar el exportador (RF-20f), no solo alrededor de la fusión.
 
 Formato del CSV: idéntico al que ya lee `tools.p2_backtest.CsvOHLCProvider`
 (`time,open,high,low,close`, `time` = hora de apertura en GT naive), ordenado
@@ -32,7 +32,14 @@ from typing import Dict, FrozenSet, List, Optional, Sequence, Tuple
 import pandas as pd
 from sqlalchemy import select
 
-from config.auto_resolution import MT5_SYMBOL_MAP, OVERLAP_MIN_BARS, REAL_ACCOUNTS
+from config.auto_resolution import (
+    MT5_SYMBOL_MAP,
+    OVERLAP_MIN_BARS,
+    REAL_ACCOUNTS,
+    REASON_CLOCK_MISALIGNED,
+    REASON_CLOCK_UNVERIFIED,
+    REASON_EXPORT_FAILED,
+)
 from tools.database import TacticalAudit, UnifiedDepartment
 from tools.p2_backtest import (
     CLOCK_MIN_ENTRIES,
@@ -723,3 +730,143 @@ def import_legacy(
         imported[tf] = merge_timeframe_into_bank_checked(bank_dir, tf, incoming_df)
 
     return LegacyImportResult(symbol=symbol, aligned=True, imported=imported, excluded=excluded)
+
+
+# --------------------------------------------------------------------------
+# Fusión de un export nuevo (T20, plan.md §3.8, RF-1, RF-1c, RF-2, RF-2d)
+# --------------------------------------------------------------------------
+
+# Las 9 temporalidades que guarda el banco (RF-15), de más lenta a más rápida.
+ALL_BANK_TIMEFRAMES: Tuple[str, ...] = ("1W", "1D", "12H", "4H", "1H", "30M", "15M", "5M", "1M")
+
+SYNC_RESULT_MERGED = "merged"
+# Otro proceso ya tenía el candado del símbolo (RF-1d, RF-20f): no se hizo nada.
+SYNC_RESULT_LOCKED = "locked"
+
+# Estado de la regla de horario de verano en status.json (plan.md §2.3). No hay
+# ninguna verificación de la regla en el sistema todavía -- la fija el spike (T22).
+DST_RULE_STATUS_LABEL = "unverified"
+
+
+@dataclass
+class SyncResult:
+    """
+    Resultado de sincronizar un símbolo. `result` es `SYNC_RESULT_MERGED`,
+    `SYNC_RESULT_LOCKED`, o uno de los `REASON_*` de `config.auto_resolution`
+    (`export_failed`, `clock_misaligned`, `clock_unverified`). `error` lleva el
+    detalle legible de todo lo que no fue `merged`. Salvo `merged`, ninguna
+    vela del banco cambia por lo que reporta este resultado (RF-1c) -- salvo
+    en el caso poco probable de una falla a mitad de la fusión, en el que las
+    TF ya fusionadas conservan sus velas nuevas (correctas) y `bars_added`
+    dice cuáles.
+    """
+    symbol: str
+    result: str
+    verified_by: Optional[str] = None
+    bars_added: Dict[str, int] = field(default_factory=dict)
+    run_id: Optional[str] = None
+    error: Optional[str] = None
+
+
+def merge_incoming_run(
+    bank_dir: str,
+    incoming_dir: str,
+    mt5_symbol: str,
+    run_id: Optional[str],
+    accounts_data_dir: str,
+    export_moment: datetime,
+    dst_rule: str,
+    real_accounts: Optional[Dict[str, str]] = None,
+    symbol_map: Optional[Dict[str, str]] = None,
+    min_references: int = CLOCK_MIN_ENTRIES,
+    overlap_min_bars: int = OVERLAP_MIN_BARS,
+    offsets: Sequence[int] = range(-6, 7),
+) -> SyncResult:
+    """
+    Plan.md §3.8, pasos 2 a 7, para el export de `incoming_dir` (`{TF}.csv` por
+    temporalidad). **Quien llama tiene que tener el candado del símbolo.**
+    Nunca levanta: todo lo que sale mal vuelve como `SyncResult`.
+
+    1. Verifica el reloj por superposición (`verify_overlap`). Una vela distinta
+       en cualquier TF -> `clock_misaligned`, sin fusionar nada.
+    2. Sin superposición suficiente, por referencias (`verify_by_references`,
+       sobre el rango de fechas del export): `clock_misaligned` si el reloj está
+       corrido, `clock_unverified` si faltan referencias.
+    3. Verificado: para cada TF presente, filtra por estación de horario
+       (`filter_by_export_season`, en 1H y más finas) y fusiona con
+       `merge_timeframe_into_bank_checked`, TF por TF.
+    """
+    def result(kind: str, **kw) -> SyncResult:
+        return SyncResult(symbol=mt5_symbol, result=kind, run_id=run_id, **kw)
+
+    present = [tf for tf in ALL_BANK_TIMEFRAMES if os.path.exists(bank_csv_path(incoming_dir, tf))]
+    if not present:
+        return result(REASON_EXPORT_FAILED, error="empty_export: no {TF}.csv in the incoming run")
+    export_start, export_end = _time_range_across_timeframes(incoming_dir, present)
+    if export_start is None:
+        return result(REASON_EXPORT_FAILED, error="empty_export: the incoming CSVs have no candles")
+
+    overlap = verify_overlap(bank_dir, incoming_dir, min_bars=overlap_min_bars)
+    if overlap.misaligned:
+        return result(
+            REASON_CLOCK_MISALIGNED,
+            error=f"overlapping candles differ from the bank in {overlap.mismatched_timeframe}",
+        )
+    if overlap.verified:
+        verified_by = "overlap"
+    else:
+        ref = verify_by_references(
+            mt5_symbol, incoming_dir, export_start, export_end, accounts_data_dir,
+            real_accounts=real_accounts, symbol_map=symbol_map,
+            min_references=min_references, offsets=offsets,
+        )
+        if not ref.verified:
+            if ref.aligned is False:
+                return result(
+                    REASON_CLOCK_MISALIGNED,
+                    error=f"reference prices fit best with candles shifted {ref.best_offset:+d}h",
+                )
+            return result(
+                REASON_CLOCK_UNVERIFIED,
+                error=f"{ref.n_in_range} reference prices in the exported range, need {min_references}",
+            )
+        verified_by = "references"
+
+    bars_added: Dict[str, int] = {}
+    current_tf: Optional[str] = None
+    try:
+        for current_tf in present:
+            incoming_df = read_candle_csv(bank_csv_path(incoming_dir, current_tf))
+            incoming_df = filter_by_export_season(incoming_df, current_tf, export_moment, dst_rule)
+            bars_added[current_tf] = merge_timeframe_into_bank_checked(bank_dir, current_tf, incoming_df)
+    except Exception as exc:  # noqa: BLE001 -- INV-2: nada se propaga hacia el wizard
+        return result(
+            REASON_EXPORT_FAILED, verified_by=verified_by, bars_added=bars_added,
+            error=f"merge failed on {current_tf}: {exc}",
+        )
+    return result(SYNC_RESULT_MERGED, verified_by=verified_by, bars_added=bars_added)
+
+
+def write_sync_status(bank_dir: str, sync: SyncResult) -> None:
+    """
+    Escribe `status.json` reflejando `sync` (plan.md §2.3). `clock` describe la
+    confianza en el reloj del símbolo: `"verified"` solo si una fusión lo
+    verificó; un export que no verifica NO le quita esa confianza a un banco
+    que ya la tenía (sus velas no cambiaron), y sin confianza previa queda con
+    el motivo (`clock_misaligned`/`clock_unverified`). Un `export_failed` no
+    dice nada del reloj: conserva lo que había.
+    """
+    prior = read_bank_status(bank_dir) or {}
+    prior_clock = prior.get("clock")
+    if sync.result == SYNC_RESULT_MERGED:
+        clock, verified_by = "verified", sync.verified_by
+    elif prior_clock == "verified":
+        clock, verified_by = "verified", prior.get("verified_by")
+    elif sync.result in (REASON_CLOCK_MISALIGNED, REASON_CLOCK_UNVERIFIED):
+        clock, verified_by = sync.result, None
+    else:
+        clock, verified_by = prior_clock or REASON_CLOCK_UNVERIFIED, None
+    write_bank_status(bank_dir, build_status_payload(
+        sync.symbol, clock, verified_by, DST_RULE_STATUS_LABEL, sync.run_id,
+        sync.result, sync.bars_added, sync.error,
+    ))

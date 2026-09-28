@@ -352,10 +352,50 @@
       rompe 3 tests y no limpiar el temporal rompe 2 (revertidas).
       `pytest -q tests/test_export_p2_ohlc.py`: `53 passed in 0.87s`. SUITE: `550 passed, 1 skipped, 97 warnings in
       10.58s`; sin `.data/`.
-- [ ] T20. `tools/candle_sync.py`: arma el comando del exportador desde la configuración, lo corre con
+- [x] T20. `tools/candle_sync.py`: arma el comando del exportador desde la configuración, lo corre con
       `EXPORT_TIMEOUT_S` y llama a la fusión. (RF-20e, RF-20f, RF-1c)
       Hecho cuando: los tests, con un exportador falso en `tmp_path`, cubren éxito con fusión, timeout con
       `export_failed`, "MT5 no disponible" (código 1) con `export_failed`, y candado tomado. SUITE en verde.
+      **Hecho 2026-09-28:** dos módulos.
+      1. `tools/candle_bank.py` (parte 7): `merge_incoming_run()` es el orquestador que T15 dejó pendiente
+         (plan.md §3.8, pasos 2 a 7): `verify_overlap` → si no decide, `verify_by_references` sobre el rango del
+         export → para cada TF presente, `filter_by_export_season` + `merge_timeframe_into_bank_checked`. Nunca
+         levanta; todo vuelve como `SyncResult` (`merged`, `clock_misaligned`, `clock_unverified`, `export_failed`
+         o `locked`). **No toma el candado**: lo toma quien llama. `write_sync_status()` escribe `status.json`:
+         `clock` es `"verified"` solo si una fusión lo verificó, y un export que falla o no verifica **no** le
+         quita esa confianza a un banco que ya la tenía (sus velas no cambiaron); `last_export` y `last_error`
+         sí reflejan siempre el último intento.
+      2. `tools/candle_sync.py` (nuevo, proceso aparte, plan T8): `sync_symbol()` toma el candado del símbolo
+         **antes de lanzar el exportador** (RF-20f: un segundo export ni arranca), arma el comando
+         (`build_export_command`: `powershell.exe -Command "& '<python>' '<exportador>' --symbol … --per-run-dir …;
+         exit $LASTEXITCODE"`, con la ruta de llegada convertida por `wsl_to_windows_path` y las anclas
+         `--min/--max-anchor` derivadas del `created_at` de las DBs en `mode=ro`), lo corre con
+         `run_exporter()` y fusiona la corrida que el exportador informa por `RUN_ID`. Todo fallo → `export_failed`
+         con motivo (`timeout`, `exporter_exit_N: <stderr>`, `exporter_not_configured`, `exporter_not_launched`,
+         `no_run_dir`, `incoming_dir_not_on_windows_drive`), banco intacto, sin excepción (INV-2). `main()` con
+         `--symbol` y `--wait-seconds` (default `EXPORT_TIMEOUT_S`): códigos 0 = fusionó, 2 = reloj sin verificar,
+         6 = `export_failed` o candado tomado; imprime `Candle export skipped: <motivo>` (RF-20e).
+      **Decisiones que conviene revisar:** (a) el timeout usa `Popen` + `start_new_session` y `killpg` en vez de
+      `subprocess.run(timeout=)`, que solo mata al hijo directo; (b) candado tomado devuelve código 6 (el contrato de
+      plan.md §4 solo define 0/2/6) y NO toca `status.json`, para no pisar el estado del otro export.
+      **[NO VERIFICADO], lo cubre el spike T22:** el armado exacto del comando de PowerShell (comillas,
+      `exit $LASTEXITCODE`), la conversión de rutas, y que matar `powershell.exe` desde WSL mate también al Python
+      de Windows (si no, solo termina de escribir su carpeta de corrida, que nadie fusiona).
+      **Sigue sin hacerse (ninguna tarea lo pide):** la retención de "las últimas 5 corridas por símbolo" de
+      plan.md §2.4. Implica **borrar** carpetas bajo `/mnt/c`, así que prefiero que se decida y se pruebe como
+      tarea propia antes que agregarla acá.
+      `tests/test_candle_bank.py` +13 tests del orquestador (verifica por superposición y fusiona todas las TF;
+      una vela distinta → `clock_misaligned` sin fusionar ni la TF sana; primer export por referencias; 9
+      referencias → `clock_unverified` sin escribir nada; +3h → `clock_misaligned`; el filtro de estación solo en
+      las TF rápidas; carpeta vacía; falla a mitad de la fusión conserva lo ya fusionado y deja el resto
+      intacto) y de `status.json`. `tests/test_candle_sync.py` nuevo, 24 tests con un exportador falso (script en
+      `tmp_path`): éxito con fusión y `status.json`; timeout con `export_failed`, banco byte a byte igual y el
+      proceso realmente muerto; MT5 caído (código 1); un export fallido no revoca un banco ya verificado; sin
+      RUN_ID; comando no lanzable; sin configuración; reloj sin verificar; candado tomado (el exportador ni se
+      lanza y `status.json` no se toca); el comando de PowerShell armado desde la configuración y la DB (con
+      `run_exporter` reemplazado, nunca se lanza `powershell.exe`); y `main` con los códigos 0/2/6 y
+      `--wait-seconds`. Mutaciones: sin `killpg` rompe el test de timeout, e ignorar el código de salida rompe 3.
+      SUITE: `587 passed, 1 skipped, 97 warnings in 15.45s`; sin `.data/`.
 - [ ] T21. Subcomandos `candles status`, `candles import-legacy` y `candles export --symbol S [--wait N]` en
       `cli/main.py`. (RF-2c, RF-1)
       Hecho cuando: los tests con `CliRunner` y configuración en `tmp_path` prueban la salida y los códigos 0, 2 y 6.

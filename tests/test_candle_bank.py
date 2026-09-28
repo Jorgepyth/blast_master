@@ -18,11 +18,14 @@ from sqlalchemy.orm import sessionmaker
 
 import tools.candle_bank
 from tools.candle_bank import (
+    ALL_BANK_TIMEFRAMES,
     CandleBankLockedError,
     LEGACY_EXCLUSION_REASON,
     LEGACY_IMPORT_EXCLUSIONS,
     OVERLAP_TIMEFRAMES,
     STATUS_JSON_FILENAME,
+    SYNC_RESULT_MERGED,
+    SyncResult,
     acquire_bank_lock,
     bank_csv_path,
     build_status_payload,
@@ -30,6 +33,7 @@ from tools.candle_bank import (
     gather_reference_entries,
     import_legacy,
     merge_candle_frames,
+    merge_incoming_run,
     merge_timeframe_into_bank,
     merge_timeframe_into_bank_checked,
     read_bank_status,
@@ -39,6 +43,7 @@ from tools.candle_bank import (
     verify_overlap,
     write_bank_status,
     write_candle_csv_atomic,
+    write_sync_status,
 )
 from tools.database import Base, UnifiedDepartment
 from tools.database import TacticalAudit as TacticalAuditORM
@@ -847,3 +852,185 @@ def test_import_legacy_never_modifies_the_source_directory(tmp_path):
     )
 
     assert (legacy_dir / "15M.csv").read_bytes() == before
+
+
+# --- merge_incoming_run / write_sync_status (T20, plan.md §3.8) --------------
+
+def _hourly(start, n, base=100.0):
+    return [start + timedelta(hours=h) for h in range(n)], [base + h for h in range(n)]
+
+
+def _dirs(tmp_path):
+    bank_dir, incoming_dir = tmp_path / "bank" / "XAUUSD", tmp_path / "incoming"
+    bank_dir.mkdir(parents=True)
+    incoming_dir.mkdir()
+    return bank_dir, incoming_dir
+
+
+def _merge(tmp_path, bank_dir, incoming_dir, **kw):
+    kw.setdefault("export_moment", datetime(2026, 9, 15, 12))
+    kw.setdefault("dst_rule", "none")
+    kw.setdefault("real_accounts", {"000": "xau.db"})
+    kw.setdefault("symbol_map", {"XAUUSDT.P": "XAUUSD"})
+    return merge_incoming_run(str(bank_dir), str(incoming_dir), "XAUUSD", "run-1", str(tmp_path), **kw)
+
+
+def test_all_bank_timeframes_are_the_nine_in_order():
+    assert ALL_BANK_TIMEFRAMES == ("1W", "1D", "12H", "4H", "1H", "30M", "15M", "5M", "1M")
+
+
+def test_merge_incoming_run_verified_by_overlap_merges_every_present_timeframe(tmp_path):
+    bank_dir, incoming_dir = _dirs(tmp_path)
+    times, closes = _hourly(DAY, 12)
+    _write_csv(bank_dir / "1H.csv", times, closes)
+    new_times, new_closes = _hourly(DAY, 15)  # las mismas 12 + 3 nuevas
+    _write_csv(incoming_dir / "1H.csv", new_times, new_closes)
+    _write_csv(incoming_dir / "1D.csv", [DAY, DAY + timedelta(days=1)], [5000.0, 5001.0])  # TF lenta, sin banco previo
+
+    result = _merge(tmp_path, bank_dir, incoming_dir)
+
+    assert result.result == SYNC_RESULT_MERGED
+    assert result.verified_by == "overlap"
+    assert result.run_id == "run-1"
+    assert result.bars_added == {"1D": 2, "1H": 3}
+    assert len(read_candle_csv(bank_csv_path(str(bank_dir), "1H"))) == 15
+    assert len(read_candle_csv(bank_csv_path(str(bank_dir), "1D"))) == 2
+
+
+def test_merge_incoming_run_overlap_mismatch_is_clock_misaligned_and_bank_untouched(tmp_path):
+    bank_dir, incoming_dir = _dirs(tmp_path)
+    times, closes = _hourly(DAY, 12)
+    _write_csv(bank_dir / "1H.csv", times, closes)
+    before = (bank_dir / "1H.csv").read_bytes()
+    bad = list(closes)
+    bad[4] = 9999.0
+    _write_csv(incoming_dir / "1H.csv", times, bad)
+    _write_csv(incoming_dir / "1D.csv", [DAY], [5000.0])
+
+    result = _merge(tmp_path, bank_dir, incoming_dir)
+
+    assert result.result == "clock_misaligned"
+    assert "1H" in result.error
+    assert (bank_dir / "1H.csv").read_bytes() == before
+    assert not (bank_dir / "1D.csv").exists()  # nada se fusionó, tampoco la TF que no tenía problema
+
+
+def test_merge_incoming_run_first_export_verified_by_references(tmp_path):
+    _make_account_db(tmp_path / "xau.db", fills=_reference_fills(12), asset="XAUUSDT.P")
+    bank_dir, incoming_dir = _dirs(tmp_path)
+    _write_reference_15m_csv(incoming_dir, lag_hours=0)
+
+    result = _merge(tmp_path, bank_dir, incoming_dir, export_moment=datetime(2026, 6, 5, 12), dst_rule="us")
+
+    assert result.result == SYNC_RESULT_MERGED
+    assert result.verified_by == "references"
+    assert result.bars_added["15M"] == 200
+
+
+def test_merge_incoming_run_too_few_references_is_clock_unverified_and_writes_nothing(tmp_path):
+    _make_account_db(tmp_path / "xau.db", fills=_reference_fills(9), asset="XAUUSDT.P")
+    bank_dir, incoming_dir = _dirs(tmp_path)
+    _write_reference_15m_csv(incoming_dir, lag_hours=0)
+
+    result = _merge(tmp_path, bank_dir, incoming_dir, export_moment=datetime(2026, 6, 5, 12), dst_rule="us")
+
+    assert result.result == "clock_unverified"
+    assert "9 reference prices" in result.error
+    assert os.listdir(bank_dir) == []
+
+
+def test_merge_incoming_run_shifted_clock_is_clock_misaligned(tmp_path):
+    _make_account_db(tmp_path / "xau.db", fills=_reference_fills(12), asset="XAUUSDT.P")
+    bank_dir, incoming_dir = _dirs(tmp_path)
+    _write_reference_15m_csv(incoming_dir, lag_hours=3)
+
+    result = _merge(tmp_path, bank_dir, incoming_dir, export_moment=datetime(2026, 6, 5, 12), dst_rule="us")
+
+    assert result.result == "clock_misaligned"
+    assert "+3h" in result.error
+    assert os.listdir(bank_dir) == []
+
+
+def test_merge_incoming_run_applies_the_season_filter_only_to_fast_timeframes(tmp_path):
+    bank_dir, incoming_dir = _dirs(tmp_path)
+    july, july_closes = _hourly(datetime(2026, 7, 15), 10)
+    _write_csv(bank_dir / "1H.csv", july, july_closes)
+    january = datetime(2026, 1, 15, 10)
+    _write_csv(incoming_dir / "1H.csv", [january] + july, [777.0] + july_closes)  # 10 verifican; enero es de otra estación
+    _write_csv(incoming_dir / "1D.csv", [january, datetime(2026, 7, 15)], [1.0, 2.0])
+
+    result = _merge(tmp_path, bank_dir, incoming_dir, export_moment=datetime(2026, 9, 15, 12), dst_rule="us")
+
+    assert result.result == SYNC_RESULT_MERGED
+    assert result.bars_added["1H"] == 0  # la vela de enero se filtró
+    assert january not in set(read_candle_csv(bank_csv_path(str(bank_dir), "1H"))["time"])
+    assert result.bars_added["1D"] == 2  # las lentas entran completas (N39)
+
+
+def test_merge_incoming_run_empty_incoming_dir_is_export_failed(tmp_path):
+    bank_dir, incoming_dir = _dirs(tmp_path)
+    result = _merge(tmp_path, bank_dir, incoming_dir)
+    assert result.result == "export_failed"
+    assert "empty_export" in result.error
+
+
+def test_merge_incoming_run_failure_midway_keeps_finished_timeframes_and_leaves_the_rest_untouched(
+        tmp_path, monkeypatch):
+    bank_dir, incoming_dir = _dirs(tmp_path)
+    times, closes = _hourly(DAY, 12)
+    _write_csv(bank_dir / "1H.csv", times, closes)
+    before_1h = (bank_dir / "1H.csv").read_bytes()
+    new_times, new_closes = _hourly(DAY, 15)
+    _write_csv(incoming_dir / "1H.csv", new_times, new_closes)
+    _write_csv(incoming_dir / "1D.csv", [DAY], [5000.0])
+
+    real = tools.candle_bank.merge_timeframe_into_bank_checked
+
+    def flaky(bank, tf, df):
+        if tf == "1H":
+            raise RuntimeError("disco lleno (simulado)")
+        return real(bank, tf, df)
+
+    monkeypatch.setattr(tools.candle_bank, "merge_timeframe_into_bank_checked", flaky)
+    result = _merge(tmp_path, bank_dir, incoming_dir)
+
+    assert result.result == "export_failed"
+    assert "merge failed on 1H" in result.error and "disco lleno" in result.error
+    assert result.bars_added == {"1D": 1}  # 1D (más lenta, va antes) ya se había fusionado
+    assert (bank_dir / "1H.csv").read_bytes() == before_1h
+
+
+def _sync(result, **kw):
+    kw.setdefault("symbol", "XAUUSD")
+    return SyncResult(result=result, **kw)
+
+
+def test_write_sync_status_merged_marks_the_clock_verified(tmp_path):
+    write_sync_status(str(tmp_path), _sync(SYNC_RESULT_MERGED, verified_by="overlap", run_id="r1",
+                                           bars_added={"1H": 3}))
+    status = read_bank_status(str(tmp_path))
+    assert (status["clock"], status["verified_by"]) == ("verified", "overlap")
+    assert status["last_export"] == {"run_id": "r1", "result": "merged", "bars_added": {"1H": 3}}
+    assert status["last_error"] is None
+
+
+def test_write_sync_status_a_failed_verification_does_not_revoke_an_already_verified_bank(tmp_path):
+    write_sync_status(str(tmp_path), _sync(SYNC_RESULT_MERGED, verified_by="references", run_id="r1"))
+    write_sync_status(str(tmp_path), _sync("clock_misaligned", run_id="r2", error="shifted +3h"))
+    status = read_bank_status(str(tmp_path))
+    assert (status["clock"], status["verified_by"]) == ("verified", "references")  # el banco no cambió
+    assert status["last_export"]["result"] == "clock_misaligned"
+    assert status["last_error"] == "shifted +3h"
+
+
+def test_write_sync_status_first_export_that_does_not_verify_records_the_reason(tmp_path):
+    write_sync_status(str(tmp_path), _sync("clock_misaligned", error="shifted +3h"))
+    assert read_bank_status(str(tmp_path))["clock"] == "clock_misaligned"
+
+
+def test_write_sync_status_export_failed_says_nothing_about_the_clock(tmp_path):
+    write_sync_status(str(tmp_path), _sync("export_failed", error="timeout"))
+    assert read_bank_status(str(tmp_path))["clock"] == "clock_unverified"  # nunca se verificó
+    write_sync_status(str(tmp_path), _sync("clock_misaligned", error="x"))
+    write_sync_status(str(tmp_path), _sync("export_failed", error="timeout"))
+    assert read_bank_status(str(tmp_path))["clock"] == "clock_misaligned"  # conserva lo que había
