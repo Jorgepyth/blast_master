@@ -427,10 +427,45 @@
       **Sigue [NO VERIFICADO] para el spike (T22):** el exportador real (MT5 abierto, el Python de Windows con
       `MetaTrader5`, la detección del offset, la hora del cambio de horario).
       SUITE: `598 passed, 3 skipped, 97 warnings in 16.76s`; sin `.data/`.
-- [ ] T21. Subcomandos `candles status`, `candles import-legacy` y `candles export --symbol S [--wait N]` en
+- [x] T21. Subcomandos `candles status`, `candles import-legacy` y `candles export --symbol S [--wait N]` en
       `cli/main.py`. (RF-2c, RF-1)
       Hecho cuando: los tests con `CliRunner` y configuración en `tmp_path` prueban la salida y los códigos 0, 2 y 6.
       SUITE en verde.
+      **Hecho 2026-09-28:** primera tarea que toca código de producción de `cli/main.py`, y solo **agrega** (111
+      líneas nuevas, 0 modificadas ni borradas: los wizards, INV-1/INV-7, no se tocan). Capas finas de presentación
+      (constitución, principio 3; todo en inglés, N30); la lógica está en `tools/`.
+      - `candles status`: tabla Rich con, por símbolo MT5 (los 4 de `MT5_SYMBOL_MAP`), reloj, quién lo verificó, último
+        export (`resultado (run_id)`), TF presentes (en el orden de `ALL_BANK_TIMEFRAMES`) y último error. Un símbolo
+        sin `status.json` dice `never exported`. Siempre código 0.
+      - `candles import-legacy`: para cada símbolo llama a `import_legacy_with_status()` (candado + `import_legacy` +
+        `status.json`), e informa una línea por símbolo (importado y excluido con su motivo / no importado con
+        `clock_unverified` o `clock_misaligned` / sin CSV legacy / saltado por candado). Códigos: 0; 2 si algún símbolo no
+        verificó; **6 si algún símbolo estaba con candado tomado** (gana sobre el 2: ese símbolo ni se procesó, hay
+        que repetirlo).
+      - `candles export --symbol S [--wait N]`: normaliza `S` sin distinguir mayúsculas contra los símbolos conocidos
+        (uno desconocido → `Candle export skipped: no_mt5_symbol`, código 6, sin lanzar nada), llama a
+        `candle_sync.sync_symbol(S, timeout_s=N)` y usa `format_result_line`/`exit_code_for` de T20: 0 fusionó, 2 reloj
+        sin verificar, 6 `export_failed` o candado tomado. `--wait` es el tope de espera al exportador (default
+        `EXPORT_TIMEOUT_S`).
+      Soporte agregado: `LEGACY_EXPORTS_DIR` en `config/auto_resolution.py` y `.env.template` (por defecto, la carpeta
+      que contiene a `MT5_INCOMING_DIR`, o sea `.../MT5Exports`; solo la lee `import-legacy`), y en
+      `tools/candle_bank.py` `collect_bank_status()` (solo lectura; un `status.json` ilegible se informa, no rompe) e
+      `import_legacy_with_status()` (sin CSV legacy no toca nada, ni crea el directorio; con el candado tomado levanta
+      `CandleBankLockedError`; cuando el reloj no verifica igual deja `status.json` con el motivo, para que `status`
+      lo muestre, pero ningún CSV entra al banco).
+      **Detalle a tener en cuenta:** click devuelve **2** para un error de uso (p.ej. falta `--symbol`), el mismo
+      número que el contrato del plan usa para "reloj sin verificar". Es una colisión del contrato, no de este
+      código; solo afecta a quien invoque el comando mal.
+      `tests/test_cli_candles.py` nuevo, 15 tests con `CliRunner`, `config.auto_resolution` apuntando a `tmp_path` y el
+      engine de cuenta fijado en memoria (como los tests de `report`): el grupo lista sus 3 subcomandos; `status` con
+      banco vacío (4 × `never exported`) y con un símbolo con estado y CSV; `import-legacy` verificado (importa 15M,
+      excluye XAU 5M, los otros 3 símbolos sin CSV, y el origen queda byte a byte igual), sin referencias (2), con
+      reloj corrido +3h (2) y con candado tomado (6); `export` fusionado (0, con `--wait` y sin distinguir
+      mayúsculas), reloj sin verificar (2), export fallido (6, línea `Candle export skipped: …`), candado (6), símbolo
+      desconocido (6); y un extremo a extremo por el `sync_symbol` real con un exportador falso que fusiona y luego
+      se ve en `status`. +7 tests en `tests/test_candle_bank.py` y +1 en `tests/test_config_auto_resolution.py`.
+      Mutación: hacer que `export` ignore el código de salida rompe 3 tests.
+      SUITE: `622 passed, 3 skipped, 97 warnings in 18.68s`; sin `.data/`.
 - [ ] T22. 🖐 **Spike de interoperabilidad**, con MT5 abierto en Windows:
       - encontrar el Python de Windows que tiene `MetaTrader5`;
       - correr `candles export --symbol XAUUSD` desde `WT`, con el banco en un directorio temporal y

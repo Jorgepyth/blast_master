@@ -22,6 +22,7 @@ from tools.candle_bank import (
     CandleBankLockedError,
     LEGACY_EXCLUSION_REASON,
     LEGACY_IMPORT_EXCLUSIONS,
+    LEGACY_IMPORT_RUN_ID,
     OVERLAP_TIMEFRAMES,
     STATUS_JSON_FILENAME,
     SYNC_RESULT_MERGED,
@@ -29,9 +30,11 @@ from tools.candle_bank import (
     acquire_bank_lock,
     bank_csv_path,
     build_status_payload,
+    collect_bank_status,
     filter_by_export_season,
     gather_reference_entries,
     import_legacy,
+    import_legacy_with_status,
     merge_candle_frames,
     merge_incoming_run,
     merge_timeframe_into_bank,
@@ -1034,3 +1037,102 @@ def test_write_sync_status_export_failed_says_nothing_about_the_clock(tmp_path):
     write_sync_status(str(tmp_path), _sync("clock_misaligned", error="x"))
     write_sync_status(str(tmp_path), _sync("export_failed", error="timeout"))
     assert read_bank_status(str(tmp_path))["clock"] == "clock_misaligned"  # conserva lo que había
+
+
+# --- collect_bank_status / import_legacy_with_status (T21) -------------------
+
+def test_collect_bank_status_symbol_never_exported_has_no_clock(tmp_path):
+    (row,) = collect_bank_status(str(tmp_path), ["XAUUSD"])
+    assert (row.symbol, row.clock, row.timeframes, row.last_result) == ("XAUUSD", None, [], None)
+
+
+def test_collect_bank_status_reads_status_json_and_lists_timeframes_in_bank_order(tmp_path):
+    bank_dir = tmp_path / "XAUUSD"
+    bank_dir.mkdir()
+    for tf in ("1M", "1H", "1W"):  # a propósito desordenadas
+        _write_csv(bank_dir / f"{tf}.csv", [DAY], [1.0])
+    write_sync_status(str(bank_dir), SyncResult("XAUUSD", SYNC_RESULT_MERGED, verified_by="overlap",
+                                                 run_id="r1", bars_added={"1H": 3}))
+    write_sync_status(str(bank_dir), SyncResult("XAUUSD", "export_failed", run_id="r2", error="timeout"))
+
+    (row,) = collect_bank_status(str(tmp_path), ["XAUUSD"])
+
+    assert row.timeframes == ["1W", "1H", "1M"]  # el orden de ALL_BANK_TIMEFRAMES, no el alfabético
+    assert (row.clock, row.verified_by) == ("verified", "overlap")
+    assert (row.last_run_id, row.last_result, row.last_error) == ("r2", "export_failed", "timeout")
+
+
+def test_collect_bank_status_unreadable_status_json_is_reported_not_raised(tmp_path):
+    bank_dir = tmp_path / "XAUUSD"
+    bank_dir.mkdir()
+    (bank_dir / "status.json").write_text("{not json")
+    (row,) = collect_bank_status(str(tmp_path), ["XAUUSD"])
+    assert row.clock == "status.json unreadable"
+
+
+def _legacy_env(tmp_path, fills, lag_hours=0, five_minute=False):
+    _make_account_db(tmp_path / "xau.db", fills=_reference_fills(fills), asset="XAUUSDT.P")
+    legacy_dir = tmp_path / "legacy" / "XAUUSD"
+    _write_reference_15m_csv(legacy_dir, lag_hours=lag_hours)
+    if five_minute:
+        _write_csv(legacy_dir / "5M.csv", [T0], [1800.0])
+    return legacy_dir, tmp_path / "bank" / "XAUUSD"
+
+
+def _import_with_status(tmp_path, legacy_dir, bank_dir):
+    return import_legacy_with_status(
+        "XAUUSD", str(legacy_dir), str(bank_dir), str(tmp_path),
+        real_accounts={"000": "xau.db"}, symbol_map={"XAUUSDT.P": "XAUUSD"})
+
+
+def test_import_legacy_with_status_verified_writes_status_and_imports(tmp_path):
+    legacy_dir, bank_dir = _legacy_env(tmp_path, 12, five_minute=True)
+
+    result = _import_with_status(tmp_path, legacy_dir, bank_dir)
+
+    assert result.aligned is True and set(result.imported) == {"15M"}
+    assert result.excluded == {"5M": LEGACY_EXCLUSION_REASON}
+    status = read_bank_status(str(bank_dir))
+    assert (status["clock"], status["verified_by"]) == ("verified", "references")
+    assert status["last_export"] == {"run_id": LEGACY_IMPORT_RUN_ID, "result": "merged",
+                                     "bars_added": {"15M": 200}}
+    assert not (bank_dir / ".lock").exists()
+
+
+def test_import_legacy_with_status_unverified_records_the_reason_and_imports_nothing(tmp_path):
+    legacy_dir, bank_dir = _legacy_env(tmp_path, 3)
+
+    result = _import_with_status(tmp_path, legacy_dir, bank_dir)
+
+    assert result.imported == {} and result.excluded == {"15M": "clock_unverified"}
+    status = read_bank_status(str(bank_dir))
+    assert status["clock"] == "clock_unverified"
+    assert "not enough reference prices" in status["last_error"]
+    assert not (bank_dir / "15M.csv").exists()
+
+
+def test_import_legacy_with_status_misaligned_clock_records_the_reason(tmp_path):
+    legacy_dir, bank_dir = _legacy_env(tmp_path, 12, lag_hours=3)
+    _import_with_status(tmp_path, legacy_dir, bank_dir)
+    assert read_bank_status(str(bank_dir))["clock"] == "clock_misaligned"
+
+
+def test_import_legacy_with_status_without_legacy_csvs_touches_nothing(tmp_path):
+    result = import_legacy_with_status(
+        "XAUUSD", str(tmp_path / "legacy" / "XAUUSD"), str(tmp_path / "bank" / "XAUUSD"), str(tmp_path),
+        real_accounts={}, symbol_map={})
+    assert result.aligned is None
+    assert not (tmp_path / "bank").exists()  # ni el directorio del banco se creó
+
+
+def test_import_legacy_with_status_with_the_lock_held_raises_and_leaves_the_bank_alone(tmp_path):
+    legacy_dir, bank_dir = _legacy_env(tmp_path, 12)
+    bank_dir.mkdir(parents=True)
+    (bank_dir / ".lock").write_text(json.dumps({
+        "pid": os.getpid(), "started_at": datetime.now(timezone.utc).isoformat()}))
+
+    with pytest.raises(CandleBankLockedError):
+        _import_with_status(tmp_path, legacy_dir, bank_dir)
+
+    assert not (bank_dir / "15M.csv").exists()
+    assert read_bank_status(str(bank_dir)) is None

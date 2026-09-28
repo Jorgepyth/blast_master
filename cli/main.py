@@ -1313,6 +1313,117 @@ def report(output_dir, html_only, llm_only):
     generate_reports(output_dir=output_dir, html_only=html_only, llm_only=llm_only)
 
 
+# --- Banco de velas (spec 002, T21) ---------------------------------------------
+# Solo presentación: la lógica vive en tools/candle_bank.py y tools/candle_sync.py
+# (constitución, principio 3). Todo lo que se muestra va en inglés (N30). Los códigos
+# de salida son los de plan.md §4: 0 = ok, 2 = el reloj no se verificó, 6 = el export
+# falló o se saltó (incluido "ya hay otro en curso").
+CANDLES_EXIT_NOT_VERIFIED = 2
+CANDLES_EXIT_SKIPPED = 6
+
+
+def _candle_symbols():
+    """Los símbolos MT5 del banco: los que mapean las cuentas reales (config)."""
+    import config.auto_resolution as auto_cfg
+    return sorted(set(auto_cfg.MT5_SYMBOL_MAP.values()))
+
+
+@cli.group()
+def candles():
+    """Candle bank (spec 002): status, first import and manual export."""
+
+
+@candles.command("status")
+def candles_status():
+    """Show the state of the candle bank for each MT5 symbol."""
+    import config.auto_resolution as auto_cfg
+    from tools.candle_bank import collect_bank_status
+
+    table = Table(title="Candle bank", box=box.ROUNDED)
+    for header in ("Symbol", "Clock", "Verified by", "Last export", "Timeframes", "Last error"):
+        table.add_column(header, overflow="fold")
+    for row in collect_bank_status(auto_cfg.CANDLE_BANK_DIR, _candle_symbols()):
+        clock_style = {"verified": "green", None: "dim"}.get(row.clock, "yellow")
+        last_export = f"{row.last_result} ({row.last_run_id})" if row.last_result else "-"
+        table.add_row(
+            Text(row.symbol, style="bold"),
+            Text(row.clock or "never exported", style=clock_style),
+            Text(row.verified_by or "-"),
+            Text(last_export),
+            Text(" ".join(row.timeframes) or "-"),
+            Text(row.last_error or "-"),
+        )
+    console.print(table)
+
+
+@candles.command("import-legacy")
+@click.pass_context
+def candles_import_legacy(ctx):
+    """Fill the bank the first time from the existing MT5Exports CSVs.
+
+    Each symbol is imported only if its clock verifies against the account
+    fills. The source CSVs are never modified. XAUUSD 5M is always excluded.
+    """
+    import config.auto_resolution as auto_cfg
+    from tools.candle_bank import CandleBankLockedError, import_legacy_with_status
+
+    any_unverified = any_locked = False
+    for symbol in _candle_symbols():
+        legacy_dir = os.path.join(auto_cfg.LEGACY_EXPORTS_DIR, symbol)
+        bank_dir = os.path.join(auto_cfg.CANDLE_BANK_DIR, symbol)
+        try:
+            result = import_legacy_with_status(symbol, legacy_dir, bank_dir, auto_cfg.ACCOUNTS_DATA_DIR)
+        except CandleBankLockedError:
+            any_locked = True
+            console.print(f"{symbol}: skipped, an export is already running", style="yellow", markup=False)
+            continue
+        if result.aligned is None and not result.imported and not result.excluded:
+            console.print(f"{symbol}: no legacy CSVs in {legacy_dir}", style="dim", markup=False)
+        elif result.aligned is True:
+            imported = ", ".join(f"{tf}: {n} candles" for tf, n in result.imported.items()) or "nothing new"
+            excluded = "".join(f"; excluded {tf} ({why})" for tf, why in result.excluded.items())
+            console.print(f"{symbol}: imported {imported}{excluded}", style="green", markup=False)
+        else:
+            any_unverified = True
+            reason = "clock_misaligned" if result.aligned is False else "clock_unverified"
+            console.print(
+                f"{symbol}: not imported, {reason} (left out: {', '.join(result.excluded)})",
+                style="yellow", markup=False,
+            )
+    if any_locked:
+        ctx.exit(CANDLES_EXIT_SKIPPED)
+    if any_unverified:
+        ctx.exit(CANDLES_EXIT_NOT_VERIFIED)
+
+
+@candles.command("export")
+@click.option("--symbol", required=True, help="MT5 symbol to export, e.g. XAUUSD.")
+@click.option("--wait", type=float, default=None,
+              help="Seconds to wait for the MT5 exporter (default: EXPORT_TIMEOUT_S).")
+@click.pass_context
+def candles_export(ctx, symbol, wait):
+    """Export new candles from MT5 for one symbol and merge them into the bank.
+
+    Exit code: 0 merged, 2 clock not verified, 6 export failed or skipped.
+    """
+    from tools import candle_sync
+
+    known = {s.upper(): s for s in _candle_symbols()}
+    canonical = known.get(symbol.upper())
+    if canonical is None:
+        console.print(
+            f"Candle export skipped: no_mt5_symbol ({symbol!r} is not one of {', '.join(known.values())})",
+            style="yellow", markup=False,
+        )
+        ctx.exit(CANDLES_EXIT_SKIPPED)
+    console.print(f"Exporting {canonical} from MT5 ...", style="dim", markup=False)
+    result = candle_sync.sync_symbol(canonical, timeout_s=wait)
+    console.print(candle_sync.format_result_line(result), markup=False, highlight=False)
+    code = candle_sync.exit_code_for(result)
+    if code:
+        ctx.exit(code)
+
+
 def format_percentage(value):
     return f"{value * 100:.3f}%"
 

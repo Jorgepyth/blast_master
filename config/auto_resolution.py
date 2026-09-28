@@ -142,6 +142,14 @@ MT5_INCOMING_DIR = os.path.abspath(
     os.getenv("MT5_INCOMING_DIR", "/mnt/c/Users/jcifu/MT5Exports/_incoming")
 )
 
+# CSV que ya existían antes de esta spec, `{LEGACY_EXPORTS_DIR}/{SIMBOLO}/{TF}.csv`
+# (los que lee el cuaderno; INV-6: nunca se tocan). Solo los lee
+# `candles import-legacy` (RF-2c). Por defecto, la carpeta que contiene a
+# MT5_INCOMING_DIR (`.../MT5Exports`).
+LEGACY_EXPORTS_DIR = os.path.abspath(
+    os.getenv("LEGACY_EXPORTS_DIR", os.path.dirname(MT5_INCOMING_DIR))
+)
+
 # Python de Windows con MetaTrader5 instalado, y ruta del exportador tal como
 # la ve ESE Python (típicamente un path estilo Windows, C:\...) -- no se les
 # aplica os.path.abspath: no son rutas POSIX, y os.path.isabs() de Linux no las

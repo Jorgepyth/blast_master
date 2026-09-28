@@ -870,3 +870,84 @@ def write_sync_status(bank_dir: str, sync: SyncResult) -> None:
         sync.symbol, clock, verified_by, DST_RULE_STATUS_LABEL, sync.run_id,
         sync.result, sync.bars_added, sync.error,
     ))
+
+
+# --------------------------------------------------------------------------
+# Lo que usan los subcomandos `candles` de cli/main.py (T21)
+# --------------------------------------------------------------------------
+
+@dataclass
+class BankStatusRow:
+    """Una fila de `candles status`. `clock` es `None` si el símbolo todavía no
+    tiene `status.json` (nunca se exportó ni se importó nada)."""
+    symbol: str
+    clock: Optional[str]
+    verified_by: Optional[str]
+    last_run_id: Optional[str]
+    last_result: Optional[str]
+    last_error: Optional[str]
+    timeframes: List[str]
+
+
+def collect_bank_status(bank_root: str, symbols: Sequence[str]) -> List[BankStatusRow]:
+    """Estado de cada símbolo de `symbols` en `bank_root`: lo que dice su
+    `status.json` más las TF que tienen CSV en el banco, en el orden de
+    `ALL_BANK_TIMEFRAMES`. Solo lectura; un `status.json` ilegible se informa en
+    `clock` en vez de romper."""
+    rows: List[BankStatusRow] = []
+    for symbol in symbols:
+        bank_dir = os.path.join(bank_root, symbol)
+        present = set(_timeframes_present_in(bank_dir))
+        timeframes = [tf for tf in ALL_BANK_TIMEFRAMES if tf in present]
+        try:
+            status = read_bank_status(bank_dir)
+        except (ValueError, OSError):
+            rows.append(BankStatusRow(symbol, "status.json unreadable", None, None, None, None, timeframes))
+            continue
+        if status is None:
+            rows.append(BankStatusRow(symbol, None, None, None, None, None, timeframes))
+            continue
+        last = status.get("last_export") or {}
+        rows.append(BankStatusRow(
+            symbol, status.get("clock"), status.get("verified_by"),
+            last.get("run_id"), last.get("result"), status.get("last_error"), timeframes,
+        ))
+    return rows
+
+
+LEGACY_IMPORT_RUN_ID = "legacy_import"
+
+
+def import_legacy_with_status(
+    symbol: str,
+    legacy_dir: str,
+    bank_dir: str,
+    accounts_data_dir: str,
+    real_accounts: Optional[Dict[str, str]] = None,
+    symbol_map: Optional[Dict[str, str]] = None,
+) -> LegacyImportResult:
+    """
+    `import_legacy()` (RF-2c) con el candado del símbolo y `status.json`: lo que
+    llama `candles import-legacy`. Sin CSV legacy no toca nada (ni siquiera
+    crea el directorio del banco). Si el símbolo ya tiene un export en curso,
+    levanta `CandleBankLockedError`. `status.json` queda con
+    `run_id="legacy_import"` y, si el reloj verificó, `verified_by="references"`.
+    """
+    if not _timeframes_present_in(legacy_dir):
+        return LegacyImportResult(symbol=symbol, aligned=None)
+    with acquire_bank_lock(bank_dir):
+        result = import_legacy(
+            symbol, legacy_dir, bank_dir, accounts_data_dir,
+            real_accounts=real_accounts, symbol_map=symbol_map,
+        )
+        if result.aligned is True:
+            sync = SyncResult(symbol, SYNC_RESULT_MERGED, verified_by="references",
+                              bars_added=dict(result.imported), run_id=LEGACY_IMPORT_RUN_ID)
+        elif result.aligned is False:
+            sync = SyncResult(symbol, REASON_CLOCK_MISALIGNED, run_id=LEGACY_IMPORT_RUN_ID,
+                              error="legacy CSVs: the clock does not fit the reference prices")
+        else:
+            sync = SyncResult(symbol, REASON_CLOCK_UNVERIFIED, run_id=LEGACY_IMPORT_RUN_ID,
+                              error="legacy CSVs: not enough reference prices to verify the clock")
+        write_sync_status(bank_dir, sync)
+    return result

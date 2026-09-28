@@ -92,6 +92,11 @@ def test_resolution_time_source_values_match_plan_order():
     )
 
 
+def test_legacy_exports_dir_defaults_to_the_folder_that_contains_the_incoming_dir():
+    assert os.path.isabs(auto_resolution_config.LEGACY_EXPORTS_DIR)
+    assert auto_resolution_config.LEGACY_EXPORTS_DIR == os.path.dirname(auto_resolution_config.MT5_INCOMING_DIR)
+
+
 def test_windows_paths_have_no_default():
     # Los fija el spike (T22); hasta entonces, None -- el export sigue manual (N31).
     assert auto_resolution_config.WINDOWS_PYTHON is None
@@ -105,14 +110,14 @@ def test_paths_are_absolute_even_when_first_imported_from_tmp_path(tmp_path, mon
     al repo real, no a tmp_path -- incluso si el módulo se (re)importa estando
     chdir'ado a un tmp_path vacío y sin las variables de entorno seteadas."""
     monkeypatch.chdir(tmp_path)
-    for var in ("ACCOUNTS_DATA_DIR", "CANDLE_BANK_DIR", "MT5_INCOMING_DIR"):
+    for var in ("ACCOUNTS_DATA_DIR", "CANDLE_BANK_DIR", "MT5_INCOMING_DIR", "LEGACY_EXPORTS_DIR"):
         monkeypatch.delenv(var, raising=False)
 
     sys.modules.pop("config.auto_resolution", None)
     try:
         reloaded = importlib.import_module("config.auto_resolution")
         for value in (reloaded.ROOT_DIR, reloaded.ACCOUNTS_DATA_DIR,
-                      reloaded.CANDLE_BANK_DIR, reloaded.MT5_INCOMING_DIR):
+                      reloaded.CANDLE_BANK_DIR, reloaded.MT5_INCOMING_DIR, reloaded.LEGACY_EXPORTS_DIR):
             assert os.path.isabs(value), value
         # No se coló la ruta de tmp_path: siguen ancladas al repo real, no al cwd.
         assert not reloaded.CANDLE_BANK_DIR.startswith(str(tmp_path))
