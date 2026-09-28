@@ -65,6 +65,10 @@ Modelo de datos real: 7 tablas (`unified_department`, `analysis_layer`, `efficie
   - **Seguridad en Restore**: `_validate_restore_target()` bloquea cualquier intento de restaurar sobre `.data/` para proteger las bases vivas de producción (lanza `ValueError`). Destino por defecto: `.data/restored/`.
   - **Automatización**: Crontab diario a las 8:00 AM (`0 8 * * * /home/jorgecg/miniconda3/bin/conda run -n blast_master python /home/jorgecg/projects/trading/blast_master/tools/backup.py backup >> /home/jorgecg/projects/trading/blast_master/.data/archives/cron_backup.log 2>&1`) instalado mediante `scripts/setup_backup_cron.sh`.
   - **Estatus verificado**: 26/26 tests de backup pasando (`tests/test_backup.py`), suite completa 310/310 en verde, snapshot real ejecutado y verificado en los 3 destinos (5/5 artefactos), restore real de prueba descargado desde B2 y verificado con `PRAGMA integrity_check` (81 filas unified / 82 tactical en `flight_account_001_xauusd.db`).
+  - **Pendiente, para otra implementación:** el banco de velas `.data/candle_bank/` (spec 002, plan T19)
+    **no** entra en el backup. Decisión del usuario del 2026-09-27: por ahora no es crítico, y no quiere pagar
+    almacenamiento extra en Backblaze. **Riesgo a analizar más adelante:** MT5 guarda poco historial de velas de
+    1M, así que si se pierde el disco, el 1M viejo del banco no se puede volver a descargar.
 
 ## Acceso a APIs de broker (lectura vs escritura)
 
