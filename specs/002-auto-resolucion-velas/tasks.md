@@ -149,10 +149,22 @@
       prueba `count_entries_in_range` con bordes inclusivos, un rango vacío y uno que cubre todo.
       `pytest -q tests/test_p2_clock.py`: `8 passed in 1.10s`. `pytest -q tests/test_p2_*.py`: `120 passed in
       1.38s`. SUITE: `456 passed, 1 skipped, 97 warnings in 14.32s`; sin `.data/`.
-- [ ] T11. `tools/candle_bank.py`, parte 1: lectura y escritura atómica de un `{TF}.csv` (temporal + `os.replace`) y
+- [x] T11. `tools/candle_bank.py`, parte 1: lectura y escritura atómica de un `{TF}.csv` (temporal + `os.replace`) y
       la fusión por `time`, conservando la vela existente. (RF-1, RF-1b)
       Hecho cuando: los tests prueban que ninguna vela previa desaparece ni cambia, que la cobertura hacia atrás no
       se reduce, y que un duplicado conserva la vela del banco. SUITE en verde.
+      **Hecho 2026-09-28:** `tools/candle_bank.py` nuevo (parte 1 de 6; T12-T16 agregan candado, verificación por
+      superposición y por referencias, filtro de estación y `status.json` sobre estas mismas funciones):
+      `read_candle_csv`/`write_candle_csv_atomic` (temporal en el mismo directorio + `os.replace`, atómico en
+      POSIX), `merge_candle_frames` (unión por `time`, `keep="first"` con el banco primero en el `concat` para
+      que gane sobre el export) y `merge_timeframe_into_bank` (compone las tres, sin candado ni verificación —
+      eso es de otras tareas). Reusa `REQUIRED_CSV_COLUMNS` de `tools/p2_backtest.py` para no divergir del
+      formato que ya lee `CsvOHLCProvider` (INV-6). `tests/test_candle_bank.py` nuevo, 15 tests: ninguna vela
+      previa desaparece ni cambia, la cobertura hacia atrás nunca se reduce, un duplicado conserva la vela del
+      banco (no la entrante), el resultado queda ordenado, el primer merge sobre un banco vacío trae todo, y una
+      falla simulada a mitad de la escritura (`to_csv` mockeado para tirar `RuntimeError`) deja el archivo real
+      byte a byte igual y sin temporales sueltos. `pytest -q tests/test_candle_bank.py`: `15 passed in 1.18s`.
+      SUITE: `471 passed, 1 skipped, 97 warnings in 10.05s`; sin `.data/`.
 - [ ] T12. `candle_bank`, parte 2: candado por símbolo (PID y vencimiento de 2 h). (RF-1d)
       Hecho cuando: los tests prueban que con el candado tomado se cancela y el banco queda byte a byte igual, y que
       un candado vencido se reemplaza. SUITE en verde.
