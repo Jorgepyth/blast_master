@@ -83,6 +83,11 @@ ALL_TIMEFRAMES: Tuple[str, ...] = ("1W", "1D", "12H", "4H", "1H", "30M", "15M")
 TIMEFRAME_MINUTES: Dict[str, int] = {
     "1W": 7 * 24 * 60, "1D": 24 * 60, "12H": 12 * 60, "4H": 4 * 60,
     "1H": 60, "30M": 30, "15M": 15,
+    # 5M y 1M: spec 002 RF-15 (el banco de velas guarda hasta 1M) y RF-4f
+    # (el resolvedor de spec 002 camina TF cada vez más finas para el primer
+    # toque). `closed_bars`/`bar_containing` de CsvOHLCProvider ya funcionan
+    # con cualquier entrada de este dict — no hace falta tocar nada más ahí.
+    "5M": 5, "1M": 1,
 }
 
 # Cobertura mínima por TF para snapshot_incompleto, ya definida en el prompt

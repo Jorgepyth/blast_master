@@ -123,9 +123,17 @@
       absolutas y siguen apuntando al repo real, no a `tmp_path`. `pytest -q tests/test_config_auto_resolution.py`:
       `12 passed in 0.03s`. SUITE: `447 passed, 1 skipped, 97 warnings in 7.09s`; sin `.data/`.
       en verde.
-- [ ] T9. En `tools/p2_backtest.py`, agregar `5M` y `1M` a `TIMEFRAME_MINUTES`. (RF-15, RF-4f)
+- [x] T9. En `tools/p2_backtest.py`, agregar `5M` y `1M` a `TIMEFRAME_MINUTES`. (RF-15, RF-4f)
       Hecho cuando: `closed_bars` y `bar_containing` funcionan con un fixture de 5M y otro de 1M
       (test nuevo), y `tests/test_p2_*.py` sigue en verde. SUITE en verde.
+      **Hecho 2026-09-28:** cambio de una línea (`"5M": 5, "1M": 1`). `TIMEFRAME_MINUTES` solo se lee por
+      `[timeframe]` en `closed_bars`/`bar_containing` (verificado con grep, ningún sitio lo itera completo), así
+      que es puramente aditivo — INV-4/INV-5 intactos. `windows_export/export_p2_ohlc.py` tiene su propio dict
+      separado, sin tocar. `tests/test_p2_finer_timeframes.py` nuevo (7 tests, mismo patrón de fixture que
+      `tests/test_p2_closed_bars.py`): `closed_bars` y `bar_containing` con 5M y 1M, incluida la vela en
+      formación excluida, una vela que cierra justo en el ancla, y los bordes antes/después del rango.
+      `pytest -q tests/test_p2_*.py`: `118 passed in 1.58s`. SUITE: `454 passed, 1 skipped, 97 warnings in
+      14.23s`; sin `.data/`.
 - [ ] T10. Extraer `evaluate_clock_entries(entries, provider, tf, offsets)` de `calibrate_clock_offset`, sin
       cambiar su resultado, y agregar `count_entries_in_range()`. (RF-2, RF-2b, RF-4f)
       Hecho cuando: `tests/test_p2_clock.py` sigue en verde sin cambios; un test nuevo prueba que las dos rutas dan el
