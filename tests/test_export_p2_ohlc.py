@@ -16,7 +16,7 @@ su valor numérico real, solo de que TIMEFRAME_MAP se construya sin
 excepción.
 """
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pandas as pd
@@ -43,12 +43,19 @@ from windows_export.export_p2_ohlc import (  # noqa: E402
     BACKWARD_MARGIN,
     TIMEFRAME_MAP,
     TIMEFRAME_MINUTES,
+    base_offset_from_current,
     compute_backward_start,
+    dst_masks,
+    dst_transition_dates,
     exclude_forming_bar,
+    export_timeframe,
     gt_naive_to_utc,
     parse_timeframes_arg,
+    server_time_to_utc,
+    server_time_to_utc_dst,
     utc_to_gt_naive,
 )
+import windows_export.export_p2_ohlc as exporter_module  # noqa: E402
 
 UTC = timezone.utc
 
@@ -244,3 +251,124 @@ def test_parse_timeframes_arg_rejects_unknown_timeframe_with_the_list_of_valid_o
     with pytest.raises(ValueError, match="2H") as exc_info:
         parse_timeframes_arg("1H,2H")
     assert "1M" in str(exc_info.value)  # el mensaje lista las válidas
+
+
+# --- T18 (spec 002, RF-15b, N34): conversión vela por vela según --dst-rule ---
+
+def _epoch(naive_server_label: str) -> int:
+    """Epoch de MT5: el reloj del servidor codificado como si fuera UTC."""
+    return int(pd.Timestamp(naive_server_label, tz="UTC").timestamp())
+
+
+def test_dst_transition_dates_2026():
+    assert dst_transition_dates(2026, "us") == (date(2026, 3, 8), date(2026, 11, 1))
+    assert dst_transition_dates(2026, "eu") == (date(2026, 3, 29), date(2026, 10, 25))
+
+
+def test_dst_transition_dates_unknown_rule_raises():
+    with pytest.raises(ValueError, match="desconocida"):
+        dst_transition_dates(2026, "asia")
+
+
+@pytest.mark.parametrize("rule", ["us", "eu"])
+def test_exporter_dst_rules_agree_with_candle_bank_on_every_day_of_2026_and_2027(rule):
+    """El exportador es standalone y duplica las fechas de cambio de
+    tools/candle_bank.py -- este test evita que las dos diverjan en silencio."""
+    from tools.candle_bank import _dst_active_on
+
+    days = [date(2026, 1, 1) + timedelta(days=i) for i in range(730)]
+    noon = pd.Series([pd.Timestamp(d) + pd.Timedelta(hours=12) for d in days])
+    is_dst, ambiguous = dst_masks(noon, rule)
+    assert not ambiguous.any()  # a mediodía nunca cae en la hora del cambio
+    assert list(is_dst) == [_dst_active_on(d, rule) for d in days]
+
+
+def test_dst_masks_none_rule_is_all_false():
+    times = pd.Series(pd.to_datetime(["2026-01-15 10:00", "2026-07-15 10:00", "2026-03-08 02:30"]))
+    is_dst, ambiguous = dst_masks(times, "none")
+    assert not is_dst.any() and not ambiguous.any()
+
+
+def test_dst_masks_marks_the_transition_hour_as_ambiguous_on_both_transitions():
+    times = pd.Series(pd.to_datetime([
+        "2026-03-08 01:59", "2026-03-08 02:00", "2026-03-08 02:59", "2026-03-08 03:00",  # inicio (us)
+        "2026-11-01 01:59", "2026-11-01 02:00", "2026-11-01 02:59", "2026-11-01 03:00",  # fin (us)
+    ]))
+    is_dst, ambiguous = dst_masks(times, "us")
+    assert list(ambiguous) == [False, True, True, False, False, True, True, False]
+    assert list(is_dst) == [False, False, False, True, True, False, False, False]
+
+
+def test_base_offset_from_current_subtracts_one_hour_when_now_is_in_dst():
+    # Septiembre, servidor en UTC+3 (verano) -> base de invierno UTC+2.
+    assert base_offset_from_current(3, datetime(2026, 9, 15, 12), "us") == 2
+    # Enero, servidor en UTC+2 (invierno) -> ya es la base.
+    assert base_offset_from_current(2, datetime(2026, 1, 15, 12), "us") == 2
+
+
+def test_base_offset_from_current_none_rule_returns_the_offset_untouched():
+    assert base_offset_from_current(3, datetime(2026, 9, 15, 12), "none") == 3
+
+
+def test_base_offset_from_current_fails_inside_the_transition_hour():
+    with pytest.raises(ValueError, match="hora del cambio"):
+        base_offset_from_current(3, datetime(2026, 3, 8, 2, 30), "us")
+
+
+def test_january_and_july_bars_exported_in_september_get_the_right_offset_with_us_rule():
+    """Servidor en UTC+3 en septiembre (verano) => base UTC+2. Una vela de
+    enero (invierno) usa +2; una de julio (verano) usa +3."""
+    base = base_offset_from_current(3, datetime(2026, 9, 15, 12), "us")
+    epochs = pd.Series([_epoch("2026-01-15 10:00"), _epoch("2026-07-15 10:00")])
+
+    utc, ambiguous = server_time_to_utc_dst(epochs, base, "us")
+
+    assert not ambiguous.any()
+    assert utc.iloc[0] == pd.Timestamp("2026-01-15 08:00", tz="UTC")  # 10:00 servidor - 2h
+    assert utc.iloc[1] == pd.Timestamp("2026-07-15 07:00", tz="UTC")  # 10:00 servidor - 3h
+
+
+def test_none_rule_gives_exactly_what_the_single_offset_conversion_gave_before():
+    epochs = pd.Series([_epoch("2026-01-15 10:00"), _epoch("2026-07-15 10:00"), _epoch("2026-03-08 02:30")])
+
+    utc, ambiguous = server_time_to_utc_dst(epochs, 3, "none")
+
+    pd.testing.assert_series_equal(utc, server_time_to_utc(epochs, 3))
+    assert not ambiguous.any()
+
+
+def _fake_rates(labels):
+    return [{"time": _epoch(label), "open": 1.0 + i, "high": 2.0 + i, "low": 0.5 + i, "close": 1.5 + i}
+            for i, label in enumerate(labels)]
+
+
+def _run_export(monkeypatch, tmp_path, labels, base_offset, dst_rule):
+    monkeypatch.setattr(exporter_module.mt5, "copy_rates_range", lambda *a, **k: _fake_rates(labels))
+    now = datetime.now(UTC)
+    return export_timeframe("XAUUSD", "1H", now, now, tmp_path, base_offset, dst_rule)
+
+
+def test_export_timeframe_us_rule_converts_per_bar_and_reports_the_discarded_ones(monkeypatch, tmp_path, capsys):
+    labels = ["2026-01-15 10:00", "2026-07-15 10:00", "2026-03-08 02:30"]  # invierno, verano, hora del cambio
+
+    result = _run_export(monkeypatch, tmp_path, labels, base_offset=2, dst_rule="us")
+
+    assert result.rows == 2
+    assert result.discarded_dst == 1
+    assert "1 vela(s)" in capsys.readouterr().err  # se informa cuántas se descartaron
+    written = pd.read_csv(tmp_path / "1H.csv", parse_dates=["time"]).sort_values("time")
+    # GT = UTC - 6h: enero 10:00 - 2h = 08:00 UTC = 02:00 GT; julio 10:00 - 3h = 07:00 UTC = 01:00 GT.
+    assert list(written["time"]) == [pd.Timestamp("2026-01-15 02:00"), pd.Timestamp("2026-07-15 01:00")]
+
+
+def test_export_timeframe_none_rule_matches_todays_single_offset_and_discards_nothing(monkeypatch, tmp_path):
+    labels = ["2026-01-15 10:00", "2026-07-15 10:00", "2026-03-08 02:30"]
+
+    result = _run_export(monkeypatch, tmp_path, labels, base_offset=3, dst_rule="none")
+
+    assert result.rows == 3
+    assert result.discarded_dst == 0
+    written = pd.read_csv(tmp_path / "1H.csv", parse_dates=["time"]).sort_values("time")
+    # Un solo offset (+3) para todo: enero y julio quedan a la misma hora GT (01:00), enero 1h corrido.
+    assert written["time"].iloc[0] == pd.Timestamp("2026-01-15 01:00")
+    assert written["time"].iloc[2] == pd.Timestamp("2026-07-15 01:00")

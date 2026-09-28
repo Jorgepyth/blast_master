@@ -28,15 +28,19 @@ Por eso ahora: server_time -> UTC real (restando el offset del servidor)
 tools/database.py, entry_time). El offset del servidor se detecta del
 último tick del símbolo, o se pasa explícito con --server-utc-offset.
 
-LIMITACIÓN (DST): se aplica UN offset a todas las velas. Los brokers
-mueven el reloj del servidor con el horario de verano (típicamente UTC+2
-en invierno, UTC+3 en verano), así que las velas de la estación opuesta a
-la del momento del export quedan corridas 1h. Para 1D/1W es irrelevante y
-para el calentamiento de EMA/ADX, despreciable. Lo que sí importa es que
-las velas alrededor de cada anchor estén bien alineadas: si los anchors
-caen en otra estación que la del export, pasá --server-utc-offset a mano.
-tools/p2_backtest.py:calibrate_clock_offset() lo verifica contra las
-entradas reales en cada corrida y bloquea el reporte si el reloj no cuadra.
+HORARIO DE VERANO (DST): los brokers mueven el reloj del servidor con el
+horario de verano (típicamente UTC+2 en invierno, UTC+3 en verano). Con
+`--dst-rule none` (el default, como siempre) se aplica UN offset a todas
+las velas, así que las de la estación opuesta a la del momento del export
+quedan corridas 1h. Con `--dst-rule us` o `eu` (spec 002, RF-15b, N34)
+cada vela se convierte con el offset vigente EN LA FECHA de esa vela: el
+offset detectado/pasado es el de "ahora", y de él se deduce el de invierno
+(base) restando 1h si "ahora" está en horario de verano. Las velas que
+caen en la hora del cambio (`DST_TRANSITION_HOUR`) son ambiguas y se
+descartan, informando cuántas fueron. La hora exacta del cambio del
+servidor y la regla real del broker son [NO VERIFICADO] hasta el spike de
+interoperabilidad (T22). tools/p2_backtest.py:calibrate_clock_offset() lo
+verifica contra las entradas reales y bloquea el reporte si el reloj no cuadra.
 
 Solo funciones de LECTURA de MetaTrader5 (copy_rates_range). PROHIBIDO:
 order_send, order_check, o cualquier función de escritura -- no se
@@ -60,7 +64,7 @@ from __future__ import annotations
 import argparse
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -135,6 +139,7 @@ class ExportResult:
     rows: int
     first_time: Optional[datetime]
     last_time: Optional[datetime]
+    discarded_dst: int = 0  # velas de la hora del cambio de horario, descartadas (RF-15b)
 
 
 def utc_to_gt_naive(series: pd.Series) -> pd.Series:
@@ -173,6 +178,111 @@ def gt_naive_to_server(dt_gt_naive: datetime, server_utc_offset_hours: float) ->
     en el que devuelve las velas). Inverso de la conversión de lectura.
     """
     return gt_naive_to_utc(dt_gt_naive) + timedelta(hours=server_utc_offset_hours)
+
+
+# --- Horario de verano del servidor, vela por vela (spec 002, RF-15b, N34) ----
+#
+# Este script es standalone (corre con el Python de Windows, sin importar nada
+# del repo), así que las fechas de cambio de EE.UU./UE se calculan acá y no se
+# importan de tools/candle_bank.py. tests/test_export_p2_ohlc.py verifica que
+# las dos implementaciones coinciden, para que no diverjan sin que se note.
+
+DST_RULES = ("us", "eu", "none")
+
+# Hora (reloj de pared del servidor) del día del cambio a la que cae el salto:
+# la vela cuyo `time` está en [hora, hora+1h) de ese día es ambigua y se
+# descarta. [NO VERIFICADO] -- candidato hasta el spike (T22); un broker puede
+# cambiar a otra hora, y la regla de DST_RULES es la de EE.UU./UE, no
+# necesariamente la del broker.
+DST_TRANSITION_HOUR = 2
+
+_SUNDAY = 6
+
+
+def _nth_weekday_of_month(year: int, month: int, weekday: int, n: int) -> date:
+    first = date(year, month, 1)
+    return date(year, month, 1 + (weekday - first.weekday()) % 7 + 7 * (n - 1))
+
+
+def _last_weekday_of_month(year: int, month: int, weekday: int) -> date:
+    next_first = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+    last_day = next_first - timedelta(days=1)
+    return last_day - timedelta(days=(last_day.weekday() - weekday) % 7)
+
+
+def dst_transition_dates(year: int, dst_rule: str) -> Tuple[date, date]:
+    """(inicio, fin) del horario de verano de `year` según `dst_rule`:
+    `us` = 2do domingo de marzo -> 1er domingo de noviembre; `eu` = último
+    domingo de marzo -> último domingo de octubre."""
+    if dst_rule == "us":
+        return _nth_weekday_of_month(year, 3, _SUNDAY, 2), _nth_weekday_of_month(year, 11, _SUNDAY, 1)
+    if dst_rule == "eu":
+        return _last_weekday_of_month(year, 3, _SUNDAY), _last_weekday_of_month(year, 10, _SUNDAY)
+    raise ValueError(f"dst_rule desconocida: {dst_rule!r} (esperado {DST_RULES}).")
+
+
+def dst_masks(server_naive: pd.Series, dst_rule: str) -> Tuple[pd.Series, pd.Series]:
+    """
+    Para una Serie de datetimes naive en reloj del servidor, devuelve
+    `(is_dst, ambiguous)` (dos Series booleanas). Con `dst_rule="none"`, todo
+    False. Con `us`/`eu`:
+      - `ambiguous`: cae en [DST_TRANSITION_HOUR, +1h) del día de inicio o de
+        fin del horario de verano -- no se sabe con qué offset se etiquetó;
+      - `is_dst`: cae después de la hora del cambio de inicio y antes de la
+        del cambio de fin (y no es ambigua).
+    """
+    is_dst = pd.Series(False, index=server_naive.index)
+    ambiguous = pd.Series(False, index=server_naive.index)
+    if dst_rule == "none" or server_naive.empty:
+        return is_dst, ambiguous
+
+    hour = pd.Timedelta(hours=1)
+    for year in server_naive.dt.year.unique():
+        start_date, end_date = dst_transition_dates(int(year), dst_rule)
+        gap_start = pd.Timestamp(start_date) + pd.Timedelta(hours=DST_TRANSITION_HOUR)
+        fall_start = pd.Timestamp(end_date) + pd.Timedelta(hours=DST_TRANSITION_HOUR)
+        in_year = server_naive.dt.year == year
+        ambiguous |= in_year & (
+            ((server_naive >= gap_start) & (server_naive < gap_start + hour))
+            | ((server_naive >= fall_start) & (server_naive < fall_start + hour))
+        )
+        is_dst |= in_year & (server_naive >= gap_start + hour) & (server_naive < fall_start)
+    return is_dst, ambiguous
+
+
+def base_offset_from_current(current_offset_hours: float, now_server_naive: datetime, dst_rule: str) -> float:
+    """
+    Offset "base" (de invierno) del servidor a partir del offset de AHORA
+    (detectado del último tick o pasado con --server-utc-offset): resta 1h si
+    "ahora" está en horario de verano según `dst_rule`. Con `none`, el offset
+    de ahora tal cual. Falla si "ahora" cae justo en la hora del cambio.
+    """
+    if dst_rule == "none":
+        return current_offset_hours
+    is_dst, ambiguous = dst_masks(pd.Series([pd.Timestamp(now_server_naive)]), dst_rule)
+    if bool(ambiguous.iloc[0]):
+        raise ValueError(
+            "El momento actual cae en la hora del cambio de horario de verano del servidor; "
+            "no se puede deducir el offset base. Reintentá en una hora, o usá --dst-rule none."
+        )
+    return current_offset_hours - (1 if bool(is_dst.iloc[0]) else 0)
+
+
+def server_time_to_utc_dst(
+    epoch_seconds: pd.Series, base_offset_hours: float, dst_rule: str
+) -> Tuple[pd.Series, pd.Series]:
+    """
+    Como `server_time_to_utc`, pero con el offset vigente en la fecha de CADA
+    vela: `base_offset_hours` (invierno) + 1h si la vela cae en horario de
+    verano según `dst_rule`. Devuelve `(utc_tz_aware, ambiguous)`: la segunda
+    marca las velas de la hora del cambio, que quien llame debe descartar.
+    Con `dst_rule="none"` da exactamente lo mismo que `server_time_to_utc` con
+    un solo offset, y `ambiguous` es todo False.
+    """
+    server_naive = pd.to_datetime(epoch_seconds, unit="s")
+    is_dst, ambiguous = dst_masks(server_naive, dst_rule)
+    offsets = pd.to_timedelta(base_offset_hours + is_dst.astype(int), unit="h")
+    return (server_naive - offsets).dt.tz_localize("UTC"), ambiguous
 
 
 # Antigüedad máxima aceptable del último tick para inferir el offset. Con el
@@ -251,7 +361,8 @@ def compute_backward_start(min_anchor_gt: datetime, timeframe: str, min_bars: in
 
 
 def export_timeframe(symbol: str, timeframe: str, date_from_utc: datetime, date_to_utc: datetime,
-                     out_dir: Path, server_utc_offset_hours: float = 0.0) -> ExportResult:
+                     out_dir: Path, server_utc_offset_hours: float = 0.0,
+                     dst_rule: str = "none") -> ExportResult:
     """
     Un archivo por temporalidad, usando copy_rates_range (rango inclusivo
     en ambos extremos -- "open time >= date_from" y "open time <= date_to"
@@ -259,6 +370,11 @@ def export_timeframe(symbol: str, timeframe: str, date_from_utc: datetime, date_
     MetaTrader5, no asumido de memoria). date_from_utc/date_to_utc deben
     pasarse en UTC -- MT5 lo requiere así (doc oficial: "Python usa la
     zona horaria local; MT5 guarda en UTC sin shift").
+
+    `server_utc_offset_hours` es el offset de TODA la corrida con
+    `dst_rule="none"`, y el offset BASE (de invierno) con `us`/`eu`, donde cada
+    vela suma +1h si cae en horario de verano y las de la hora del cambio se
+    descartan (RF-15b, N34).
     """
     mt5_tf = TIMEFRAME_MAP[timeframe]
     rates = mt5.copy_rates_range(symbol, mt5_tf, date_from_utc, date_to_utc)
@@ -280,7 +396,16 @@ def export_timeframe(symbol: str, timeframe: str, date_from_utc: datetime, date_
             "de historial (jupyter/p2_systematic_task_plan.md)."
         )
 
-    df["time"] = server_time_to_utc(df["time"], server_utc_offset_hours)
+    utc_times, ambiguous = server_time_to_utc_dst(df["time"], server_utc_offset_hours, dst_rule)
+    df["time"] = utc_times
+    discarded_dst = int(ambiguous.sum())
+    if discarded_dst:
+        print(
+            f"AVISO: {timeframe}: {discarded_dst} vela(s) en la hora del cambio de horario de "
+            f"verano ({dst_rule}) descartadas por ambiguas.",
+            file=sys.stderr,
+        )
+        df = df[~ambiguous.to_numpy()]
     df = exclude_forming_bar(df, TIMEFRAME_MINUTES[timeframe], datetime.now(UTC))
     df["time"] = utc_to_gt_naive(df["time"])
     df = df.sort_values("time").reset_index(drop=True)
@@ -304,6 +429,7 @@ def export_timeframe(symbol: str, timeframe: str, date_from_utc: datetime, date_
         rows=len(out),
         first_time=out["time"].iloc[0] if len(out) else None,
         last_time=out["time"].iloc[-1] if len(out) else None,
+        discarded_dst=discarded_dst,
     )
 
 
@@ -349,6 +475,14 @@ def main(argv: Optional[list] = None) -> int:
              "Por defecto se detecta del último tick del símbolo, lo que exige mercado abierto.",
     )
     parser.add_argument(
+        "--dst-rule", choices=DST_RULES, default="none",
+        help="Calendario de horario de verano del servidor del broker (spec 002, RF-15b): 'us' (2do "
+             "domingo de marzo -> 1er domingo de noviembre), 'eu' (último domingo de marzo -> último "
+             "domingo de octubre) o 'none' (un solo offset para toda la corrida, como siempre; es el "
+             "default). Con us/eu el offset detectado/pasado se toma como el de AHORA y cada vela se "
+             "convierte con el offset de su fecha.",
+    )
+    parser.add_argument(
         "--timeframes", default=None,
         help="Temporalidades a exportar, separadas por coma (p.ej. '1H,30M,15M'), en vez de las "
              f"{len(ALL_EXPORT_TIMEFRAMES)} de siempre ({','.join(ALL_EXPORT_TIMEFRAMES)}). Uso: T20 "
@@ -376,7 +510,19 @@ def main(argv: Optional[list] = None) -> int:
         else:
             server_offset = args.server_utc_offset
             origen = "pasado por --server-utc-offset"
-        print(f"Reloj del servidor: UTC{server_offset:+g} ({origen}).\n")
+        print(f"Reloj del servidor: UTC{server_offset:+g} ({origen}).")
+
+        now_server_naive = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=server_offset)
+        try:
+            base_offset = base_offset_from_current(server_offset, now_server_naive, args.dst_rule)
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            return 1
+        if args.dst_rule == "none":
+            print("Regla DST: none (un solo offset para toda la corrida).\n")
+        else:
+            print(f"Regla DST: {args.dst_rule} -> offset base (invierno) UTC{base_offset:+g}; "
+                  "cada vela se convierte con el offset de su fecha.\n")
 
         min_anchor = datetime.strptime(args.min_anchor, "%Y-%m-%d %H:%M:%S")
         max_anchor = datetime.strptime(args.max_anchor, "%Y-%m-%d %H:%M:%S")
@@ -389,10 +535,13 @@ def main(argv: Optional[list] = None) -> int:
             date_from_srv = gt_naive_to_server(start_gt, server_offset)
             date_to_srv = gt_naive_to_server(date_to_gt, server_offset)
             print(f"[{tf}] pidiendo {date_from_srv:%Y-%m-%d %H:%M} -> {date_to_srv:%Y-%m-%d %H:%M} (reloj servidor) ...")
-            result = export_timeframe(args.symbol, tf, date_from_srv, date_to_srv, args.out_dir, server_offset)
+            result = export_timeframe(
+                args.symbol, tf, date_from_srv, date_to_srv, args.out_dir, base_offset, args.dst_rule
+            )
             print(
                 f"[{tf}] {result.rows} velas escritas en {result.path} "
                 f"({result.first_time} .. {result.last_time})"
+                + (f"; {result.discarded_dst} descartadas por el cambio de horario" if result.discarded_dst else "")
             )
             results.append(result)
 

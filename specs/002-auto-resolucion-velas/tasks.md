@@ -293,11 +293,36 @@
       y rechaza una TF desconocida listando las válidas en el mensaje.
       `pytest -q tests/test_export_p2_ohlc.py`: `29 passed in 0.31s`. SUITE: `526 passed, 1 skipped, 97 warnings
       in 8.98s`; sin `.data/`.
-- [ ] T18. Exportador, parte 2: conversión vela por vela según `--dst-rule {us,eu,none}`, descartando la hora del
+- [x] T18. Exportador, parte 2: conversión vela por vela según `--dst-rule {us,eu,none}`, descartando la hora del
       cambio. (RF-15b, N34)
       Hecho cuando: los tests prueban que una vela de enero y otra de julio exportadas en septiembre con la regla
       `us` quedan con el offset correcto, que `none` da lo mismo que hoy, y que se informan las descartadas. SUITE en
       verde.
+      **Hecho 2026-09-28:** `windows_export/export_p2_ohlc.py`. Funciones puras nuevas: `dst_transition_dates()`
+      (`us`: 2do domingo de marzo → 1er domingo de noviembre; `eu`: último domingo de marzo → último de octubre),
+      `dst_masks()` (`is_dst` y `ambiguous` por vela), `base_offset_from_current()` (el offset detectado/pasado es
+      el de "ahora"; el base de invierno sale de restarle 1h si "ahora" está en verano; falla si "ahora" cae en la
+      hora del cambio) y `server_time_to_utc_dst()` (offset vigente en la fecha de CADA vela). `export_timeframe()`
+      gana `dst_rule` (default `none`), descarta las velas ambiguas, avisa por stderr cuántas fueron y las expone en
+      `ExportResult.discarded_dst`. `--dst-rule {us,eu,none}` nuevo, default `none` (= comportamiento de siempre);
+      `main()` deduce el offset base y lo imprime. El rango pedido a MT5 sigue usando el offset de ahora (`date_to`
+      es "ahora" exacto y `date_from` tiene semanas de colchón, así que 1h no importa).
+      **Supuestos [NO VERIFICADO] para el spike (T22), no inventados en silencio:** `DST_TRANSITION_HOUR = 2` (hora
+      del día del cambio en que cae el salto; la vela de `[02:00, 03:00)` se descarta) y que la regla real del broker
+      sea la de EE.UU./UE — ambos quedan como constantes nombradas y documentados en la docstring del módulo.
+      El exportador es standalone (no importa del repo), así que las fechas de cambio están duplicadas de
+      `tools/candle_bank.py`; un test compara las dos implementaciones día por día durante 2026-2027 para las dos
+      reglas, así no divergen sin que se note.
+      `tests/test_export_p2_ohlc.py` +13 tests: fechas de cambio 2026 (verificadas con código: `us` 8-mar/1-nov,
+      `eu` 29-mar/25-oct); coincidencia con `candle_bank` (2×730 días); `none` todo False; la hora del cambio es
+      ambigua en las dos transiciones (01:59 no, 02:00-02:59 sí, 03:00 no); `base_offset_from_current`; una vela de
+      enero y otra de julio exportadas en septiembre con `us` (servidor +3 → base +2) quedan a +2 y +3 respectivamente;
+      `none` da idéntico a `server_time_to_utc` con un solo offset; y `export_timeframe` de punta a punta con
+      `mt5.copy_rates_range` reemplazado: con `us` escribe 2 velas, descarta 1 y lo informa; con `none` escribe las 3,
+      con enero y julio a la misma hora GT (el desfase de 1h de siempre). Comprobación de mutación: cambiar
+      `DST_TRANSITION_HOUR` rompe 3 tests (revertido).
+      `pytest -q tests/test_export_p2_ohlc.py`: `42 passed in 1.68s`. SUITE: `539 passed, 1 skipped, 97 warnings in
+      14.44s`; sin `.data/`.
 - [ ] T19. Exportador, parte 3: un directorio único por corrida y escritura atómica por archivo. (RF-15, plan T2)
       Hecho cuando: los tests prueban que dos corridas no se pisan y que un fallo a mitad no deja CSV a medias. SUITE en
       verde.
