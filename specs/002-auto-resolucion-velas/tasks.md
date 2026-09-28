@@ -46,9 +46,18 @@
       T4, que es el meta-test formal): `open()` y `sqlite3.connect()` bajo `.data/` real bloqueados, `/mnt/c/`
       bloqueado, `:memory:` y una ruta de `tempfile` permitidos. SUITE: `429 passed, 1 skipped, 92 warnings in
       6.99s`; `find .data -type f` no encuentra nada, `.data/` no existe.
-- [ ] T4. Meta-test de aislamiento. Corre `pytest` en un subproceso sobre un archivo temporal con un test que abre
+- [x] T4. Meta-test de aislamiento. Corre `pytest` en un subproceso sobre un archivo temporal con un test que abre
       `<repo>/.data/x.db` y otro que abre `/mnt/c/x`. (RF-16)
       Hecho cuando: el meta-test pasa (el subproceso informa 2 fallos por el guard) y SUITE en verde.
+      **Hecho 2026-09-28:** `tests/test_isolation_guard.py` nuevo. Escribe `tests/test_zz_isolation_meta_tmp.py`
+      (temporal, con dos tests: uno abre `<repo>/.data/x.db` con ruta absoluta —así se salta la capa 1, el `chdir`
+      a `tmp_path`— y el otro `/mnt/c/x`), corre `pytest -q -p no:cacheprovider` sobre ese archivo en un subproceso
+      (`cwd=<repo>`, así `tests/conftest.py` se descubre solo) y verifica en el output: `returncode == 1`,
+      `"2 failed"`, los dos nombres de test y `ForbiddenTestPathError`. También verifica que `.data/x.db` nunca
+      llegó a crearse (el hook aborta `open()` antes del syscall). Borra el archivo temporal y su `__pycache__` en
+      un `finally`, con limpieza defensiva al empezar por si una corrida anterior se cortó a mitad. SUITE:
+      `430 passed, 1 skipped, 92 warnings in 13.38s`; sin `.data/`, sin el archivo temporal, sin `__pycache__`
+      residual.
 
 ## Etapa 1 — Red de seguridad de los wizards (R10.1)
 
