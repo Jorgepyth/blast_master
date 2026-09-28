@@ -23,16 +23,19 @@ import tools.candle_sync as candle_sync
 from tools.candle_bank import read_bank_status, read_candle_csv
 from tools.candle_sync import (
     ExporterRun,
+    WINDOWS_CWD,
     build_export_command,
     derive_export_anchors,
+    kill_windows_tree,
     main,
+    powershell_argv,
     run_exporter,
     sync_symbol,
     wsl_to_windows_path,
 )
 from tools.database import Base, UnifiedDepartment
 
-FAKE_EXPORTER = '''
+FAKE_EXPORTER = r'''
 import os, shutil, sys, time
 mode, incoming_root, symbol, payload_dir, marker = sys.argv[1:6]
 with open(marker, "w") as f:
@@ -42,12 +45,21 @@ if mode == "mt5_down":
     sys.exit(1)
 if mode == "hang":
     time.sleep(60)
+if mode == "hang_winpid":  # como el wrapper de PowerShell: primero su PID de Windows, y se cuelga
+    sys.stdout.write("WINPID: 4242\r\n")
+    sys.stdout.flush()
+    time.sleep(60)
+if mode == "bad_bytes":  # mensaje de Windows en otra codepage (bytes que no son UTF-8)
+    sys.stderr.buffer.write(b"error de autorizaci\xf3n \xff\xfe\n")
+    sys.stderr.flush()
+    sys.exit(1)
 run_id = "20261005T142011"
 run_dir = os.path.join(incoming_root, symbol, run_id)
 os.makedirs(run_dir)
 for name in os.listdir(payload_dir):
     shutil.copy(os.path.join(payload_dir, name), run_dir)
 if mode == "ok":
+    print("WINPID: 4242")
     print("RUN_ID: " + run_id)
     print("RUN_DIR: " + run_dir)
 else:  # "no_run_id"
@@ -78,6 +90,11 @@ class Env:
             d.mkdir()
         self.script.write_text(FAKE_EXPORTER)
         self.bank_dir = self.bank_root / "XAUUSD"
+        self.killed = []  # PID de Windows que se pidió matar (taskkill falso: nunca se toca Windows)
+
+    def killer(self, windows_pid):
+        self.killed.append(windows_pid)
+        return None
 
     def command(self, mode="ok"):
         return [sys.executable, str(self.script), mode, str(self.incoming_root), "XAUUSD",
@@ -93,6 +110,7 @@ class Env:
     def sync(self, mode="ok", **kw):
         kw.setdefault("export_command", self.command(mode))
         kw.setdefault("timeout_s", 30)
+        kw.setdefault("windows_killer", self.killer)
         return sync_symbol(
             "XAUUSD", bank_root=str(self.bank_root), incoming_root=str(self.incoming_root),
             accounts_data_dir=str(self.accounts_dir), dst_rule="none",
@@ -123,7 +141,8 @@ def test_build_export_command_from_configuration():
 
     assert command[:4] == ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command"]
     script = command[4]
-    assert script.startswith("& 'C:\\Py\\python.exe' 'C:\\repo\\windows_export\\export_p2_ohlc.py'")
+    assert script.startswith("Write-Output ('WINPID: ' + $PID); & 'C:\\Py\\python.exe' "
+                             "'C:\\repo\\windows_export\\export_p2_ohlc.py'")
     for expected in ("'--symbol' 'XAUUSD'", "'--out-dir' 'C:\\Users\\x\\_incoming'", "'--per-run-dir'",
                      "'--min-anchor' '2026-05-18 12:15:00'", "'--max-anchor' '2026-09-03 18:19:00'",
                      "'--dst-rule' 'us'"):
@@ -311,8 +330,8 @@ def test_sync_builds_the_powershell_command_from_configuration_and_the_database(
     _account_db(tmp_path / "xau.db", [(datetime(2026, 5, 18, 12, 15), "XAUUSDT.P")])
     seen = {}
 
-    def fake_run(command, timeout_s):
-        seen["command"], seen["timeout_s"] = list(command), timeout_s
+    def fake_run(command, timeout_s, **kw):
+        seen["command"], seen["timeout_s"], seen["cwd"] = list(command), timeout_s, kw.get("cwd")
         return ExporterRun(returncode=1, stderr="boom")
 
     monkeypatch.setattr(candle_sync, "run_exporter", fake_run)  # nunca se lanza powershell.exe de verdad
@@ -326,6 +345,7 @@ def test_sync_builds_the_powershell_command_from_configuration_and_the_database(
 
     assert result.result == "export_failed" and "exporter_exit_1: boom" in result.error
     assert seen["timeout_s"] == 42
+    assert seen["cwd"] == WINDOWS_CWD  # nunca desde la ruta UNC de WSL, que cmd.exe rechaza
     script = seen["command"][4]
     assert seen["command"][0] == "powershell.exe"
     assert "'--min-anchor' '2026-05-18 12:15:00'" in script
@@ -377,3 +397,86 @@ def test_main_wait_seconds_bounds_the_wait_for_the_exporter(env, capsys):
     code, out = _main(env, "hang", "--wait-seconds", "1", capsys=capsys)
     assert code == 6
     assert "Candle export skipped: timeout" in out
+
+
+# --- T20b: matar el árbol de Windows al vencer el timeout, cwd y decodificación ---
+
+def test_powershell_argv_prints_the_windows_pid_first_and_keeps_the_exit_code():
+    argv = powershell_argv(["C:\\Windows\\System32\\PING.EXE", "-n", "3", "127.0.0.1"])
+    assert argv[:4] == ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command"]
+    assert argv[4] == ("Write-Output ('WINPID: ' + $PID); & 'C:\\Windows\\System32\\PING.EXE' '-n' '3' "
+                       "'127.0.0.1'; exit $LASTEXITCODE")
+    assert '"' not in argv[4]  # las comillas dobles se estropean camino a Windows
+
+
+def test_exporter_run_parses_windows_pid_and_run_id_from_crlf_output():
+    run = ExporterRun(returncode=0, stdout="WINPID: 6608\r\n\r\nRUN_ID: 20261005T142011\r\nRUN_DIR: C:\\x\r\n")
+    assert run.windows_pid == 6608
+    assert run.run_id == "20261005T142011"
+    assert ExporterRun(returncode=0, stdout="nada\n").windows_pid is None
+
+
+def test_timeout_kills_the_windows_process_tree_reported_by_the_exporter(env):
+    env.seed_bank(12)
+
+    result = env.sync("hang_winpid", timeout_s=1)
+
+    assert env.killed == [4242]  # se pidió matar exactamente el árbol de ese PID de Windows
+    assert result.result == "export_failed"
+    assert "timeout" in result.error and "Windows process tree 4242 killed" in result.error
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(env.marker.read_text()), 0)  # y el lado WSL también murió
+
+
+def test_timeout_reports_when_the_windows_process_could_not_be_killed(env):
+    result = env.sync("hang_winpid", timeout_s=1, windows_killer=lambda pid: "taskkill exited 128: not found")
+    assert "could NOT kill Windows process 4242 (taskkill exited 128: not found)" in result.error
+
+
+def test_timeout_without_a_winpid_line_does_not_call_the_windows_killer(env):
+    result = env.sync("hang", timeout_s=1)
+    assert env.killed == []
+    assert result.error.startswith("timeout") and "Windows" not in result.error
+
+
+def test_successful_export_never_calls_the_windows_killer(env):
+    env.seed_bank(12)
+    env.seed_payload(15)
+    assert env.sync("ok").result == "merged"
+    assert env.killed == []
+
+
+def test_windows_error_output_with_non_utf8_bytes_is_still_a_clean_export_failed(env):
+    result = env.sync("bad_bytes")
+    assert result.result == "export_failed"
+    assert result.error.startswith("exporter_exit_1")  # no "unexpected_error: UnicodeDecodeError"
+
+
+def test_run_exporter_honors_the_working_directory(tmp_path):
+    (tmp_path / "wd").mkdir()
+    run = run_exporter([sys.executable, "-c", "import os; print(os.getcwd())"], 30, cwd=str(tmp_path / "wd"))
+    assert run.stdout.strip() == str(tmp_path / "wd")
+
+
+def _fake_taskkill(tmp_path, exit_code):
+    script = tmp_path / "fake_taskkill.py"
+    script.write_text(
+        "import json, sys\n"
+        f"open({str(tmp_path / 'taskkill_args.json')!r}, 'w').write(json.dumps(sys.argv[1:]))\n"
+        "print('ERROR: process not found', file=sys.stderr)\n"
+        f"sys.exit({exit_code})\n")
+    return [sys.executable, str(script)]
+
+
+def test_kill_windows_tree_runs_taskkill_force_tree_on_the_pid(tmp_path):
+    assert kill_windows_tree(4242, taskkill_command=_fake_taskkill(tmp_path, 0)) is None
+    assert json.loads((tmp_path / "taskkill_args.json").read_text()) == ["/F", "/T", "/PID", "4242"]
+
+
+def test_kill_windows_tree_reports_a_failing_taskkill(tmp_path):
+    note = kill_windows_tree(4242, taskkill_command=_fake_taskkill(tmp_path, 128))
+    assert note.startswith("taskkill exited 128") and "process not found" in note
+
+
+def test_kill_windows_tree_reports_a_missing_taskkill_without_raising():
+    assert kill_windows_tree(4242, taskkill_command=["/definitely/not/taskkill"]) == "/definitely/not/taskkill not found"

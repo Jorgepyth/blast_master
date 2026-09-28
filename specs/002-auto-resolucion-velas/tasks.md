@@ -396,6 +396,37 @@
       `run_exporter` reemplazado, nunca se lanza `powershell.exe`); y `main` con los códigos 0/2/6 y
       `--wait-seconds`. Mutaciones: sin `killpg` rompe el test de timeout, e ignorar el código de salida rompe 3.
       SUITE: `587 passed, 1 skipped, 97 warnings in 15.45s`; sin `.data/`.
+- [x] T20b. *(Tarea agregada el 2026-09-28 a pedido del usuario, después de T20; no altera la numeración de las
+      demás.)* Endurecer `tools/candle_sync.py` con lo que se pudo verificar contra Windows real antes del spike.
+      (RF-20e, RF-1c)
+      Hecho cuando: al vencer el timeout se mata también el árbol de procesos de Windows, no solo `powershell.exe`;
+      el exportador se lanza desde una unidad de Windows; un mensaje de Windows con acentos no rompe la
+      sincronización; y existen pruebas opt-in contra Windows real. SUITE en verde.
+      **Hecho 2026-09-28:** se probó a mano en este WSL (`powershell.exe` existe) con comandos inofensivos (`cmd.exe`,
+      `ping` a localhost, sin MT5 ni archivos): (1) `exit $LASTEXITCODE` **sí** conserva el código de salida (llega el
+      7; sin él PowerShell lo aplasta a 1); (2) las comillas simples con `''` entregan bien argumentos con espacios y
+      apóstrofes; (3) **matar `powershell.exe` desde WSL NO mata al programa de Windows que lanzó** (el `PING.EXE`
+      siguió vivo) — es decir, el riesgo que T20 dejó como [NO VERIFICADO] era real; (4) `cmd.exe` rechaza el
+      directorio actual de WSL (ruta UNC `\\wsl.localhost\...`); (5) los mensajes de Windows salen en cp850, no UTF-8.
+      Correcciones en `tools/candle_sync.py`: `powershell_argv()` (el wrapper único, usado por `build_export_command`)
+      imprime primero `WINPID: <n>` (`$PID` de PowerShell; verificado que llega de inmediato, sin buffer), y al vencer el
+      timeout `run_exporter()` lo lee mientras el proceso sigue vivo (hilos lectores) y llama a
+      `kill_windows_tree()` = `taskkill /F /T /PID <n>` antes del `killpg` de WSL; sin línea `WINPID` (exportador que no
+      corre bajo PowerShell) no hay nada de Windows que matar. El error de timeout dice si el árbol se mató o por qué
+      no (`Windows process tree N killed` / `could NOT kill Windows process N (…)`). El comando se lanza con
+      `cwd="/mnt/c"`. La salida se decodifica con `errors="replace"`: con la decodificación estricta que tenía T20, un
+      mensaje de Windows con acentos hacía fallar toda la sincronización con `UnicodeDecodeError`.
+      `tests/test_candle_sync.py` +11 tests con un `taskkill` falso (nunca se toca Windows): el wrapper y la línea
+      WINPID, el parseo con salida CRLF, el árbol de Windows se mata al vencer el timeout con el PID informado, se
+      informa si no se pudo, no se llama sin WINPID ni en una corrida exitosa, bytes que no son UTF-8 dan un
+      `export_failed` limpio, `cwd` se respeta, y `kill_windows_tree` (éxito, fallo, binario ausente).
+      `tests/test_candle_sync_windows_interop.py` nuevo, **opt-in** (`WINDOWS_INTEROP_TESTS=1`; por defecto se saltea,
+      así que la suite pasa de 1 a 3 skipped): repite contra Windows real el código de salida, las comillas y que el
+      `PING.EXE` muera al vencer el timeout. Pasan. Mutaciones: sin llamar a `taskkill` rompe 2 tests, y con la
+      decodificación estricta el test de bytes reproduce el `UnicodeDecodeError` real.
+      **Sigue [NO VERIFICADO] para el spike (T22):** el exportador real (MT5 abierto, el Python de Windows con
+      `MetaTrader5`, la detección del offset, la hora del cambio de horario).
+      SUITE: `598 passed, 3 skipped, 97 warnings in 16.76s`; sin `.data/`.
 - [ ] T21. Subcomandos `candles status`, `candles import-legacy` y `candles export --symbol S [--wait N]` en
       `cli/main.py`. (RF-2c, RF-1)
       Hecho cuando: los tests con `CliRunner` y configuración en `tmp_path` prueban la salida y los códigos 0, 2 y 6.

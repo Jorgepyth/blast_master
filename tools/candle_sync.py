@@ -18,10 +18,13 @@ Nada de esto lanza hacia quien llama (INV-2): todo lo que sale mal vuelve como
 `SyncResult` con un motivo, y el banco queda intacto (RF-1c). Un export que no
 llega a fusionar se muestra como una línea "Candle export skipped: <motivo>".
 
-[NO VERIFICADO] El armado del comando de PowerShell (comillas, `exit
-$LASTEXITCODE`) y la llamada WSL -> powershell.exe -> Python de Windows solo se
-pueden probar con Windows y MT5 abiertos: los cubre el spike (T22). Los tests
-usan un exportador falso.
+Verificado con Windows real (2026-09-28, T20b, `tests/test_candle_sync_windows_
+interop.py`, opt-in): `exit $LASTEXITCODE` conserva el código de salida, las
+comillas simples con `''` entregan bien argumentos con espacios y apóstrofes, y
+matar `powershell.exe` desde WSL NO mata al programa de Windows que lanzó (por
+eso el `WINPID` y `taskkill /T`). [NO VERIFICADO] todavía: el exportador real
+(MT5, el Python de Windows con `MetaTrader5`), que cubre el spike (T22). Los
+tests normales usan un exportador falso y nunca lanzan `powershell.exe`.
 
 Códigos de salida (plan.md §4, mismos que `candles export`):
   0 = se fusionó;  2 = el reloj no se verificó (clock_unverified/clock_misaligned);
@@ -33,6 +36,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -63,6 +67,13 @@ EXIT_EXPORT_FAILED = 6
 _ANCHOR_FORMAT = "%Y-%m-%d %H:%M:%S"
 _GT_OFFSET_HOURS = 6  # Guatemala = UTC-6, sin horario de verano (convención del repo).
 _RUN_ID_LINE = re.compile(r"^RUN_ID:\s*(\S+)\s*$", re.MULTILINE)
+_WINPID_LINE = re.compile(r"^WINPID:\s*(\d+)", re.MULTILINE)
+
+# powershell.exe arranca con el directorio actual de quien lo lanza; desde WSL eso
+# es una ruta UNC (`\\wsl.localhost\...`) que cmd.exe rechaza ("no se permiten
+# rutas UNC"). Se lanza desde una unidad de Windows, que existe siempre.
+WINDOWS_CWD = "/mnt/c"
+_TASKKILL_COMMAND = ("taskkill.exe",)
 
 
 # --------------------------------------------------------------------------
@@ -85,6 +96,22 @@ def _ps_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def powershell_argv(call_parts: Sequence[str]) -> List[str]:
+    """
+    argv que corre `call_parts` (un ejecutable de Windows y sus argumentos)
+    desde `powershell.exe`. La primera línea que imprime es `WINPID: <n>`, el PID
+    de Windows del propio PowerShell: como matar `powershell.exe` desde WSL NO
+    mata al programa que lanzó (verificado con Windows real), esa línea permite
+    matar el árbol entero con `taskkill /T` al vencer el timeout. Termina con
+    `exit $LASTEXITCODE`: sin eso PowerShell aplasta cualquier código a 1
+    (verificado). Solo comillas simples: las dobles se estropean en el camino
+    WSL -> línea de comandos de Windows.
+    """
+    call = " ".join(_ps_quote(part) for part in call_parts)
+    script = f"Write-Output ('WINPID: ' + $PID); & {call}; exit $LASTEXITCODE"
+    return ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script]
+
+
 def build_export_command(
     mt5_symbol: str,
     windows_python: str,
@@ -99,8 +126,7 @@ def build_export_command(
     Arma el argv que lanza el exportador de Windows desde WSL: `powershell.exe`
     llama al Python de Windows con `--per-run-dir` (una carpeta nueva por
     corrida bajo `incoming_dir`, que es una ruta WSL y acá se pasa como ruta de
-    Windows). Termina con `exit $LASTEXITCODE` para conservar el código de salida
-    del exportador. `--server-utc-offset` no se pasa: el exportador lo detecta
+    Windows). Ver `powershell_argv` (PID de Windows, código de salida). `--server-utc-offset` no se pasa: el exportador lo detecta
     del último tick, y con el mercado cerrado falla (RF-20e).
     """
     exporter_args = [
@@ -113,8 +139,7 @@ def build_export_command(
     ]
     if timeframes:
         exporter_args += ["--timeframes", ",".join(timeframes)]
-    call = " ".join(_ps_quote(part) for part in [windows_python, exporter_win_path, *exporter_args])
-    return ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", f"& {call}; exit $LASTEXITCODE"]
+    return powershell_argv([windows_python, exporter_win_path, *exporter_args])
 
 
 # --------------------------------------------------------------------------
@@ -128,39 +153,109 @@ class ExporterRun:
     stderr: str = ""
     timed_out: bool = False
     launch_error: Optional[str] = None
+    # Solo con timeout y PID de Windows conocido: None = se mató el árbol; str = por qué no se pudo.
+    windows_kill_error: Optional[str] = None
 
     @property
     def run_id(self) -> Optional[str]:
         match = _RUN_ID_LINE.search(self.stdout)
         return match.group(1) if match else None
 
+    @property
+    def windows_pid(self) -> Optional[int]:
+        match = _WINPID_LINE.search(self.stdout)
+        return int(match.group(1)) if match else None
 
-def run_exporter(command: Sequence[str], timeout_s: float) -> ExporterRun:
+
+def kill_windows_tree(
+    windows_pid: int,
+    taskkill_command: Sequence[str] = _TASKKILL_COMMAND,
+    timeout_s: float = 15,
+) -> Optional[str]:
+    """
+    `taskkill /F /T /PID <pid>`: mata el proceso de Windows y todo lo que lanzó
+    (para el exportador, `powershell.exe` y el Python de Windows). Devuelve
+    `None` si lo logró, o el motivo si no. Nunca levanta.
+    """
+    try:
+        result = subprocess.run(
+            [*taskkill_command, "/F", "/T", "/PID", str(windows_pid)],
+            capture_output=True, timeout=timeout_s, cwd=WINDOWS_CWD if os.path.isdir(WINDOWS_CWD) else None)
+    except FileNotFoundError:
+        return f"{taskkill_command[0]} not found"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"{type(exc).__name__}: {exc}"
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", "replace").strip() or result.stdout.decode("utf-8", "replace").strip()
+        return f"taskkill exited {result.returncode}: {detail[:120]}"
+    return None
+
+
+def _drain(stream, sink: List[bytes]) -> None:
+    """Va juntando lo que escribe el hijo, para poder leer la línea `WINPID:` con el proceso todavía vivo."""
+    try:
+        for chunk in iter(lambda: stream.read1(4096), b""):
+            sink.append(chunk)
+    except (OSError, ValueError):
+        pass
+
+
+def _decode(chunks: List[bytes]) -> str:
+    # `errors="replace"`: los mensajes de Windows traen acentos en una codepage
+    # que no es UTF-8, y un decode estricto rompería toda la sincronización.
+    return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+def run_exporter(
+    command: Sequence[str],
+    timeout_s: float,
+    cwd: Optional[str] = None,
+    windows_killer=kill_windows_tree,
+) -> ExporterRun:
     """
     Corre `command` con `timeout_s`. El hijo arranca en su propia sesión para
-    poder matar TODO su grupo de procesos al vencer el timeout (`powershell.exe`
-    y lo que haya lanzado); con `subprocess.run(timeout=)` solo se mata al hijo
-    directo. Nota: matar `powershell.exe` desde WSL puede no matar al Python de
-    Windows que lanzó -- si sigue corriendo, solo va a terminar de escribir su
-    carpeta de corrida, que nadie fusiona [NO VERIFICADO, T22].
+    poder matar su grupo de procesos de WSL al vencer el timeout. Pero matar
+    `powershell.exe` desde WSL NO mata al Python de Windows que lanzó
+    (verificado): por eso, si el hijo imprimió `WINPID: <n>` (ver
+    `powershell_argv`), se mata además ese árbol de Windows con
+    `windows_killer(n)`. Sin línea `WINPID` (un exportador que no corre bajo
+    PowerShell) no hay nada de Windows que matar.
     """
     try:
         proc = subprocess.Popen(
             list(command), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, start_new_session=True,
+            start_new_session=True, cwd=cwd,
         )
     except OSError as exc:
         return ExporterRun(returncode=None, launch_error=f"{type(exc).__name__}: {exc}")
+
+    out_chunks: List[bytes] = []
+    err_chunks: List[bytes] = []
+    readers = [threading.Thread(target=_drain, args=(proc.stdout, out_chunks), daemon=True),
+               threading.Thread(target=_drain, args=(proc.stderr, err_chunks), daemon=True)]
+    for reader in readers:
+        reader.start()
+
+    timed_out = False
+    kill_error: Optional[str] = None
     try:
-        stdout, stderr = proc.communicate(timeout=timeout_s)
+        proc.wait(timeout=timeout_s)
     except subprocess.TimeoutExpired:
+        timed_out = True
+        match = _WINPID_LINE.search(_decode(out_chunks))
+        if match:
+            kill_error = windows_killer(int(match.group(1)))
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        stdout, stderr = proc.communicate()
-        return ExporterRun(returncode=proc.returncode, stdout=stdout or "", stderr=stderr or "", timed_out=True)
-    return ExporterRun(returncode=proc.returncode, stdout=stdout or "", stderr=stderr or "")
+        proc.wait()
+    for reader in readers:
+        reader.join(timeout=5)
+    return ExporterRun(
+        returncode=proc.returncode, stdout=_decode(out_chunks), stderr=_decode(err_chunks),
+        timed_out=timed_out, windows_kill_error=kill_error,
+    )
 
 
 def _tail(text: str, limit: int = 200) -> str:
@@ -228,11 +323,14 @@ def _launch_and_merge(
     real_accounts: Optional[Dict[str, str]],
     symbol_map: Optional[Dict[str, str]],
     now_gt: datetime,
+    windows_killer,
 ) -> SyncResult:
     def failed(reason: str, run_id: Optional[str] = None) -> SyncResult:
         return SyncResult(symbol=mt5_symbol, result=cfg.REASON_EXPORT_FAILED, run_id=run_id, error=reason)
 
+    cwd = None
     if export_command is None:
+        cwd = WINDOWS_CWD  # el comando de PowerShell no puede arrancar desde una ruta UNC de WSL
         if not windows_python or not exporter_win_path:
             return failed("exporter_not_configured: set WINDOWS_PYTHON and EXPORTER_WIN_PATH in .env")
         min_anchor, max_anchor = derive_export_anchors(
@@ -244,11 +342,15 @@ def _launch_and_merge(
         except ValueError as exc:
             return failed(f"incoming_dir_not_on_windows_drive: {exc}")
 
-    run = run_exporter(export_command, timeout_s)
+    run = run_exporter(export_command, timeout_s, cwd=cwd, windows_killer=windows_killer)
     if run.launch_error:
         return failed(f"exporter_not_launched: {run.launch_error}")
     if run.timed_out:
-        return failed(f"timeout: the exporter did not finish in {timeout_s:g}s", run.run_id)
+        note = ""
+        if run.windows_pid is not None:
+            note = (f"; Windows process tree {run.windows_pid} killed" if run.windows_kill_error is None
+                    else f"; could NOT kill Windows process {run.windows_pid} ({run.windows_kill_error})")
+        return failed(f"timeout: the exporter did not finish in {timeout_s:g}s{note}", run.run_id)
     if run.returncode != 0:
         detail = _tail(run.stderr) or _tail(run.stdout)
         return failed(f"exporter_exit_{run.returncode}: {detail}".rstrip(": "), run.run_id)
@@ -278,6 +380,7 @@ def sync_symbol(
     real_accounts: Optional[Dict[str, str]] = None,
     symbol_map: Optional[Dict[str, str]] = None,
     now_gt: Optional[datetime] = None,
+    windows_killer=kill_windows_tree,
 ) -> SyncResult:
     """
     Trae y fusiona las velas de `mt5_symbol` (p.ej. `"XAUUSD"`). Todos los
@@ -304,7 +407,8 @@ def sync_symbol(
             try:
                 result = _launch_and_merge(
                     mt5_symbol, bank_dir, incoming_root, accounts_data_dir, dst_rule, timeout_s,
-                    export_command, windows_python, exporter_win_path, real_accounts, symbol_map, now_gt)
+                    export_command, windows_python, exporter_win_path, real_accounts, symbol_map, now_gt,
+                    windows_killer)
             except Exception as exc:  # noqa: BLE001 -- INV-2: nada se propaga hacia quien llama
                 result = SyncResult(
                     symbol=mt5_symbol, result=cfg.REASON_EXPORT_FAILED,
