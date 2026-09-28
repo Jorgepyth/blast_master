@@ -29,16 +29,24 @@ if "MetaTrader5" not in sys.modules:
     _fake_mt5.TIMEFRAME_H12 = 3
     _fake_mt5.TIMEFRAME_H4 = 4
     _fake_mt5.TIMEFRAME_H1 = 5
+    _fake_mt5.TIMEFRAME_M30 = 6
+    _fake_mt5.TIMEFRAME_M15 = 7
+    _fake_mt5.TIMEFRAME_M5 = 8
+    _fake_mt5.TIMEFRAME_M1 = 9
     sys.modules["MetaTrader5"] = _fake_mt5
 
 from windows_export.export_p2_ohlc import (  # noqa: E402
+    ALL_EXPORT_TIMEFRAMES,
     GT_OFFSET_HOURS,
     MIN_BARS_PER_TF,
     BACKWARD_BUFFER_DAYS,
     BACKWARD_MARGIN,
+    TIMEFRAME_MAP,
+    TIMEFRAME_MINUTES,
     compute_backward_start,
     exclude_forming_bar,
     gt_naive_to_utc,
+    parse_timeframes_arg,
     utc_to_gt_naive,
 )
 
@@ -101,6 +109,8 @@ def test_exclude_forming_bar_empty_input_stays_empty():
     ("12H", 12 * 3600),
     ("1D", 24 * 3600),
     ("1W", 7 * 24 * 3600),
+    ("5M", 5 * 60),   # T17 (spec 002, RF-15): banco de velas nuevo
+    ("1M", 1 * 60),   # T17 (spec 002, RF-15): banco de velas nuevo
 ])
 def test_compute_backward_start_applies_min_bars_with_backward_margin(timeframe, expected_unit_seconds):
     min_anchor = datetime(2026, 5, 18, 12, 15, 0)
@@ -193,3 +203,44 @@ def test_infer_offset_rechaza_valores_absurdos():
     now = 1_790_000_000.0
     with pytest.raises(RuntimeError, match="fuera de rango"):
         infer_server_utc_offset(now + 20 * 3600, now)
+
+
+# --- T17 (spec 002, RF-15): 5M/1M en el mapa de TF y --timeframes -----------
+
+def test_timeframe_map_has_5m_and_1m():
+    assert "5M" in TIMEFRAME_MAP
+    assert "1M" in TIMEFRAME_MAP
+
+
+def test_timeframe_minutes_durations_for_5m_and_1m():
+    assert TIMEFRAME_MINUTES["5M"] == 5
+    assert TIMEFRAME_MINUTES["1M"] == 1
+
+
+def test_all_export_timeframes_has_the_nine_in_order_ending_with_5m_1m():
+    assert ALL_EXPORT_TIMEFRAMES == ("1W", "1D", "12H", "4H", "1H", "30M", "15M", "5M", "1M")
+    # Todo lo que aparece en el mapa de TF tiene que estar en la lista por defecto, y viceversa.
+    assert set(ALL_EXPORT_TIMEFRAMES) == set(TIMEFRAME_MAP)
+
+
+def test_parse_timeframes_arg_default_returns_all_nine():
+    assert parse_timeframes_arg(None) == ALL_EXPORT_TIMEFRAMES
+    assert parse_timeframes_arg("") == ALL_EXPORT_TIMEFRAMES
+
+
+def test_parse_timeframes_arg_parses_comma_separated_list_in_order():
+    assert parse_timeframes_arg("1H,30M,15M") == ("1H", "30M", "15M")
+
+
+def test_parse_timeframes_arg_strips_whitespace_and_drops_empty_entries():
+    assert parse_timeframes_arg(" 1H , 5M ,,1M ") == ("1H", "5M", "1M")
+
+
+def test_parse_timeframes_arg_accepts_5m_and_1m():
+    assert parse_timeframes_arg("5M,1M") == ("5M", "1M")
+
+
+def test_parse_timeframes_arg_rejects_unknown_timeframe_with_the_list_of_valid_ones():
+    with pytest.raises(ValueError, match="2H") as exc_info:
+        parse_timeframes_arg("1H,2H")
+    assert "1M" in str(exc_info.value)  # el mensaje lista las válidas

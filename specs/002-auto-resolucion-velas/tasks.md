@@ -272,10 +272,27 @@
       origen vacío da `aligned=None`; y el origen queda byte a byte igual después de importar.
       `pytest -q tests/test_candle_bank.py`: `60 passed in 1.80s`. SUITE: `516 passed, 1 skipped, 97 warnings in
       9.03s`; sin `.data/`.
-- [ ] T17. Exportador, parte 1: agregar `5M` y `1M` al mapa de TF, a la duración y al rango hacia atrás, más el
+- [x] T17. Exportador, parte 1: agregar `5M` y `1M` al mapa de TF, a la duración y al rango hacia atrás, más el
       argumento `--timeframes`. (RF-15)
       Hecho cuando: los tests, con el stand-in de `MetaTrader5`, cubren el mapa y `compute_backward_start` para
       5M/1M; `tests/test_export_p2_ohlc.py` sigue en verde. SUITE en verde.
+      **Hecho 2026-09-28:** `windows_export/export_p2_ohlc.py`: `5M`/`1M` en `TIMEFRAME_MAP`
+      (`mt5.TIMEFRAME_M5`/`TIMEFRAME_M1`, mismo criterio de "verificado contra la doc oficial" que las demás),
+      en `TIMEFRAME_MINUTES` y en el `span` de `compute_backward_start`. `ALL_EXPORT_TIMEFRAMES` nueva, las 9 en
+      orden, reemplaza la tupla de 7 hardcodeada en el loop de `main()`. `--timeframes` nuevo, con el parsing
+      extraído a `parse_timeframes_arg()` (función pura, mismo criterio que `compute_backward_start` —
+      testeable sin MT5): sin valor, las 9 de siempre; con una lista separada por coma, la recorta y valida
+      contra `TIMEFRAME_MAP`, levantando `ValueError` con las desconocidas antes de intentar `mt5.initialize()`.
+      El stand-in de `MetaTrader5` en el test ganó `TIMEFRAME_M30/M15/M5/M1` explícitos (antes solo hacía falta
+      para que `TIMEFRAME_MAP` no reventara, por el auto-vivify de `MagicMock`; ahora quedan documentados como
+      las demás).
+      `tests/test_export_p2_ohlc.py` +10 tests: el mapa y las duraciones tienen 5M/1M; `ALL_EXPORT_TIMEFRAMES`
+      son exactamente las 9, en orden, y coincide con las claves de `TIMEFRAME_MAP`; `compute_backward_start`
+      para 5M y 1M se sumó a la parametrización existente (mismo test que ya cubría 1H-1W); y
+      `parse_timeframes_arg`: default las 9, parsea una lista, recorta espacios y descarta vacíos, acepta 5M/1M,
+      y rechaza una TF desconocida listando las válidas en el mensaje.
+      `pytest -q tests/test_export_p2_ohlc.py`: `29 passed in 0.31s`. SUITE: `526 passed, 1 skipped, 97 warnings
+      in 8.98s`; sin `.data/`.
 - [ ] T18. Exportador, parte 2: conversión vela por vela según `--dst-rule {us,eu,none}`, descartando la hora del
       cambio. (RF-15b, N34)
       Hecho cuando: los tests prueban que una vela de enero y otra de julio exportadas en septiembre con la regla

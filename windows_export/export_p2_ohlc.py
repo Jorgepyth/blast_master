@@ -62,7 +62,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import pandas as pd
 
@@ -78,7 +78,9 @@ DEFAULT_SYMBOL = "XAUUSD"  # confirmado exacto (sin sufijo) contra Market Watch.
 # (tools/p2_backtest.py:TIMEFRAMES, ".env.template:21-28"). Constantes
 # verificadas contra la documentación oficial de MetaTrader5
 # (mql5.com/en/docs/python_metatrader5/mt5copyratesfrom_py) -- TIMEFRAME_H12
-# existe, no es una suposición.
+# existe, no es una suposición. TIMEFRAME_M5/TIMEFRAME_M1: banco de velas
+# nuevo de la spec 002 (RF-15) -- mismas dos temporalidades que
+# tools/p2_backtest.py:TIMEFRAME_MINUTES ganó en T9.
 TIMEFRAME_MAP: Dict[str, int] = {
     "1W": mt5.TIMEFRAME_W1,
     "1D": mt5.TIMEFRAME_D1,
@@ -87,7 +89,13 @@ TIMEFRAME_MAP: Dict[str, int] = {
     "1H": mt5.TIMEFRAME_H1,
     "30M": mt5.TIMEFRAME_M30,
     "15M": mt5.TIMEFRAME_M15,
+    "5M": mt5.TIMEFRAME_M5,
+    "1M": mt5.TIMEFRAME_M1,
 }
+
+# Las 9 temporalidades, de más lenta a más rápida -- el orden en que se
+# exportan por defecto y el universo válido para --timeframes.
+ALL_EXPORT_TIMEFRAMES: Tuple[str, ...] = ("1W", "1D", "12H", "4H", "1H", "30M", "15M", "5M", "1M")
 
 # Duración de cada vela en minutos -- usado por exclude_forming_bar() para
 # el candado anti-repainting (mismo principio que el pipeline Linux).
@@ -99,6 +107,8 @@ TIMEFRAME_MINUTES: Dict[str, int] = {
     "1H": 60,
     "30M": 30,
     "15M": 15,
+    "5M": 5,
+    "1M": 1,
 }
 
 REQUIRED_COLUMNS = ["time", "open", "high", "low", "close"]
@@ -234,6 +244,8 @@ def compute_backward_start(min_anchor_gt: datetime, timeframe: str, min_bars: in
         "1H": timedelta(hours=min_bars),
         "30M": timedelta(minutes=min_bars * 30),
         "15M": timedelta(minutes=min_bars * 15),
+        "5M": timedelta(minutes=min_bars * 5),
+        "1M": timedelta(minutes=min_bars * 1),
     }[timeframe]
     return min_anchor_gt - span * BACKWARD_MARGIN - timedelta(days=BACKWARD_BUFFER_DAYS)
 
@@ -295,6 +307,23 @@ def export_timeframe(symbol: str, timeframe: str, date_from_utc: datetime, date_
     )
 
 
+def parse_timeframes_arg(raw: Optional[str]) -> Tuple[str, ...]:
+    """
+    Parsea `--timeframes` ("1H,30M,15M" -> ("1H", "30M", "15M")). Sin valor
+    (`None` o cadena vacía), las `ALL_EXPORT_TIMEFRAMES` de siempre (las 9).
+    Levanta `ValueError`, con la lista de las que no existen, si alguna
+    temporalidad pedida no está en `TIMEFRAME_MAP` -- función pura para poder
+    probarla sin tocar MT5 (mismo criterio que `compute_backward_start`).
+    """
+    if not raw:
+        return ALL_EXPORT_TIMEFRAMES
+    requested = tuple(tf.strip() for tf in raw.split(",") if tf.strip())
+    unknown = [tf for tf in requested if tf not in TIMEFRAME_MAP]
+    if unknown:
+        raise ValueError(f"--timeframes desconocidas: {unknown}. Válidas: {list(ALL_EXPORT_TIMEFRAMES)}.")
+    return requested
+
+
 def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
@@ -319,7 +348,20 @@ def main(argv: Optional[list] = None) -> int:
         help="Offset del reloj del servidor del broker respecto de UTC, en horas (p.ej. 3). "
              "Por defecto se detecta del último tick del símbolo, lo que exige mercado abierto.",
     )
+    parser.add_argument(
+        "--timeframes", default=None,
+        help="Temporalidades a exportar, separadas por coma (p.ej. '1H,30M,15M'), en vez de las "
+             f"{len(ALL_EXPORT_TIMEFRAMES)} de siempre ({','.join(ALL_EXPORT_TIMEFRAMES)}). Uso: T20 "
+             "(candle_sync.py) puede pedir solo un subconjunto en un catch-up, o el spike de "
+             "interoperabilidad (T22) puede probar con una sola TF sin esperar las 9.",
+    )
     args = parser.parse_args(argv)
+
+    try:
+        timeframes_to_export = parse_timeframes_arg(args.timeframes)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 1
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -342,7 +384,7 @@ def main(argv: Optional[list] = None) -> int:
         date_to_gt = max(max_anchor, now_gt)  # nunca pedir menos que "ahora"
 
         results = []
-        for tf in ("1W", "1D", "12H", "4H", "1H", "30M", "15M"):
+        for tf in timeframes_to_export:
             start_gt = compute_backward_start(min_anchor, tf)
             date_from_srv = gt_naive_to_server(start_gt, server_offset)
             date_to_srv = gt_naive_to_server(date_to_gt, server_offset)
