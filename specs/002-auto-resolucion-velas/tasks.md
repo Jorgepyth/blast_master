@@ -61,10 +61,19 @@
 
 ## Etapa 1 — Red de seguridad de los wizards (R10.1)
 
-- [ ] T5. Test de red de seguridad del wizard de Efficiency, contra el código **sin modificar**: el orden de los 7
+- [x] T5. Test de red de seguridad del wizard de Efficiency, contra el código **sin modificar**: el orden de los 7
       prompts (baseline §2.2), `OPEN` excluido, y los valores guardados en `efficiency_audit` (tipo, estructurales,
       precios de MAE/MFE y un `resolution_time` no nulo). (INV-1)
       Hecho cuando: `pytest -q tests/test_wizard_safety_net.py -k efficiency` pasa y SUITE en verde.
+      **Hecho 2026-09-28:** `tests/test_wizard_safety_net.py` nuevo (compartido con T6/T7). Dos tests: uno maneja
+      `flow_pending_audits(preselected_choice="eff")` con `cli.main.get_enum_choice`/`get_optional_text` e
+      `InquirerPy.inquirer.text`/`select` mockeados, verifica los 4 `call_args` de `get_enum_choice` en orden
+      (real_bias_b, res_type con `exclude=[ResolutionType.OPEN]`, struct_res, fail_reason), el orden de
+      lesson_eff → MAE → MFE, y los 8 valores guardados en la fila ORM de `efficiency_audit` (incluido
+      `resolution_time` acotado entre el antes/después de la llamada — la hora del guardado, nunca preguntada,
+      baseline §2.2). El otro prueba que un MAE inválido deja MAE **y** MFE en `None`, aunque el MFE sí
+      convertía. `pytest -q tests/test_wizard_safety_net.py -k efficiency`: `2 passed in 0.56s`. SUITE:
+      `432 passed, 1 skipped, 96 warnings in 9.55s`; sin `.data/`.
 - [ ] T6. Test de red de seguridad de la rama llenada del Tactical: el orden desde `mid_trade_emotions` hasta
       `visual_lesson_path` (baseline §2.3), más `mae_adverse`, `mfe_favorable`, `could_hit_tp`, `exit_time` y
       `session` guardados. (INV-1)
