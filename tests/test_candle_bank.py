@@ -16,11 +16,13 @@ import pytest
 
 from tools.candle_bank import (
     CandleBankLockedError,
+    OVERLAP_TIMEFRAMES,
     acquire_bank_lock,
     bank_csv_path,
     merge_candle_frames,
     merge_timeframe_into_bank,
     read_candle_csv,
+    verify_overlap,
     write_candle_csv_atomic,
 )
 
@@ -276,5 +278,160 @@ def test_locked_bank_cancels_merge_and_leaves_bank_byte_for_byte_untouched(tmp_p
     with pytest.raises(CandleBankLockedError):
         with acquire_bank_lock(str(bank_dir)):
             merge_timeframe_into_bank(str(bank_dir), "1H", str(incoming_path))
+
+    assert (bank_dir / "1H.csv").read_bytes() == before
+
+
+# --- verify_overlap (T13, RF-2d, N32) ----------------------------------------
+
+def test_overlap_timeframes_excludes_the_slow_ones_that_dont_need_clock_verification():
+    # 4H, 12H, 1D y 1W quedan afuera (N39, RF-15c): el desfase de 1h es
+    # despreciable para EMA/ADX en esas TF.
+    assert OVERLAP_TIMEFRAMES == ("1H", "30M", "15M", "5M", "1M")
+
+
+def test_verify_overlap_enough_matching_bars_verifies(tmp_path):
+    bank_dir = tmp_path / "bank"
+    incoming_dir = tmp_path / "incoming"
+    bank_dir.mkdir()
+    incoming_dir.mkdir()
+
+    times = [DAY + timedelta(hours=h) for h in range(12)]
+    closes = [100.0 + h for h in range(12)]
+    _write_csv(bank_dir / "1H.csv", times, closes)
+    _write_csv(incoming_dir / "1H.csv", times, closes)  # 12 velas superpuestas, iguales
+
+    result = verify_overlap(str(bank_dir), str(incoming_dir))
+    assert result.verified is True
+    assert result.misaligned is False
+    assert result.verified_timeframe == "1H"
+    assert result.overlap_counts["1H"] == 12
+
+
+def test_verify_overlap_one_differing_candle_gives_misaligned_and_no_verified_timeframe(tmp_path):
+    bank_dir = tmp_path / "bank"
+    incoming_dir = tmp_path / "incoming"
+    bank_dir.mkdir()
+    incoming_dir.mkdir()
+
+    times = [DAY + timedelta(hours=h) for h in range(12)]
+    closes = [100.0 + h for h in range(12)]
+    _write_csv(bank_dir / "1H.csv", times, closes)
+    bad_closes = list(closes)
+    bad_closes[5] = 9999.0  # una sola vela distinta alcanza (RF-2d)
+    _write_csv(incoming_dir / "1H.csv", times, bad_closes)
+
+    result = verify_overlap(str(bank_dir), str(incoming_dir))
+    assert result.misaligned is True
+    assert result.verified is False
+    assert result.verified_timeframe is None
+    assert result.mismatched_timeframe == "1H"
+
+
+def test_verify_overlap_fewer_than_min_bars_neither_verifies_nor_misaligns(tmp_path):
+    bank_dir = tmp_path / "bank"
+    incoming_dir = tmp_path / "incoming"
+    bank_dir.mkdir()
+    incoming_dir.mkdir()
+
+    times = [DAY + timedelta(hours=h) for h in range(5)]  # 5 < OVERLAP_MIN_BARS (10)
+    closes = [100.0 + h for h in range(5)]
+    _write_csv(bank_dir / "1H.csv", times, closes)
+    _write_csv(incoming_dir / "1H.csv", times, closes)
+
+    result = verify_overlap(str(bank_dir), str(incoming_dir))
+    assert result.verified is False
+    assert result.misaligned is False
+    assert result.overlap_counts["1H"] == 5
+
+
+def test_verify_overlap_zero_overlap_on_every_timeframe_neither_verifies_nor_misaligns(tmp_path):
+    # Típico del primer export de un símbolo: nada en común todavía. Le toca
+    # a la verificación por referencias (T14).
+    bank_dir = tmp_path / "bank"
+    incoming_dir = tmp_path / "incoming"
+    bank_dir.mkdir()
+    incoming_dir.mkdir()
+
+    _write_csv(bank_dir / "1H.csv", [DAY], [100.0])
+    _write_csv(incoming_dir / "1H.csv", [DAY + timedelta(days=365)], [200.0])
+
+    result = verify_overlap(str(bank_dir), str(incoming_dir))
+    assert result.verified is False
+    assert result.misaligned is False
+    assert result.overlap_counts["1H"] == 0
+
+
+def test_verify_overlap_tolerance_absorbs_tiny_float_formatting_differences(tmp_path):
+    bank_dir = tmp_path / "bank"
+    incoming_dir = tmp_path / "incoming"
+    bank_dir.mkdir()
+    incoming_dir.mkdir()
+
+    times = [DAY + timedelta(hours=h) for h in range(10)]
+    closes = [1000.0 + h for h in range(10)]
+    _write_csv(bank_dir / "1H.csv", times, closes)
+    tiny_diff = [c * (1 + 1e-10) for c in closes]  # dentro de la tolerancia de 1e-9
+    _write_csv(incoming_dir / "1H.csv", times, tiny_diff)
+
+    result = verify_overlap(str(bank_dir), str(incoming_dir))
+    assert result.verified is True
+    assert result.misaligned is False
+
+
+def test_verify_overlap_difference_beyond_tolerance_misaligns(tmp_path):
+    bank_dir = tmp_path / "bank"
+    incoming_dir = tmp_path / "incoming"
+    bank_dir.mkdir()
+    incoming_dir.mkdir()
+
+    times = [DAY + timedelta(hours=h) for h in range(10)]
+    closes = [1000.0 + h for h in range(10)]
+    _write_csv(bank_dir / "1H.csv", times, closes)
+    off_by_more = [c * (1 + 1e-6) for c in closes]  # 1e-6, muy por encima de 1e-9
+    _write_csv(incoming_dir / "1H.csv", times, off_by_more)
+
+    result = verify_overlap(str(bank_dir), str(incoming_dir))
+    assert result.misaligned is True
+
+
+def test_verify_overlap_mismatch_in_a_later_timeframe_overrides_an_earlier_verified_one(tmp_path):
+    bank_dir = tmp_path / "bank"
+    incoming_dir = tmp_path / "incoming"
+    bank_dir.mkdir()
+    incoming_dir.mkdir()
+
+    # 1H verifica (12 velas iguales)...
+    hourly_times = [DAY + timedelta(hours=h) for h in range(12)]
+    hourly_closes = [100.0 + h for h in range(12)]
+    _write_csv(bank_dir / "1H.csv", hourly_times, hourly_closes)
+    _write_csv(incoming_dir / "1H.csv", hourly_times, hourly_closes)
+
+    # ...pero 30M (chequeada después, en OVERLAP_TIMEFRAMES) tiene una vela distinta.
+    half_hour_times = [DAY + timedelta(minutes=30 * i) for i in range(4)]
+    half_hour_closes = [200.0 + i for i in range(4)]
+    _write_csv(bank_dir / "30M.csv", half_hour_times, half_hour_closes)
+    bad_30m = list(half_hour_closes)
+    bad_30m[1] = 9999.0
+    _write_csv(incoming_dir / "30M.csv", half_hour_times, bad_30m)
+
+    result = verify_overlap(str(bank_dir), str(incoming_dir))
+    assert result.misaligned is True
+    assert result.verified is False
+    assert result.mismatched_timeframe == "30M"
+
+
+def test_verify_overlap_is_read_only_never_writes_the_bank(tmp_path):
+    """T13 solo verifica -- decidir si fusionar según el resultado es de otra
+    tarea (T15). El banco no cambia ni un byte por llamar a verify_overlap()."""
+    bank_dir = tmp_path / "bank"
+    incoming_dir = tmp_path / "incoming"
+    bank_dir.mkdir()
+    incoming_dir.mkdir()
+    _write_csv(bank_dir / "1H.csv", [DAY], [100.0])
+    before = (bank_dir / "1H.csv").read_bytes()
+    _write_csv(incoming_dir / "1H.csv", [DAY], [999.0])  # desalineado
+
+    verify_overlap(str(bank_dir), str(incoming_dir))
 
     assert (bank_dir / "1H.csv").read_bytes() == before

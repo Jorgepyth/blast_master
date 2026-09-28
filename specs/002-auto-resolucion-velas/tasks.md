@@ -183,10 +183,28 @@
       mano, intenta `merge_timeframe_into_bank` bajo `acquire_bank_lock`, y confirma que el `.csv` del banco
       queda byte a byte igual (RF-1d). `pytest -q tests/test_candle_bank.py`: `22 passed in 0.66s`. SUITE:
       `478 passed, 1 skipped, 97 warnings in 8.00s`; sin `.data/`.
-- [ ] T13. `candle_bank`, parte 3: verificación por superposición (1H, 30M, 15M, 5M y 1M; `OVERLAP_MIN_BARS`;
+- [x] T13. `candle_bank`, parte 3: verificación por superposición (1H, 30M, 15M, 5M y 1M; `OVERLAP_MIN_BARS`;
       tolerancia 1e-9). (RF-2d, N32)
       Hecho cuando: los tests prueban que la superposición igual verifica, que una vela distinta da
       `clock_misaligned` sin fusionar, y que menos de 10 velas superpuestas no verifican. SUITE en verde.
+      **Hecho 2026-09-28:** `verify_overlap(bank_dir, incoming_dir, ...)` en `tools/candle_bank.py`, de solo
+      lectura (RF-2d es solo el veredicto; fusionar según el resultado es tarea de T15). Recorre
+      `OVERLAP_TIMEFRAMES = ("1H", "30M", "15M", "5M", "1M")` en ese orden de prioridad — 4H/12H/1D/1W quedan
+      afuera porque no necesitan verificación de reloj (N39). Por cada TF, `_bars_overlap_match` compara las
+      velas con `time` en común, con tolerancia relativa `OVERLAP_PRICE_TOLERANCE = 1e-9` (plan T20) contra el
+      valor del banco. Una discrepancia en CUALQUIER TF corta ahí (`misaligned=True`, sin seguir mirando las
+      demás) e invalida cualquier `verified_timeframe` ya encontrado en una TF anterior — probado con un caso
+      donde 1H verifica y 30M (chequeada después) desalinea. Sin discrepancias, `verified=True` con la primera TF
+      que llegó a `OVERLAP_MIN_BARS` velas superpuestas coincidentes; con 0 superposición en todas las TF (primer
+      export de un símbolo) o con superposición insuficiente, ni verifica ni desalinea — le toca a T14
+      (referencias).
+      `tests/test_candle_bank.py` +9 tests: verifica con superposición suficiente; una vela distinta desalinea
+      (sin `verified_timeframe`); menos de `OVERLAP_MIN_BARS` no decide nada; cero superposición en todas las TF
+      no decide nada; una diferencia de `1e-10` (dentro de tolerancia) sigue verificando; una de `1e-6` (fuera de
+      tolerancia) desalinea; un desalineo en una TF posterior (30M) invalida un `verified` anterior (1H); y que
+      `verify_overlap` nunca escribe el banco (byte a byte igual antes/después, aunque el resultado sea
+      `clock_misaligned`). `pytest -q tests/test_candle_bank.py`: `31 passed in 1.35s`. SUITE:
+      `487 passed, 1 skipped, 97 warnings in 8.79s`; sin `.data/`.
 - [ ] T14. `candle_bank`, parte 4: verificación por referencias. Junta fills y Mark Price no retroactivos de las
       cuentas de `REAL_ACCOUNTS` que mapean al símbolo, con `mode=ro`, exige 10 dentro del rango y
       `evaluate_clock_entries` alineado. (RF-2, RF-2b, N29)
