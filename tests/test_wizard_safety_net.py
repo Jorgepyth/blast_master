@@ -13,15 +13,20 @@ import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 import tools.database
 from tools.database import Base, UnifiedDepartment, LifecycleState
 from tools.database import EfficiencyAudit as EfficiencyAuditORM
+from tools.database import TacticalAudit as TacticalAuditORM
 from cli.main import flow_pending_audits
 from cli.schemas.audit_efficiency import (
     StructuralBias, ResolutionType, StructuralResolution, FailureReason,
+)
+from cli.schemas.audit_tactical import (
+    HTFTrendContext, TrendContext, ConfirmationStatus, PrimaryEmotion,
+    MarketState, SetupType, ExitType, FollowedPlan,
 )
 
 
@@ -190,3 +195,147 @@ def test_efficiency_invalid_mae_mfe_both_become_none(
     row = _get_saved_efficiency_row(in_memory_db, trade_id)
     assert row.structural_mae is None
     assert row.structural_mfe is None
+
+
+# --- Tactical Audit, rama llenada (baseline §2.3, T6) ---------------------
+
+
+def _seed_unified_for_tactical(engine, trade_id="trade-tac-safety-net", asset="XAUUSD",
+                                created_at=datetime.datetime(2026, 1, 5, 9, 0)):
+    with Session(engine) as session:
+        session.add(UnifiedDepartment(
+            id=trade_id,
+            state=LifecycleState.PENDING_AUDITS.value,
+            asset=asset,
+            market_bias="Bullish",
+            calc_edge=0.30,
+            p4_hierarchy="Psych Level",
+            p1_timeframe="15M",
+            p1_type="1st_iteration",
+            nodes_l1=2,
+            nodes_l2=4,
+            tactical_classification="Continuation_Pressure",
+            long_prob=0.70,
+            short_prob=0.20,
+            no_trade_prob=0.10,
+            structural_invalidation=None,  # sin Stop Deviation Journaling (fuera de T6)
+            created_at=created_at,
+            updated_at=created_at,
+        ))
+        session.commit()
+    return trade_id, {"asset": asset, "efficiency": {"Market_Bias": "Bullish"}}
+
+
+def _run_tactical_audit(trade_id, payload):
+    flow_pending_audits(
+        preselected_trade_id=trade_id,
+        preselected_payload=payload,
+        preselected_choice="tac",
+        state_rule="promote",
+        force_new_tactical=True,
+    )
+
+
+def _get_saved_tactical_row(engine, trade_id):
+    with Session(engine) as session:
+        rows = session.scalars(
+            select(TacticalAuditORM).where(TacticalAuditORM.trade_id == trade_id)
+        ).all()
+        assert len(rows) == 1, f"se esperaba 1 fila táctica, hubo {len(rows)}"
+        return rows[0]
+
+
+@patch("cli.main.render_pnl_box", return_value="accept")
+@patch("cli.main.get_mandatory_time")
+@patch("cli.main.get_mandatory_datetime")
+@patch("cli.main.get_mandatory_int", return_value=3)
+@patch("cli.main.get_multi_enum_choice", return_value=[])
+@patch("cli.main.get_enum_choice")
+@patch("cli.main.handle_visual_lesson_assignment", return_value="nan")
+@patch("cli.main.get_optional_text")
+@patch("cli.main.get_mandatory_text")
+@patch("cli.main.get_mandatory_float")
+@patch("InquirerPy.inquirer.checkbox")
+@patch("InquirerPy.inquirer.select")
+def test_tactical_filled_branch_prompt_order_and_persisted_values(
+    mock_select, mock_checkbox, mock_float, mock_get_text, mock_get_optional_text, mock_visual,
+    mock_get_enum_choice, mock_get_multi_enum_choice, mock_get_int, mock_get_datetime, mock_get_time,
+    mock_render_pnl_box, in_memory_db
+):
+    """Rama 'llenada' del Tactical (order_filled -> yes), contra el código sin
+    modificar: el orden de BLOQUE 5 (baseline §2.3, `mid_trade_emotions` hasta
+    `visual_lesson_path`), y los valores guardados: `mae_adverse`,
+    `mfe_favorable`, `could_hit_tp`, `exit_time` y `session` (auto-derivado de
+    `entry_time`, nunca preguntado -- fuera de alcance de la spec, N/A)."""
+    trade_id, payload = _seed_unified_for_tactical(in_memory_db)
+
+    mock_get_enum_choice.side_effect = [
+        HTFTrendContext.BULLISH, TrendContext.BULLISH,          # htf_trend, ltf_trend (BLOQUE 1)
+        PrimaryEmotion.EQUANIMITY, MarketState.TREND, SetupType.TREND_PULLBACK,  # BLOQUE 4
+        ExitType.MANUAL, FollowedPlan.YES,                       # BLOQUE 5
+    ]
+    mock_get_time.return_value = datetime.time(10, 30)  # Entry Time
+    exit_time_val = datetime.datetime(2026, 1, 5, 12, 15)
+    mock_get_datetime.return_value = exit_time_val
+    # sl, entry_p, size, tp (BLOQUE 3); cost (BLOQUE 4); close_p, mae, mfe (BLOQUE 5)
+    mock_float.side_effect = [1900.0, 1950.0, 1.0, 2050.0, 5.0, 1980.0, 2.5, 6.0]
+    mock_get_text.side_effect = [
+        "Feeling calm.",       # pre_trade_emotions (BLOQUE 4)
+        "Managed the trade.",  # mid_trade_emotions (BLOQUE 5, 1º)
+        "Relieved it worked.", # post_trade_emotions (BLOQUE 5, 2º)
+        "Followed the plan.",  # lesson_tact (BLOQUE 5, último)
+    ]
+
+    mock_select_prompt = MagicMock()
+    mock_select.return_value = mock_select_prompt
+    mock_select_prompt.execute.side_effect = [
+        "gates",                          # ask_tac_mode
+        ConfirmationStatus.S1_CLEAN,      # conf_status
+        "yes",                              # ask_could_hit_tp (BLOQUE 5, 5º)
+        "yes",                              # ask_order_filled -> True
+        "save",                             # Review Action -> Confirm & Save
+    ]
+
+    mock_checkbox_prompt = MagicMock()
+    mock_checkbox.return_value = mock_checkbox_prompt
+    mock_checkbox_prompt.execute.side_effect = [
+        ["g1", "g2", "g3", "g4", "g5", "g6", "g7"],  # ask_gates: all pass -> gates_failed_cnt=0
+        ["c1", "c2"],                                  # ask_confirmations: 2 -> Tier C (no bloquea)
+    ]
+
+    with patch("builtins.input", return_value=""):
+        _run_tactical_audit(trade_id, payload)
+
+    # --- Orden de BLOQUE 5, "orden llenada" (baseline §2.3, INV-1) ---
+    text_calls = mock_get_text.call_args_list
+    assert text_calls[1].args[0] == "Mid Trade Emotions"
+    assert text_calls[2].args[0] == "Post Trade Emotions"
+    assert text_calls[3].args[0] == "Tactical Lesson Learned"
+
+    enum_calls = mock_get_enum_choice.call_args_list
+    assert len(enum_calls) == 7
+    assert enum_calls[5].args[:2] == ("Exit Type", ExitType)   # BLOQUE 5, posición 4
+    assert enum_calls[6].args[:2] == ("Followed Plan", FollowedPlan)  # BLOQUE 5, posición 7
+
+    # exit_time (get_mandatory_datetime) ocurre antes que exit_type (5º get_enum_choice
+    # en general, 6º índice 0-based): no hay forma directa de comparar dos mocks
+    # distintos por orden de llamada, así que se confirma indirectamente: el
+    # `mock_get_datetime` se llamó exactamente una vez, con el prompt correcto.
+    mock_get_datetime.assert_called_once_with("Exit Time")
+
+    # --- Valores guardados: mae_adverse, mfe_favorable, could_hit_tp, exit_time, session ---
+    row = _get_saved_tactical_row(in_memory_db, trade_id)
+    assert float(row.mae_adverse) == pytest.approx(2.5)
+    assert float(row.mfe_favorable) == pytest.approx(6.0)
+    assert row.could_hit_tp == "yes"
+    assert row.exit_time == exit_time_val
+    # entry_time = 2026-01-05 10:30 GT; +6h = 16:30 UTC -> banda 16<=hr<21 -> New York
+    # (Session, cli/schemas/audit_tactical.py:442-448; auto-derivado, nunca preguntado)
+    assert row.session == "New York"
+    assert row.order_filled is True
+    assert row.mid_trade_emotions == "Managed the trade."
+    assert row.post_trade_emotions == "Relieved it worked."
+    assert row.exit_type == "manual"
+    assert row.closing_price == pytest.approx(1980.0)
+    assert row.followed_plan == "Yes"
+    assert row.lesson_learned == "Followed the plan."

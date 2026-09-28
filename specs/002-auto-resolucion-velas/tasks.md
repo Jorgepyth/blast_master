@@ -74,9 +74,19 @@
       baseline §2.2). El otro prueba que un MAE inválido deja MAE **y** MFE en `None`, aunque el MFE sí
       convertía. `pytest -q tests/test_wizard_safety_net.py -k efficiency`: `2 passed in 0.56s`. SUITE:
       `432 passed, 1 skipped, 96 warnings in 9.55s`; sin `.data/`.
-- [ ] T6. Test de red de seguridad de la rama llenada del Tactical: el orden desde `mid_trade_emotions` hasta
+- [x] T6. Test de red de seguridad de la rama llenada del Tactical: el orden desde `mid_trade_emotions` hasta
       `visual_lesson_path` (baseline §2.3), más `mae_adverse`, `mfe_favorable`, `could_hit_tp`, `exit_time` y
       `session` guardados. (INV-1)
+      **Hecho 2026-09-28:** agregado a `tests/test_wizard_safety_net.py`. Corre
+      `flow_pending_audits(preselected_choice="tac", force_new_tactical=True)` por el camino principal (gates 7/7,
+      2 confirmaciones → Tier C, no bloquea) con `order_filled → "yes"`, y confirma: `get_mandatory_text` con
+      `Mid Trade Emotions` → `Post Trade Emotions` → `Tactical Lesson Learned` en ese orden; `Exit Type` y
+      `Followed Plan` en las posiciones 6ª y 7ª de los 7 `get_enum_choice`; `get_mandatory_datetime` llamado una vez
+      con `"Exit Time"`; y en la fila ORM: `mae_adverse`, `mfe_favorable`, `could_hit_tp`, `exit_time`,
+      `mid_trade_emotions`, `post_trade_emotions`, `exit_type`, `closing_price`, `followed_plan`,
+      `lesson_learned`. `session` sale auto-derivado de `entry_time` (nunca preguntado) — 10:30 GT + 6h = 16:30
+      UTC cae en la banda de New York, verificado igual. `pytest -q tests/test_wizard_safety_net.py -k tactical`:
+      `1 passed in 0.50s`. SUITE: `433 passed, 1 skipped, 97 warnings in 9.14s`; sin `.data/`.
       Hecho cuando: `pytest -q tests/test_wizard_safety_net.py -k tactical` pasa y SUITE en verde.
 - [ ] T7. Test de red de seguridad de `flow_new_analysis`: los precios guardados, `created_at` igual a la hora
       tipeada en un retroactivo, e `is_backdated`. (INV-7)
