@@ -25,9 +25,16 @@
       `ls -d $WT/.data` en falla.
       **Hecho 2026-09-28:** `429 passed, 1 skipped, 92 warnings in 10.44s`. `find .data -type f` dio exactamente los
       2 archivos documentados de H-C, nada más. Se borró `.data/` después; `ls -d .data` vuelve a fallar.
-- [ ] T2. Arreglar `tests/test_cli_report_command.py:71-75` para que fije `tools.database.engine_default` con
+- [x] T2. Arreglar `tests/test_cli_report_command.py:71-75` para que fije `tools.database.engine_default` con
       `monkeypatch`. (RF-16b)
       Hecho cuando: SUITE en verde (`429 passed, 1 skipped`) y `find $WT/.data -type f` no lista nada.
+      **Hecho 2026-09-28:** `test_report_command_rejects_conflicting_flags` (líneas 71-79) era el único de los 3 tests
+      del archivo sin `monkeypatch`; como `cli()` (`cli/main.py:996-998`) llama `get_active_engine()` para
+      **cualquier** subcomando antes de despachar, ese test creaba `.data/flight_account_001_xauusd.db` y
+      `.data/flight_sessions.json` reales aunque el propio comando `report` nunca llegara a leerlos (el chequeo de
+      flags en conflicto ocurre después). Se le agregó `monkeypatch` + `init_db("sqlite:///:memory:")` +
+      `monkeypatch.setattr(tools.database, "engine_default", ...)`, igual que los otros dos tests. SUITE:
+      `429 passed, 1 skipped, 92 warnings in 7.47s`; `find .data -type f` ya no encuentra nada (ni `.data/` existe).
 - [ ] T3. Crear `tests/conftest.py`: un fixture autouse `monkeypatch.chdir(tmp_path)` y un audit hook sobre `open` y
       `sqlite3.connect` que hace fallar el test si la ruta cae bajo `<repo>/.data/` o `/mnt/c/`. (RF-16)
       Hecho cuando: SUITE en verde y sin `.data/` en `WT` después de correr.

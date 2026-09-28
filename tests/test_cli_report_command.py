@@ -68,8 +68,11 @@ def test_report_command_html_only(tmp_path, monkeypatch):
     assert not (tmp_path / "data_analysis_llm_report.md").exists()
 
 
-def test_report_command_rejects_conflicting_flags(tmp_path):
+def test_report_command_rejects_conflicting_flags(tmp_path, monkeypatch):
     from cli.main import cli
+
+    test_engine = init_db("sqlite:///:memory:")
+    monkeypatch.setattr(tools.database, "engine_default", test_engine)
 
     runner = CliRunner()
     result = runner.invoke(cli, ["report", "--output-dir", str(tmp_path), "--html-only", "--llm-only"])
