@@ -5,11 +5,13 @@ Parte 1 (T11): mecánica pura de lectura/escritura atómica de un `{TF}.csv` y
 la fusión por `time`, sin borrar ni alterar velas existentes (RF-1, RF-1b).
 Parte 2 (T12): candado por símbolo. Parte 3 (T13): verificación del reloj por
 superposición. Parte 4 (T14): verificación por referencias, para cuando no
-hubo superposición (típicamente, el primer export de un símbolo). Nada acá
-toca todavía el filtro de estación de horario (T15) ni `status.json` (T15) --
-esas partes se agregan en tareas siguientes. Tampoco decide todavía SI
-fusionar según el resultado de la verificación -- eso lo arma la tarea que
-junte las partes 3 y 4 (T15).
+hubo superposición (típicamente, el primer export de un símbolo). Parte 5
+(T15): filtro por estación de horario, `status.json`, y una fusión con chequeo
+de que ninguna vela del banco se pierda o cambie (si el chequeo falla, no
+escribe nada -- el banco queda exactamente como estaba). Nada acá arma
+todavía la orquestación completa "candado → verificar → filtrar → fusionar →
+status.json" para UN símbolo -- eso es de una tarea posterior (T16 en
+adelante), que compone estas piezas.
 
 Formato del CSV: idéntico al que ya lee `tools.p2_backtest.CsvOHLCProvider`
 (`time,open,high,low,close`, `time` = hora de apertura en GT naive), ordenado
@@ -21,7 +23,7 @@ import os
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
@@ -437,3 +439,173 @@ def verify_by_references(
         timeframe=tf,
         rate_by_offset=rates,
     )
+
+
+# --------------------------------------------------------------------------
+# Filtro por estación de horario (T15, RF-15c, N39)
+# --------------------------------------------------------------------------
+#
+# Mientras BROKER_DST_RULE no esté verificado -- hoy no hay ninguna bandera
+# de "verificado" en el sistema, así que este filtro está activo siempre --
+# en 1H y en las TF más finas (las mismas que OVERLAP_TIMEFRAMES) solo se
+# fusionan las velas cuya fecha cae en la misma estación de horario de
+# verano que el momento del export. 4H, 12H, 1D y 1W se fusionan completas:
+# el desfase de 1h ahí es despreciable para EMA/ADX, y los modelos de
+# P2_LOG_MODELS necesitan 800 velas cerradas por TF.
+
+def _nth_weekday_of_month(year: int, month: int, weekday: int, n: int) -> date:
+    """La n-ésima ocurrencia de `weekday` (0=lunes...6=domingo) en year-month."""
+    first = date(year, month, 1)
+    offset = (weekday - first.weekday()) % 7
+    return date(year, month, 1 + offset + 7 * (n - 1))
+
+
+def _last_weekday_of_month(year: int, month: int, weekday: int) -> date:
+    next_month_first = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+    last_day = next_month_first - timedelta(days=1)
+    return last_day - timedelta(days=(last_day.weekday() - weekday) % 7)
+
+
+def _dst_active_on(d: date, dst_rule: str) -> bool:
+    """
+    ¿`d` cae en horario de verano según `dst_rule`? Fechas de cambio:
+      - "us": 2do domingo de marzo al 1er domingo de noviembre.
+      - "eu": último domingo de marzo al último domingo de octubre.
+    "none" no llega acá -- lo filtra `filter_by_export_season` antes.
+    """
+    SUNDAY = 6
+    if dst_rule == "us":
+        start = _nth_weekday_of_month(d.year, 3, SUNDAY, 2)
+        end = _nth_weekday_of_month(d.year, 11, SUNDAY, 1)
+    elif dst_rule == "eu":
+        start = _last_weekday_of_month(d.year, 3, SUNDAY)
+        end = _last_weekday_of_month(d.year, 10, SUNDAY)
+    else:
+        raise ValueError(f"BROKER_DST_RULE desconocida: {dst_rule!r} (esperado us/eu/none)")
+    return start <= d < end
+
+
+def filter_by_export_season(
+    df: pd.DataFrame,
+    timeframe: str,
+    export_moment: datetime,
+    dst_rule: str,
+    season_timeframes: Tuple[str, ...] = OVERLAP_TIMEFRAMES,
+) -> pd.DataFrame:
+    """
+    RF-15c, N39: si `timeframe` está en `season_timeframes` (1H y más finas) y
+    `dst_rule` no es `"none"`, deja solo las velas de `df` cuya fecha cae en la
+    MISMA estación de horario de verano que `export_moment`. Para las demás TF
+    (4H, 12H, 1D, 1W), o con `dst_rule == "none"` (sin distinción de estación),
+    devuelve `df` sin tocar.
+    """
+    if timeframe not in season_timeframes or dst_rule == "none":
+        return df
+    export_dst = _dst_active_on(export_moment.date(), dst_rule)
+    mask = df["time"].apply(lambda t: _dst_active_on(t.date(), dst_rule) == export_dst)
+    return df[mask].reset_index(drop=True)
+
+
+# --------------------------------------------------------------------------
+# status.json (T15, plan.md §2.3)
+# --------------------------------------------------------------------------
+
+STATUS_JSON_FILENAME = "status.json"
+
+
+def status_json_path(bank_dir: str) -> str:
+    return os.path.join(bank_dir, STATUS_JSON_FILENAME)
+
+
+def build_status_payload(
+    symbol: str,
+    clock: str,
+    verified_by: Optional[str],
+    dst_rule: str,
+    run_id: Optional[str],
+    result: str,
+    bars_added: Dict[str, int],
+    last_error: Optional[str] = None,
+) -> dict:
+    """Arma el dict de `status.json` con la forma exacta del ejemplo de
+    plan.md §2.3. `clock`: `"verified"`, o uno de los `REASON_*` de
+    `config.auto_resolution` (`clock_misaligned`, `clock_unverified`, ...)."""
+    return {
+        "symbol": symbol,
+        "clock": clock,
+        "verified_by": verified_by,
+        "dst_rule": dst_rule,
+        "last_export": {"run_id": run_id, "result": result, "bars_added": dict(bars_added)},
+        "last_error": last_error,
+    }
+
+
+def read_bank_status(bank_dir: str) -> Optional[dict]:
+    """`None` si el símbolo todavía no tiene `status.json` (nunca se fusionó nada)."""
+    path = status_json_path(bank_dir)
+    if not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def write_bank_status(bank_dir: str, status: dict) -> None:
+    """Escribe `status.json` de forma atómica (temporal + `os.replace`), mismo
+    patrón que `write_candle_csv_atomic`."""
+    os.makedirs(bank_dir, exist_ok=True)
+    path = status_json_path(bank_dir)
+    fd, tmp_path = tempfile.mkstemp(dir=bank_dir, prefix=".tmp_status_", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(status, f, indent=2)
+        os.replace(tmp_path, path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+
+
+# --------------------------------------------------------------------------
+# Fusión con chequeo de no-regresión (T15, RF-1, RF-1c)
+# --------------------------------------------------------------------------
+
+def _assert_bank_not_regressed(bank_before: pd.DataFrame, merged: pd.DataFrame, timeframe: str) -> None:
+    """
+    Confirma que `merged` contiene, sin ningún cambio, cada vela de
+    `bank_before` (RF-1: "sin borrar ni alterar ninguna vela existente"). Por
+    construcción, `merge_candle_frames` ya garantiza esto -- esta función es
+    una red de seguridad extra, para que un bug futuro en la fusión no pueda
+    corromper el banco en silencio: si algo no cuadra, levanta `RuntimeError`
+    ANTES de escribir nada (RF-1c).
+    """
+    check = bank_before.merge(
+        merged, on="time", how="left", suffixes=("_before", "_after"), indicator=True
+    )
+    missing = check[check["_merge"] != "both"]
+    if len(missing):
+        raise RuntimeError(
+            f"{timeframe}: el banco nuevo perdió {len(missing)} vela(s) que ya estaban -- no se escribe nada."
+        )
+    for col in _OVERLAP_COMPARE_COLUMNS:
+        if not (check[f"{col}_before"] == check[f"{col}_after"]).all():
+            raise RuntimeError(
+                f"{timeframe}: una vela existente cambió de valor en la fusión -- no se escribe nada."
+            )
+
+
+def merge_timeframe_into_bank_checked(bank_dir: str, timeframe: str, incoming_df: pd.DataFrame) -> int:
+    """
+    Como `merge_timeframe_into_bank`, pero recibe `incoming_df` ya en memoria
+    (para que quien llame pueda aplicarle `filter_by_export_season` antes) y
+    verifica con `_assert_bank_not_regressed` antes de escribir. Si el chequeo
+    falla, no se escribe el CSV -- el banco queda byte a byte igual a como
+    estaba, y la excepción se propaga para que quien orqueste la fusión de
+    varias TF decida qué hacer con las demás. Devuelve cuántas velas se
+    agregaron.
+    """
+    bank_path = bank_csv_path(bank_dir, timeframe)
+    bank_before = read_candle_csv(bank_path)
+    merged = merge_candle_frames(bank_before, incoming_df)
+    _assert_bank_not_regressed(bank_before, merged, timeframe)
+    write_candle_csv_atomic(bank_path, merged)
+    return len(merged) - len(bank_before)

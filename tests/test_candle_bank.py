@@ -9,24 +9,32 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import tools.candle_bank
 from tools.candle_bank import (
     CandleBankLockedError,
     OVERLAP_TIMEFRAMES,
+    STATUS_JSON_FILENAME,
     acquire_bank_lock,
     bank_csv_path,
+    build_status_payload,
+    filter_by_export_season,
     gather_reference_entries,
     merge_candle_frames,
     merge_timeframe_into_bank,
+    merge_timeframe_into_bank_checked,
+    read_bank_status,
     read_candle_csv,
+    status_json_path,
     verify_by_references,
     verify_overlap,
+    write_bank_status,
     write_candle_csv_atomic,
 )
 from tools.database import Base, UnifiedDepartment
@@ -590,3 +598,136 @@ def test_verify_by_references_no_matching_timeframe_in_incoming_export(tmp_path)
     )
     assert result.verified is False
     assert result.timeframe is None
+
+
+# --- filter_by_export_season (T15, RF-15c, N39) ------------------------------
+
+def test_dst_active_us_rule_on_unambiguous_interior_dates():
+    assert tools.candle_bank._dst_active_on(date(2026, 7, 15), "us") is True   # verano, sin ambigüedad
+    assert tools.candle_bank._dst_active_on(date(2026, 1, 15), "us") is False  # invierno, sin ambigüedad
+
+
+def test_dst_active_eu_rule_on_unambiguous_interior_dates():
+    assert tools.candle_bank._dst_active_on(date(2026, 7, 15), "eu") is True
+    assert tools.candle_bank._dst_active_on(date(2026, 1, 15), "eu") is False
+
+
+def test_filter_by_export_season_keeps_same_season_1h_candles():
+    df = _frame([datetime(2026, 7, 10, 6), datetime(2026, 7, 12, 6)], [100.0, 101.0])  # las dos en verano
+    export_moment = datetime(2026, 7, 20, 12)  # también verano
+    filtered = filter_by_export_season(df, "1H", export_moment, "us")
+    assert len(filtered) == 2
+
+
+def test_filter_by_export_season_drops_opposite_season_candles_on_fast_timeframes():
+    df = _frame([datetime(2026, 1, 10, 6), datetime(2026, 7, 12, 6)], [100.0, 101.0])  # invierno, verano
+    export_moment = datetime(2026, 7, 20, 12)  # verano
+    for tf in OVERLAP_TIMEFRAMES:  # 1H, 30M, 15M, 5M, 1M
+        filtered = filter_by_export_season(df, tf, export_moment, "us")
+        assert len(filtered) == 1, tf
+        assert filtered.iloc[0]["close"] == pytest.approx(101.0), tf
+
+
+def test_filter_by_export_season_leaves_slow_timeframes_complete():
+    df = _frame([datetime(2026, 1, 10, 6), datetime(2026, 7, 12, 6)], [100.0, 101.0])
+    export_moment = datetime(2026, 7, 20, 12)
+    for tf in ("4H", "12H", "1D", "1W"):
+        filtered = filter_by_export_season(df, tf, export_moment, "us")
+        assert len(filtered) == 2, tf
+
+
+def test_filter_by_export_season_dst_rule_none_keeps_everything():
+    df = _frame([datetime(2026, 1, 10, 6), datetime(2026, 7, 12, 6)], [100.0, 101.0])
+    export_moment = datetime(2026, 7, 20, 12)
+    filtered = filter_by_export_season(df, "1H", export_moment, "none")
+    assert len(filtered) == 2
+
+
+# --- status.json (T15, plan.md §2.3) -----------------------------------------
+
+def test_build_status_payload_matches_plan_example_shape():
+    payload = build_status_payload(
+        symbol="XAUUSD", clock="verified", verified_by="overlap", dst_rule="unverified",
+        run_id="20261005T142011", result="merged", bars_added={"1M": 412, "15M": 28},
+    )
+    assert payload == {
+        "symbol": "XAUUSD", "clock": "verified", "verified_by": "overlap", "dst_rule": "unverified",
+        "last_export": {"run_id": "20261005T142011", "result": "merged", "bars_added": {"1M": 412, "15M": 28}},
+        "last_error": None,
+    }
+
+
+def test_status_json_path_format():
+    assert status_json_path("/x/XAUUSD") == f"/x/XAUUSD/{STATUS_JSON_FILENAME}"
+
+
+def test_read_bank_status_missing_file_returns_none(tmp_path):
+    assert read_bank_status(str(tmp_path / "XAUUSD")) is None
+
+
+def test_write_and_read_bank_status_roundtrips_and_leaves_no_temp_file(tmp_path):
+    bank_dir = tmp_path / "XAUUSD"
+    payload = build_status_payload("XAUUSD", "verified", "overlap", "unverified", "run-1", "merged", {"1H": 5})
+    write_bank_status(str(bank_dir), payload)
+    assert read_bank_status(str(bank_dir)) == payload
+    assert [f for f in os.listdir(bank_dir) if f.startswith(".tmp_status_")] == []
+
+
+def test_status_json_reflects_a_clock_misaligned_result(tmp_path):
+    bank_dir = tmp_path / "XAUUSD"
+    payload = build_status_payload("XAUUSD", "clock_misaligned", None, "unverified", "run-2",
+                                    "clock_misaligned", {}, last_error=None)
+    write_bank_status(str(bank_dir), payload)
+    on_disk = read_bank_status(str(bank_dir))
+    assert on_disk["clock"] == "clock_misaligned"
+    assert on_disk["verified_by"] is None
+    assert on_disk["last_export"]["bars_added"] == {}
+
+
+# --- merge_timeframe_into_bank_checked (T15, RF-1, RF-1c) --------------------
+
+def test_merge_checked_normal_case_adds_bars_like_the_unchecked_version(tmp_path):
+    bank_dir = tmp_path / "XAUUSD"
+    bank_dir.mkdir()
+    _write_csv(bank_dir / "1H.csv", [DAY], [100.0])
+
+    incoming_df = _frame([DAY + timedelta(hours=1)], [101.0])
+    added = merge_timeframe_into_bank_checked(str(bank_dir), "1H", incoming_df)
+
+    assert added == 1
+    on_disk = read_candle_csv(bank_csv_path(str(bank_dir), "1H"))
+    assert len(on_disk) == 2
+
+
+def test_merge_checked_regression_raises_and_writes_nothing(tmp_path, monkeypatch):
+    bank_dir = tmp_path / "XAUUSD"
+    bank_dir.mkdir()
+    _write_csv(bank_dir / "1H.csv", [DAY, DAY + timedelta(hours=1)], [100.0, 101.0])
+    before = (bank_dir / "1H.csv").read_bytes()
+
+    def _broken_merge(bank_df, incoming_df):
+        return incoming_df  # "pierde" las velas del banco a propósito, para probar la red de seguridad
+
+    monkeypatch.setattr(tools.candle_bank, "merge_candle_frames", _broken_merge)
+
+    with pytest.raises(RuntimeError, match="perdió"):
+        merge_timeframe_into_bank_checked(str(bank_dir), "1H", _frame([DAY + timedelta(hours=2)], [102.0]))
+
+    assert (bank_dir / "1H.csv").read_bytes() == before
+
+
+def test_merge_checked_write_failure_mid_fusion_leaves_bank_byte_for_byte_untouched(tmp_path, monkeypatch):
+    bank_dir = tmp_path / "XAUUSD"
+    bank_dir.mkdir()
+    _write_csv(bank_dir / "1H.csv", [DAY], [100.0])
+    before = (bank_dir / "1H.csv").read_bytes()
+
+    def _boom(self, *a, **kw):
+        raise RuntimeError("disco lleno (simulado)")
+
+    monkeypatch.setattr(pd.DataFrame, "to_csv", _boom)
+    with pytest.raises(RuntimeError, match="disco lleno"):
+        merge_timeframe_into_bank_checked(str(bank_dir), "1H", _frame([DAY + timedelta(hours=1)], [101.0]))
+
+    assert (bank_dir / "1H.csv").read_bytes() == before
+    assert [f for f in os.listdir(bank_dir) if f.startswith(".tmp_candle_bank_")] == []

@@ -226,12 +226,34 @@
       `best_offset=3`) — más un caso sin ninguna TF de `CLOCK_TIMEFRAME_PREFERENCE` en el export entrante.
       `pytest -q tests/test_candle_bank.py`: `38 passed in 4.79s`. SUITE: `494 passed, 1 skipped, 97 warnings in
       18.64s`; sin `.data/`.
-- [ ] T15. `candle_bank`, parte 5: filtro por estación de horario (RF-15c), `status.json`, y el banco sin cambios
+- [x] T15. `candle_bank`, parte 5: filtro por estación de horario (RF-15c), `status.json`, y el banco sin cambios
       ante cualquier fallo (RF-1c). (RF-1c, RF-15c)
       Hecho cuando: los tests prueban que, con la regla sin verificar, en 1H y en las TF menores solo entran las velas
       de la estación del export, mientras que 4H, 12H, 1D y 1W entran completas (N39);
       que `status.json` refleja el resultado, y que ante una excepción a mitad de la fusión el banco queda byte a
       byte igual. SUITE en verde.
+      **Hecho 2026-09-28:** tres piezas, todavía sin la orquestación completa "candado → verificar → filtrar →
+      fusionar → status.json" para un símbolo (eso lo arma T16 en adelante, componiendo T11-T15):
+      1. `filter_by_export_season()`: en `OVERLAP_TIMEFRAMES` (1H y más finas) y con `BROKER_DST_RULE` distinto de
+         `"none"`, deja solo las velas cuya fecha cae en la misma estación de horario de verano que
+         `export_moment` (`_dst_active_on`, con las fechas de cambio de EE.UU. o UE, calculadas con
+         `_nth_weekday_of_month`/`_last_weekday_of_month`); 4H/12H/1D/1W y `dst_rule="none"` no filtran nada. No
+         hay ninguna bandera de "verificado" en el sistema todavía, así que el filtro está activo siempre.
+      2. `status.json`: `build_status_payload()` arma el dict con la forma exacta del ejemplo de plan.md §2.3;
+         `read_bank_status()`/`write_bank_status()` (atómico, mismo patrón que `write_candle_csv_atomic`).
+      3. `merge_timeframe_into_bank_checked()`: como la fusión de T11, pero con `_assert_bank_not_regressed()`
+         antes de escribir — confirma que ninguna vela existente se pierde ni cambia de valor (garantizado por
+         construcción en `merge_candle_frames`, pero es una red de seguridad extra); si algo no cuadra, levanta
+         `RuntimeError` **antes** de tocar el archivo.
+      `tests/test_candle_bank.py` +14 tests: fechas de cambio de DST sin ambigüedad para `us` y `eu`; el filtro
+      conserva la misma estación y descarta la opuesta en las 5 TF finas; deja completas las 4 TF lentas; con
+      `dst_rule="none"` no filtra nada; `build_status_payload` calza con el ejemplo del plan; ida y vuelta de
+      `status.json` sin temporales sueltos; un resultado `clock_misaligned` se refleja correctamente; la fusión
+      chequeada agrega velas igual que la de T11; una fusión rota a propósito (mockeada para perder velas del
+      banco) levanta `RuntimeError` sin escribir nada; y una falla real a mitad de la escritura (mismo truco de
+      T11 con `to_csv` mockeado) deja el banco byte a byte igual, sin temporales.
+      `pytest -q tests/test_candle_bank.py`: `52 passed in 1.33s`. SUITE: `508 passed, 1 skipped, 97 warnings in
+      8.47s`; sin `.data/`.
 - [ ] T16. `candle_bank`, parte 6: `import_legacy()` desde `MT5Exports/{SYMBOL}/`, sin el `5M.csv` de XAU. (RF-2c)
       Hecho cuando: el test, con un directorio de fixture que imita `MT5Exports`, prueba que se importa lo
       verificado, que el 5M queda excluido e informado, y que el origen no se modifica. SUITE en verde.
