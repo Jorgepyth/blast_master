@@ -5,13 +5,18 @@ alterar velas existentes. Nada de candado, verificación de reloj, filtro de
 estación ni `status.json` acá -- eso es T12 a T16, sobre estas mismas
 funciones.
 """
+import json
 import os
-from datetime import datetime, timedelta
+import subprocess
+import sys
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import pytest
 
 from tools.candle_bank import (
+    CandleBankLockedError,
+    acquire_bank_lock,
     bank_csv_path,
     merge_candle_frames,
     merge_timeframe_into_bank,
@@ -180,3 +185,96 @@ def test_merge_timeframe_into_bank_first_time_no_prior_bank_directory(tmp_path):
     merged = merge_timeframe_into_bank(str(bank_dir), "1H", str(incoming_path))
     assert len(merged) == 2
     assert os.path.exists(bank_csv_path(str(bank_dir), "1H"))
+
+
+# --- acquire_bank_lock (T12, RF-1d) -- mismo patrón que tests/test_backup.py --
+
+def test_lock_prevents_concurrent_run(tmp_path):
+    lock_path = tmp_path / ".lock"
+    lock_path.write_text(json.dumps({
+        "pid": os.getpid(),  # el propio proceso de test -- garantizado vivo
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }))
+
+    with pytest.raises(CandleBankLockedError):
+        with acquire_bank_lock(str(tmp_path), stale_hours=2):
+            pytest.fail("no debería entrar al cuerpo del with")
+
+    # El candado tomado por "otro proceso" sigue ahí, sin tocar.
+    assert json.loads(lock_path.read_text())["pid"] == os.getpid()
+
+
+def test_stale_lock_dead_pid_is_recovered(tmp_path):
+    # Subproceso real que ya terminó -- PID garantizado muerto (reaped).
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead_pid = proc.pid
+    proc.wait()
+
+    lock_path = tmp_path / ".lock"
+    lock_path.write_text(json.dumps({
+        "pid": dead_pid,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }))
+
+    with acquire_bank_lock(str(tmp_path), stale_hours=2):
+        new_lock = json.loads(lock_path.read_text())
+        assert new_lock["pid"] == os.getpid()
+
+
+def test_stale_lock_old_ttl_is_recovered(tmp_path):
+    old_timestamp = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+    lock_path = tmp_path / ".lock"
+    lock_path.write_text(json.dumps({
+        "pid": os.getpid(),  # vivo, pero el candado es viejo
+        "started_at": old_timestamp,
+    }))
+
+    with acquire_bank_lock(str(tmp_path), stale_hours=2):
+        new_lock = json.loads(lock_path.read_text())
+        assert new_lock["pid"] == os.getpid()
+
+
+def test_corrupt_lock_file_is_treated_as_orphaned(tmp_path):
+    lock_path = tmp_path / ".lock"
+    lock_path.write_text("{not valid json")
+
+    with acquire_bank_lock(str(tmp_path), stale_hours=2):
+        new_lock = json.loads(lock_path.read_text())
+        assert new_lock["pid"] == os.getpid()
+
+
+def test_lock_released_on_normal_exit(tmp_path):
+    with acquire_bank_lock(str(tmp_path)):
+        pass
+    assert not (tmp_path / ".lock").exists()
+
+
+def test_lock_released_even_if_body_raises(tmp_path):
+    with pytest.raises(ValueError, match="boom"):
+        with acquire_bank_lock(str(tmp_path)):
+            raise ValueError("boom")
+    assert not (tmp_path / ".lock").exists()
+
+
+# --- Candado + fusión combinados: RF-1d dice "deja el banco intacto" --------
+
+def test_locked_bank_cancels_merge_and_leaves_bank_byte_for_byte_untouched(tmp_path):
+    bank_dir = tmp_path / "bank" / "XAUUSD"
+    bank_dir.mkdir(parents=True)
+    _write_csv(bank_dir / "1H.csv", [DAY], [100.0])
+    before = (bank_dir / "1H.csv").read_bytes()
+
+    (bank_dir / ".lock").write_text(json.dumps({
+        "pid": os.getpid(),
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }))
+
+    incoming_path = tmp_path / "incoming" / "1H.csv"
+    incoming_path.parent.mkdir(parents=True)
+    _write_csv(incoming_path, [DAY + timedelta(hours=1)], [101.0])
+
+    with pytest.raises(CandleBankLockedError):
+        with acquire_bank_lock(str(bank_dir)):
+            merge_timeframe_into_bank(str(bank_dir), "1H", str(incoming_path))
+
+    assert (bank_dir / "1H.csv").read_bytes() == before

@@ -165,9 +165,24 @@
       falla simulada a mitad de la escritura (`to_csv` mockeado para tirar `RuntimeError`) deja el archivo real
       byte a byte igual y sin temporales sueltos. `pytest -q tests/test_candle_bank.py`: `15 passed in 1.18s`.
       SUITE: `471 passed, 1 skipped, 97 warnings in 10.05s`; sin `.data/`.
-- [ ] T12. `candle_bank`, parte 2: candado por símbolo (PID y vencimiento de 2 h). (RF-1d)
+- [x] T12. `candle_bank`, parte 2: candado por símbolo (PID y vencimiento de 2 h). (RF-1d)
       Hecho cuando: los tests prueban que con el candado tomado se cancela y el banco queda byte a byte igual, y que
       un candado vencido se reemplaza. SUITE en verde.
+      **Hecho 2026-09-28:** `acquire_bank_lock(bank_dir, stale_hours=2.0)` en `tools/candle_bank.py`, mismo
+      formato de candado (PID + hora) y misma lógica de vencimiento que `tools/backup.py:122-174`
+      (`acquire_backup_lock`/`_is_pid_alive`) — con una diferencia deliberada: es un context manager que levanta
+      `CandleBankLockedError` en vez de `sys.exit(2)`, porque acá el candado protege una fusión dentro de una
+      llamada de librería, no un script de proceso completo; quien llame (`candle_sync.py`, T20; los subcomandos
+      `candles`, T21) atrapa la excepción para el mensaje "Candle export skipped: ..." sin matar el proceso. Se
+      libera solo al salir del `with`, incluso si el cuerpo lanza. Un candado corrupto/ilegible también se trata
+      como huérfano, igual que `backup.py`.
+      `tests/test_candle_bank.py` +7 tests, mismo patrón que `tests/test_backup.py` (PID del propio proceso de
+      test para "vivo", un subproceso real ya terminado para "muerto", un timestamp de 3h para "vencido", un
+      candado corrupto): candado tomado y vivo cancela; PID muerto se recupera; TTL vencido se recupera; JSON
+      corrupto se recupera; se libera en salida normal y en excepción; y un test combinado que toma el candado a
+      mano, intenta `merge_timeframe_into_bank` bajo `acquire_bank_lock`, y confirma que el `.csv` del banco
+      queda byte a byte igual (RF-1d). `pytest -q tests/test_candle_bank.py`: `22 passed in 0.66s`. SUITE:
+      `478 passed, 1 skipped, 97 warnings in 8.00s`; sin `.data/`.
 - [ ] T13. `candle_bank`, parte 3: verificación por superposición (1H, 30M, 15M, 5M y 1M; `OVERLAP_MIN_BARS`;
       tolerancia 1e-9). (RF-2d, N32)
       Hecho cuando: los tests prueban que la superposición igual verifica, que una vela distinta da
