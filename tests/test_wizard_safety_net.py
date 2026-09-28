@@ -20,7 +20,7 @@ import tools.database
 from tools.database import Base, UnifiedDepartment, LifecycleState
 from tools.database import EfficiencyAudit as EfficiencyAuditORM
 from tools.database import TacticalAudit as TacticalAuditORM
-from cli.main import flow_pending_audits
+from cli.main import flow_new_analysis, flow_pending_audits
 from cli.schemas.audit_efficiency import (
     StructuralBias, ResolutionType, StructuralResolution, FailureReason,
 )
@@ -28,6 +28,8 @@ from cli.schemas.audit_tactical import (
     HTFTrendContext, TrendContext, ConfirmationStatus, PrimaryEmotion,
     MarketState, SetupType, ExitType, FollowedPlan,
 )
+from cli.schemas.efficiency import Direction, Strength
+from cli.schemas.tactical import Hierarchy, Timeframe, FractalType, TacticalClassification
 
 
 @pytest.fixture
@@ -339,3 +341,96 @@ def test_tactical_filled_branch_prompt_order_and_persisted_values(
     assert row.closing_price == pytest.approx(1980.0)
     assert row.followed_plan == "Yes"
     assert row.lesson_learned == "Followed the plan."
+
+
+# --- flow_new_analysis (baseline §2.1, T7) ---------------------------------
+
+
+def _drive_new_analysis_wizard(feed_now_answer="no"):
+    """Secuencia completa de `inquirer.select` para llevar `flow_new_analysis()`
+    del Paso 1 (asset) al Paso 3 (Confirm & Save) y al prompt posterior de
+    "feed a Tactical Audit now?", en el mismo orden que pide `cli/main.py`
+    (mismo patrón que `tests/test_flow_new_analysis.py::_drive_wizard_to_review`,
+    copiado acá para que este archivo no dependa de otro módulo de test)."""
+    return [
+        "XAU/USD",                                     # prompt_asset
+        Direction.LONG, Strength.STRONG,               # p0_dir, p0_str
+        Direction.LONG, Strength.STRONG,               # p2_dir, p2_str
+        Direction.LONG, Strength.STRONG,               # p3_dir, p3_str
+        Direction.LONG, Strength.STRONG,               # p1_dir, p1_str
+        Timeframe.M15, FractalType.FIRST_ITERATION,    # p1_tf, p1_type
+        Direction.LONG, Strength.STRONG,               # p4_dir, p4_str
+        Hierarchy.PSYCH_LEVEL,                         # p4_hier
+        "1H",                                          # efficiency_timeframe
+        StructuralBias.BOS,                            # bias_a
+        TacticalClassification.CONTINUATION_PRESSURE,  # tact_class
+        "save",                                        # Review Action -> Confirm & Save
+        feed_now_answer,                                # post-save "feed a Tactical Audit now?" prompt
+    ]
+
+
+@patch("cli.main.flow_pending_audits")
+@patch("cli.main.handle_visual_lesson_assignment", return_value="nan")
+@patch("cli.main.get_mandatory_int", return_value=2)
+@patch("cli.main.get_mandatory_text", return_value="some thesis text")
+@patch("InquirerPy.inquirer.text")
+@patch("InquirerPy.inquirer.select")
+def test_new_analysis_saves_optional_prices_as_decimal(
+    mock_select, mock_text, mock_get_text, mock_get_int, mock_visual, mock_pending_audits, in_memory_db
+):
+    """Baseline §2.1: Mark Price, Edge Validation Price y Structural Invalidation
+    son texto libre opcional, y se guardan como Decimal cuando se completan."""
+    mock_select_prompt = MagicMock()
+    mock_select.return_value = mock_select_prompt
+    mock_select_prompt.execute.side_effect = _drive_new_analysis_wizard("no")
+
+    mock_text_prompt = MagicMock()
+    mock_text.return_value = mock_text_prompt
+    mock_text_prompt.execute.side_effect = ["1930.25", "1950.50", "1900.00"]  # mark_price, evp, si, en ese orden
+
+    with patch("builtins.input", return_value=""):
+        flow_new_analysis()
+
+    with Session(in_memory_db) as session:
+        record = session.scalars(select(UnifiedDepartment)).one()
+        assert float(record.mark_price) == pytest.approx(1930.25)
+        assert float(record.edge_validation_price) == pytest.approx(1950.50)
+        assert float(record.structural_invalidation) == pytest.approx(1900.00)
+        assert record.is_backdated is False
+
+
+@patch("cli.main.flow_pending_audits")
+@patch("cli.main.handle_visual_lesson_assignment", return_value="nan")
+@patch("cli.main.get_mandatory_int", return_value=2)
+@patch("cli.main.get_mandatory_text", return_value="some thesis text")
+@patch("InquirerPy.inquirer.text")
+@patch("InquirerPy.inquirer.select")
+def test_new_analysis_backdated_sets_created_at_and_is_backdated(
+    mock_select, mock_text, mock_get_text, mock_get_int, mock_visual, mock_pending_audits, in_memory_db
+):
+    """Baseline §2.1: en un retroactivo, `created_at`/`updated_at` se sobrescriben
+    con la hora tipeada, en `unified_department` **y** en `efficiency_audit`
+    (cli/main.py:2917-2925); no existe `backdated_timestamp` como columna, la
+    marca es `is_backdated`."""
+    mock_select_prompt = MagicMock()
+    mock_select.return_value = mock_select_prompt
+    mock_select_prompt.execute.side_effect = _drive_new_analysis_wizard("no")
+
+    mock_text_prompt = MagicMock()
+    mock_text.return_value = mock_text_prompt
+    mock_text_prompt.execute.return_value = ""  # precios en blanco: no es el foco de este test
+
+    backdated_ts = datetime.datetime(2026, 3, 1, 14, 0)
+
+    with patch("builtins.input", return_value=""):
+        flow_new_analysis(backdated_timestamp=backdated_ts)
+
+    with Session(in_memory_db) as session:
+        record = session.scalars(select(UnifiedDepartment)).one()
+        assert record.is_backdated is True
+        assert record.created_at == backdated_ts
+        assert record.updated_at == backdated_ts
+
+        eff_row = session.get(EfficiencyAuditORM, record.id)
+        assert eff_row.created_at == backdated_ts
+        assert eff_row.updated_at == backdated_ts

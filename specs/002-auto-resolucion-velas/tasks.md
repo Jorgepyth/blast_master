@@ -77,6 +77,7 @@
 - [x] T6. Test de red de seguridad de la rama llenada del Tactical: el orden desde `mid_trade_emotions` hasta
       `visual_lesson_path` (baseline §2.3), más `mae_adverse`, `mfe_favorable`, `could_hit_tp`, `exit_time` y
       `session` guardados. (INV-1)
+      Hecho cuando: `pytest -q tests/test_wizard_safety_net.py -k tactical` pasa y SUITE en verde.
       **Hecho 2026-09-28:** agregado a `tests/test_wizard_safety_net.py`. Corre
       `flow_pending_audits(preselected_choice="tac", force_new_tactical=True)` por el camino principal (gates 7/7,
       2 confirmaciones → Tier C, no bloquea) con `order_filled → "yes"`, y confirma: `get_mandatory_text` con
@@ -87,10 +88,18 @@
       `lesson_learned`. `session` sale auto-derivado de `entry_time` (nunca preguntado) — 10:30 GT + 6h = 16:30
       UTC cae en la banda de New York, verificado igual. `pytest -q tests/test_wizard_safety_net.py -k tactical`:
       `1 passed in 0.50s`. SUITE: `433 passed, 1 skipped, 97 warnings in 9.14s`; sin `.data/`.
-      Hecho cuando: `pytest -q tests/test_wizard_safety_net.py -k tactical` pasa y SUITE en verde.
-- [ ] T7. Test de red de seguridad de `flow_new_analysis`: los precios guardados, `created_at` igual a la hora
+- [x] T7. Test de red de seguridad de `flow_new_analysis`: los precios guardados, `created_at` igual a la hora
       tipeada en un retroactivo, e `is_backdated`. (INV-7)
       Hecho cuando: `pytest -q tests/test_wizard_safety_net.py -k new_analysis` pasa y SUITE en verde.
+      **Hecho 2026-09-28:** agregado a `tests/test_wizard_safety_net.py`, con un helper local
+      `_drive_new_analysis_wizard` (mismo patrón que `tests/test_flow_new_analysis.py`, copiado para no acoplar
+      archivos de test entre sí). Dos tests: (1) Mark Price, Edge Validation Price y Structural Invalidation
+      quedan como `Decimal` cuando se completan, en ese orden de prompt; (2) con `backdated_timestamp`,
+      `created_at`/`updated_at` quedan en la hora tipeada tanto en `unified_department` como en
+      `efficiency_audit` (baseline §2.1, `cli/main.py:2917-2925`), e `is_backdated=True`.
+      `pytest -q tests/test_wizard_safety_net.py -k new_analysis`: `2 passed in 0.94s`. SUITE:
+      `435 passed, 1 skipped, 97 warnings in 9.62s`; sin `.data/`. Cierra la Etapa 1 (red de seguridad de los
+      wizards, R10.1).
 
 ## Etapa 2 — Banco de velas y reloj
 
