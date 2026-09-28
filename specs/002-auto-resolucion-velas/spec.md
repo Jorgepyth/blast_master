@@ -4,7 +4,7 @@
 - **Fecha:** 2026-09-25.
 - **Base:** `158869b`.
 - **Fuentes, en orden de prioridad:**
-  1. las decisiones del usuario del 2026-09-25 en esta sesión (sección "Decisiones", N1–N41);
+  1. las decisiones del usuario del 2026-09-25 en esta sesión (sección "Decisiones", N1–N42);
   2. las reglas R14–R17 y los hallazgos H-A a H-C que el usuario dio el 2026-09-24;
   3. el prompt `docs/prompts/2026-09-24-auto-resolucion-velas.md` (v1.2): R1–R12, D1–D5, E1–E7;
   4. el baseline `specs/002-auto-resolucion-velas/baseline.md` (§ y H citados).
@@ -89,6 +89,7 @@ El sistema propone y el operador confirma (D4). Nada del modelo de trading cambi
 | N39 | El filtro por estación de horario (RF-15c) se aplica solo a 1H y a las TF menores, que son las que definen la hora del toque. 4H, 12H, 1D y 1W se importan completas, porque el desfase de 1 h es despreciable para EMA y ADX (`windows_export/export_p2_ohlc.py:31-39`) y el modelo D necesita 800 velas cerradas por TF | RF-15c, RF-12 |
 | N40 | El catch-up del P2 del modelo D (RF-12b) registra **solo análisis nuevos**: los que tienen `analysis_start_time` y no son retroactivos ni clones [2]. Los 118 históricos no entran al registro prospectivo (F6 K2, opción a) | RF-12b |
 | N41 | La migración aditiva de las DBs reales (columnas nuevas y `backfill_history`) pasa por las 3 puertas de R9 **antes** de correr cualquier comando del CLI nuevo en el checkout principal, porque `init_db` migra al abrir cada DB (F6 K1) | NFR-1 |
+| N42 | **Los modelos registrados salen de la configuración, no del código.** Amplía N38. `P2_LOG_MODELS` dice qué modelos del registro de `tools/p2_backtest.py` se registran y desde qué fecha cada uno. Hoy es solo D. Un modelo nuevo (por ejemplo H) se agrega a la lista con la fecha del día en que entra, y convive con D: los dos se registran sobre los mismos análisis, en líneas separadas. Cada modelo se registra **solo** en los análisis con `analysis_start_time` igual o posterior a su fecha de alta, para que un modelo diseñado mirando los datos no se evalúe sobre esos mismos datos (sesgo de selección, como F frente a D en la spec 001). La receta de un modelo de la lista no se modifica: un cambio es un modelo nuevo, con otro nombre. Cada línea guarda la receta completa y su huella, así que dos recetas distintas nunca se mezclan (decisión del usuario, 2026-09-28) | RF-12 a RF-12e |
 | N30 | Todo lo que el sistema muestra o guarda va en inglés, incluidos los códigos de motivo y las claves de configuración. Las specs, la documentación, los cuadernos y la conversación van en español (F3 [4][1]) | Todos |
 
 Definición usada en N13–N15:
@@ -403,22 +404,31 @@ desactivado, nada de este grupo corre y el export sigue siendo manual.
 - **RF-20f:** SI ya hay un export del mismo símbolo en curso, ENTONCES EL SISTEMA no lanzará otro (RF-1d). Esto incluye
   los exports automáticos.
 
-### Registro prospectivo del P2 del modelo D (N38)
+### Registro prospectivo del P2 sistemático (N38, N42)
 
 - **RF-12:** CUANDO el operador guarde un unified analysis nuevo (no retroactivo ni clon en modo [2]) y el banco
-  cubra su ancla, EL SISTEMA calculará el P2 del modelo D (`MODEL_D`, sin modificarlo) usando solo velas cerradas en
-  el ancla. Agregará una línea a `.data/p2_model_log.jsonl` con el `trade_id`, la cuenta, el ancla, el P2 del
-  operador (dirección, fuerza y score), el P2 del modelo (crudo y reescalado) y el detalle por TF (EMAs, ADX, DI y
+  cubra su ancla, EL SISTEMA calculará el P2 de cada modelo de `P2_LOG_MODELS` cuya fecha de alta sea igual o
+  anterior al `analysis_start_time` del análisis. Usará la receta del registro de modelos de `tools/p2_backtest.py`
+  sin modificarla (hoy, `MODEL_D`) y solo velas cerradas en el ancla. Agregará a `.data/p2_model_log.jsonl` **una
+  línea por modelo** con el `trade_id`, la cuenta, el ancla, el P2 del operador (dirección, fuerza y score), el modelo
+  (nombre, receta completa y huella), el P2 del modelo (crudo y reescalado) y el detalle por TF (EMAs, ADX, DI y
   peso). No lo mostrará en el wizard y no cambiará ningún campo ni decisión (D3).
-- **RF-12b:** CUANDO el banco de un símbolo se actualice (RF-1), EL SISTEMA registrará el P2 del modelo D de los
-  análisis **nuevos** de `REAL_ACCOUNTS` (con `analysis_start_time`, no retroactivos ni clones en modo [2]) que
-  todavía no lo tengan y cuya ancla ya esté cubierta (catch-up). Hay como máximo una línea por análisis. Los
-  análisis históricos, que no tienen `analysis_start_time`, nunca se registran (N40).
-- **RF-12c:** SI el modelo no se puede calcular, ENTONCES EL SISTEMA registrará la línea con el motivo, por ejemplo
-  `insufficient_history:1W` o `pending_candles`. Los análisis `pending_candles` se reintentan en el siguiente
-  catch-up.
-- **RF-12d:** CUANDO el usuario ejecute `p2-model --trade-id ID`, EL SISTEMA mostrará la línea registrada de ese
-  análisis, o la calculará a pedido si no existe.
+- **RF-12b:** CUANDO el banco de un símbolo se actualice (RF-1), EL SISTEMA registrará, para cada modelo de
+  `P2_LOG_MODELS`, los análisis **nuevos** de `REAL_ACCOUNTS` (con `analysis_start_time`, no retroactivos ni clones
+  en modo [2]) que cumplan tres condiciones: su `analysis_start_time` es igual o posterior a la fecha de alta de ese
+  modelo (N42), todavía no tienen línea de ese modelo y su ancla ya está cubierta (catch-up). Hay como máximo una línea
+  por análisis y modelo. Los análisis históricos, que no tienen `analysis_start_time`, nunca se registran (N40).
+- **RF-12c:** SI un modelo no se puede calcular, ENTONCES EL SISTEMA registrará su línea con el motivo, por ejemplo
+  `insufficient_history:1W` o `pending_candles`. Las líneas `pending_candles` se reintentan en el siguiente catch-up.
+- **RF-12d:** CUANDO el usuario ejecute `p2-model --trade-id ID [--model NAME]`, EL SISTEMA mostrará las líneas
+  registradas de ese análisis, una por modelo. Si falta la de un modelo, o si `--model` pide uno del registro que no
+  está en la lista, la calculará a pedido y la mostrará marcada como `not logged`, **sin escribirla**. Solo el
+  guardado (RF-12) y el catch-up (RF-12b) escriben el registro.
+- **RF-12e:** SI `P2_LOG_MODELS` nombra un modelo que no existe en el registro, o un modelo que usa una TF que el
+  banco no guarda (RF-15), ENTONCES EL SISTEMA no registrará ese modelo, mostrará un aviso de una línea
+  (`unknown_model:<NAME>` o `timeframe_not_in_bank:<TF>`) y seguirá registrando los demás. SI la receta actual de un
+  modelo de la lista no coincide con la huella de sus líneas ya registradas, ENTONCES EL SISTEMA dejará de registrarlo
+  y avisará `model_recipe_changed:<NAME>` (N42). Ninguno de estos casos bloquea el guardado (INV-2).
 
 ## Clases de error (motivos visibles)
 
@@ -467,6 +477,7 @@ Ninguna bloquea el guardado. Todas dejan el motivo visible.
 | `OVERLAP_MIN_BARS` | 10 velas coincidentes por TF (N32) |
 | `BROKER_DST_RULE` | Calendario de horario de verano del servidor del broker. Lo determina el spike; el candidato son las fechas de EE.UU. `[NO VERIFICADO]` (N34) |
 | `REAL_ACCOUNTS` | 000 `flight_account_001_xauusd.db`, 001 `flight_account_000_us500.db`, 002 `flight_account_002_btcusdtp.db`, 003 `flight_account_003_us100.db` (N24) |
+| `P2_LOG_MODELS` | `{"D": "2026-09-27"}`: nombre del modelo en el registro de `tools/p2_backtest.py` → fecha de alta. Para sumar un modelo nuevo se agrega una entrada con la fecha del día; nunca se cambia la fecha ni la receta de uno existente (N42) |
 
 ## Dependencias
 
@@ -502,6 +513,9 @@ Ninguna bloquea el guardado. Todas dejan el motivo visible.
 - Arreglar el bug de Choppy de `core/edge_analysis.py`.
 - Integrar un P2 sistemático en `calc_edge`, en el wizard o en cualquier decisión. Si los datos de
   `p2_model_log.jsonl` lo justifican, será una spec 003 (N38).
+- Diseñar o agregar modelos nuevos (como un modelo H). Esta spec solo deja lista `P2_LOG_MODELS` para sumarlos después
+  sin tocar el código del registro prospectivo (N42). Un modelo con indicadores que hoy no se calculan (por ejemplo
+  EMA 50 o RSI) necesita además extender `TFIndicatorSnapshot` (`tools/p2_backtest.py:237`).
 
 ## Criterios de finalización
 

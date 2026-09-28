@@ -15,12 +15,23 @@ verdict: APPROVED
   - **K2:** opción (a). El catch-up (RF-12b) solo registra análisis **nuevos**: con `analysis_start_time`, no
     retroactivos ni clones [2] (decisión N40). El "Hecho cuando" de T56 exige un test que lo verifique.
 - **Segunda pasada (2026-09-28):** sin fallos críticos. Veredicto `APPROVED`.
+- **Tercera pasada (2026-09-28), por un cambio aprobado por el usuario después de F6:** decisión **N42**. Los modelos
+  del registro prospectivo salen de `P2_LOG_MODELS` (nombre → fecha de alta) en lugar de `MODEL_D` fijo, con una
+  línea por análisis y modelo, y la receta con su huella en cada línea. Cambios:
+  - **spec:** RF-12, RF-12b, RF-12c y RF-12d reescritos; RF-12e nuevo (70 RF); `P2_LOG_MODELS` en la configuración;
+    una línea más en "Fuera de alcance";
+  - **plan:** §2.5, módulos, contrato de `p2-model`, decisión T23 y cobertura;
+  - **tareas:** T8, T55, T56 y la tabla de cobertura. No hay tareas nuevas: siguen siendo 64, consecutivas.
+
+  Se volvieron a correr C1, C2, C4 y la contradicción interna: los 70 RF y los 8 INV aparecen en `plan.md` y en
+  `tasks.md` (script que expande grupos). RF-12e depende de T8 (la constante) y de T55 (los chequeos), en ese orden.
+  N38 y N40 siguen valiendo: N42 los amplía de "modelo D" a "cada modelo de la lista". Veredicto: sigue `APPROVED`.
 
 ## Resultado de la segunda pasada
 
 | # | Comprobación | Resultado | Detalle |
 |---|---|---|---|
-| C1 | Cobertura RF → plan | OK | Los 69 RF y los 8 INV aparecen en `plan.md` (verificado con un script que expande grupos) |
+| C1 | Cobertura RF → plan | OK | Los 69 RF (70 desde la tercera pasada) y los 8 INV aparecen en `plan.md` (verificado con un script que expande grupos) |
 | C2 | Cobertura RF → tareas | OK | Los 77 identificadores tienen al menos una tarea. Hay 64 tareas, numeradas de forma consecutiva |
 | C3 | Tareas huérfanas | OK | T1 (punto de partida) y T57 (integración) son andamiaje declarado. T58 cita NFR-1 e INV-3 |
 | C4 | Orden de dependencia | OK | K1 está resuelto: T58 migra antes de que T59 y siguientes usen el CLI nuevo. Ver la observación O1 |

@@ -52,9 +52,10 @@
 - [ ] T8. `config/auto_resolution.py` con todas las constantes de la spec y los códigos de motivo; resolución de
       rutas desde `.env` (`CANDLE_BANK_DIR`, `MT5_INCOMING_DIR`, `ACCOUNTS_DATA_DIR`, `WINDOWS_PYTHON`,
       `EXPORTER_WIN_PATH`, `AUTO_EXPORT`, `BROKER_DST_RULE`), siempre como rutas absolutas; y `.env.template`
-      actualizado. (Configuración, RF-20, RF-15b)
-      Hecho cuando: un test verifica los valores (48 h, 0.5R, 1R, 20 min, 0.1%, 10 velas, 2160) y que las rutas sean
-      absolutas aunque se corra desde `tmp_path`. SUITE en verde.
+      actualizado. Incluye `P2_LOG_MODELS = {"D": "2026-09-27"}` (N42). (Configuración, RF-20, RF-15b, RF-12e)
+      Hecho cuando: un test verifica los valores (48 h, 0.5R, 1R, 20 min, 0.1%, 10 velas, 2160), que cada fecha de
+      `P2_LOG_MODELS` es una fecha ISO válida, y que las rutas sean absolutas aunque se corra desde `tmp_path`. SUITE
+      en verde.
 - [ ] T9. En `tools/p2_backtest.py`, agregar `5M` y `1M` a `TIMEFRAME_MINUTES`. (RF-15, RF-4f)
       Hecho cuando: `closed_bars` y `bar_containing` funcionan con un fixture de 5M y otro de 1M
       (test nuevo), y `tests/test_p2_*.py` sigue en verde. SUITE en verde.
@@ -252,20 +253,37 @@
 - [ ] T54. Disparos antes del reporte y del backfill, y al abrir el CLI (`start()`). (RF-20c, RF-20d)
       Hecho cuando: los tests con los disparos mockeados prueban que ocurren y que no bloquean. SUITE en verde.
 
-## Etapa 9 — Registro prospectivo del P2 del modelo D (N38)
+## Etapa 9 — Registro prospectivo del P2 sistemático (N38, N42)
 
-- [ ] T55. `tools/p2_model_feedback.py`: calcular el P2 del modelo D con velas cerradas en el ancla (`MODEL_D`, sin
-      modificarlo) y registrar una línea en `p2_model_log.jsonl`, con motivos (`insufficient_history:<TF>`,
-      `pending_candles`) y `supersedes` para reemplazar una línea pendiente. (RF-12, RF-12c)
-      Hecho cuando: los tests con fixture verifican la línea JSON (P2 del operador, del modelo y detalle por TF), que
-      no se escribe una segunda línea para el mismo análisis salvo `supersedes`, que los retroactivos y los clones [2]
-      no se registran, y que ninguna DB se modifica. SUITE en verde.
+- [ ] T55. `tools/p2_model_feedback.py`: para cada modelo de `P2_LOG_MODELS` (N42), calcular su P2 con velas
+      cerradas en el ancla (receta de `MODELS_BY_NAME`, sin modificarla) y registrar una línea por análisis y modelo en
+      `p2_model_log.jsonl`, con `model_spec`, `model_hash`, motivos (`insufficient_history:<TF>`, `pending_candles`) y
+      `supersedes` para reemplazar una línea pendiente. Incluye los chequeos de RF-12e. (RF-12, RF-12c, RF-12e)
+      Hecho cuando: los tests con fixture verifican:
+      - la línea JSON (P2 del operador, del modelo, receta, huella y detalle por TF), y que la huella de D es
+        `20315fe7bfe2`;
+      - que no se escribe una segunda línea para el mismo análisis y modelo salvo `supersedes`;
+      - que los retroactivos y los clones [2] no se registran, y que ninguna DB se modifica;
+      - **con dos modelos configurados** (D y un `H_TEST` con otras TF y pesos, agregado al registro solo dentro del
+        test): cada análisis recibe una línea por modelo, y `H_TEST` no se registra en análisis con
+        `analysis_start_time` anterior a su fecha de alta;
+      - que un nombre inexistente, una TF que el banco no guarda y una receta cambiada se saltean con su aviso
+        (`unknown_model`, `timeframe_not_in_bank`, `model_recipe_changed`) sin frenar el registro de D.
+
+      SUITE en verde.
 - [ ] T56. Hooks: registrar al guardar un análisis (si hay velas), catch-up en `candle_sync` después de cada fusión,
-      y el comando `p2-model --trade-id ID`. (RF-12, RF-12b, RF-12d)
-      Hecho cuando: los tests prueban que guardar con velas registra y sin velas no; que el catch-up registra los
-      pendientes una sola vez y **nunca** registra análisis sin `analysis_start_time`, retroactivos ni clones [2]
-      (N40); que `p2-model` muestra la línea o la calcula; y que el wizard no muestra nada del
-      modelo. SUITE en verde.
+      y el comando `p2-model --trade-id ID [--model NAME]`. (RF-12, RF-12b, RF-12d)
+      Hecho cuando: los tests prueban:
+      - que guardar con velas registra y sin velas no;
+      - que el catch-up registra los pendientes una sola vez por modelo y **nunca** registra análisis sin
+        `analysis_start_time`, retroactivos ni clones [2] (N40), ni análisis anteriores a la fecha de alta de cada
+        modelo (N42);
+      - que sumar `H_TEST` a `P2_LOG_MODELS` no cambia ni duplica las líneas de D ya registradas;
+      - que `p2-model` muestra una línea por modelo, y que calcula a pedido las que faltan (también con `--model`)
+        marcándolas `not logged`, sin escribir el registro;
+      - que el wizard no muestra nada del modelo.
+
+      SUITE en verde.
 
 ## Etapa 10 — Datos reales, demos y validación
 
@@ -346,6 +364,7 @@
 | RF-11e | T51, T63 |
 | RF-12, RF-12c | T55, T56 |
 | RF-12b, RF-12d | T56 |
+| RF-12e | T8, T55 |
 | RF-13, RF-13b, RF-13c | T37 |
 | RF-13d, RF-13e | T35, T38 |
 | RF-14, RF-14b | T35, T36, T43 |
@@ -362,4 +381,4 @@
 | RF-20c, RF-20d | T54 |
 | RF-21 | T29, T32, T34 |
 
-Los 69 RF y los 8 INV tienen al menos una tarea.
+Los 70 RF y los 8 INV tienen al menos una tarea.

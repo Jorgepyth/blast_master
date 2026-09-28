@@ -29,7 +29,7 @@ Los módulos nuevos de cálculo viven en `core/`: son funciones puras, sin DB y 
 | `tests/conftest.py` (nuevo) | Aislamiento de la suite. Un fixture autouse lleva cada test a su `tmp_path`, y un audit hook hace fallar el test si abre algo bajo `<repo>/.data/` o `/mnt/c/` | RF-16, INV-5 |
 | `tests/test_cli_report_command.py` (ajuste) | Fijar `engine_default` en el test de `:71-75` | RF-16b |
 | `tests/test_wizard_safety_net.py` (nuevo) | Red de seguridad escrita **antes** de tocar los wizards: fija el orden de los prompts y los valores guardados del Efficiency y de la rama llenada del Tactical, en verde contra el código actual | INV-1, R10.1 |
-| `config/auto_resolution.py` (nuevo) | Constantes versionadas: `REAL_ACCOUNTS`, `MT5_SYMBOL_MAP`, `MAX_HORIZON`, `ANCHOR_FALLBACK_MIN`, `MARK_PRICE_TOLERANCE`, `REVERT_H`, `EXPANSION_H`, `EXPANSION_R`, `SWEEP_R`, `SWEEP_H`, `OVERLAP_MIN_BARS`, `S4_WINDOW_H`, y los códigos de motivo como constantes | Configuración de la spec |
+| `config/auto_resolution.py` (nuevo) | Constantes versionadas: `REAL_ACCOUNTS`, `MT5_SYMBOL_MAP`, `MAX_HORIZON`, `ANCHOR_FALLBACK_MIN`, `MARK_PRICE_TOLERANCE`, `REVERT_H`, `EXPANSION_H`, `EXPANSION_R`, `SWEEP_R`, `SWEEP_H`, `OVERLAP_MIN_BARS`, `S4_WINDOW_H`, `P2_LOG_MODELS`, y los códigos de motivo como constantes | Configuración de la spec |
 | `.env.template` (ajuste) | Rutas propias de la máquina: `CANDLE_BANK_DIR`, `MT5_INCOMING_DIR`, `WINDOWS_PYTHON`, `EXPORTER_WIN_PATH`, `AUTO_EXPORT`, `BROKER_DST_RULE` | RF-20, RF-15b |
 | `windows_export/export_p2_ohlc.py` (ajuste) | Agregar 5M y 1M. Convertir cada vela con el desfase de su fecha según `--dst-rule`. Escribir en un directorio nuevo por corrida y de forma atómica, archivo por archivo | RF-15, RF-15b |
 | `tools/p2_backtest.py` (solo agregados) | `TIMEFRAME_MINUTES` suma `5M` y `1M`. La evaluación de `calibrate_clock_offset` se extrae a `evaluate_clock_entries()`, sin cambiar su resultado | RF-2, RF-2b, RF-4f |
@@ -45,7 +45,7 @@ Los módulos nuevos de cálculo viven en `core/`: son funciones puras, sin DB y 
 | `tools/database.py` (solo agregados) | Columnas nuevas, tabla `backfill_history` y el shim de `init_db` | RF-13d, RF-13e, RF-14, RF-14b, RF-18, NFR-1 |
 | `cli/schemas/audit_efficiency.py` (ajuste) | `resolution_time` opcional; campos nuevos `audit_registration_time` y `resolution_time_source` | RF-7g, RF-14, RF-14b |
 | `cli/main.py` (ajuste) | Horas en `flow_new_analysis`, aviso del Mark Price, disparos del export, defaults `(auto)` en los wizards, prompt "Resolution Time", subcomandos `resolution-report`, `backfill`, `candles` y `p2-model` | RF-3, RF-7 a RF-7g, RF-9, RF-10, RF-13 a RF-13e, RF-14, RF-20 a RF-20d, RF-12 |
-| `tools/p2_model_feedback.py` (nuevo) | P2 del modelo D sobre velas cerradas en el ancla, con registro prospectivo en `.data/p2_model_log.jsonl` (una línea por análisis). Lo usan el hook de guardado, el catch-up de `candle_sync` y el comando `p2-model` | RF-12, RF-12b, RF-12c, RF-12d |
+| `tools/p2_model_feedback.py` (nuevo) | P2 de cada modelo de `P2_LOG_MODELS` (hoy solo D) sobre velas cerradas en el ancla, con registro prospectivo en `.data/p2_model_log.jsonl` (una línea por análisis y modelo) y los chequeos de RF-12e. Lo usan el hook de guardado, el catch-up de `candle_sync` y el comando `p2-model` | RF-12 a RF-12e |
 | `docs/criterios-de-acierto.md` (ya existe, `6162742`) | La definición en palabras de S1, S4 y Overlap | RF-21 |
 
 ---
@@ -118,24 +118,47 @@ test lo verifica (RF-18).
 - Los CSV actuales `MT5Exports/{SYMBOL}/{TF}.csv` **no se tocan** (INV-6). El cuaderno y `tools/edge_evaluation.py`
   los siguen leyendo.
 
-### 2.5 Registro prospectivo del P2 del modelo D (RF-12 a RF-12d, N38)
+### 2.5 Registro prospectivo del P2 sistemático (RF-12 a RF-12e, N38, N42)
 
 - **Ubicación:** `${ACCOUNTS_DATA_DIR}/p2_model_log.jsonl` (por defecto `.data/p2_model_log.jsonl`). Es un solo
-  archivo, con una línea JSON por análisis, y solo se le agregan líneas.
+  archivo, con **una línea JSON por análisis y modelo**, y solo se le agregan líneas.
+- **Qué modelos:** los de `P2_LOG_MODELS` en `config/auto_resolution.py` (nombre → fecha de alta; hoy
+  `{"D": "2026-09-27"}`). La receta de cada uno se toma de `MODELS_BY_NAME` (`tools/p2_backtest.py:217`), sin copiarla.
+  Un modelo entra en un análisis solo si `analysis_start_time >= fecha de alta 00:00` (hora GT).
+- **Huella de la receta (`model_hash`):** los primeros 12 caracteres del SHA-256 del JSON canónico (claves ordenadas)
+  de `timeframes`, `weights`, `ema_chain` y `use_di`, con `json.dumps(..., sort_keys=True, separators=(",", ":"))`.
+  Para D da `20315fe7bfe2`. `label` y `description` no entran, porque son solo texto. La
+  huella cubre la receta, no las funciones compartidas de cálculo (`compute_score_p2_sistematico`,
+  `strength_from_adx`), que ya cuidan `tests/test_p2_models.py` y esta spec no cambia.
+- **Chequeo de cada modelo de la lista, antes de registrar (RF-12e):**
+  1. el nombre existe en `MODELS_BY_NAME` → si no, `unknown_model:<NAME>`;
+  2. todas sus TF están en las TF del banco (§2.3) → si no, `timeframe_not_in_bank:<TF>`;
+  3. su `model_hash` actual coincide con el de sus líneas ya registradas → si no, `model_recipe_changed:<NAME>`.
+
+  El modelo que falla se saltea con un aviso de una línea; los demás se registran igual.
 - **Ejemplo de línea:**
 
 ```json
 {"trade_id": "a1b2c3d4-...", "account": "000", "asset": "XAUUSDT.P", "symbol": "XAUUSD",
  "anchor": "2026-10-02T09:14:03", "logged_at": "2026-10-02T11:05:40",
  "operator_p2": {"direction": "Long", "strength": "Mid", "score": 1},
- "model": "D", "p2_raw": 0.41, "p2_rescaled": 1, "status": "ok",
- "by_tf": {"1W": {"bias": 1, "adx": 24.1, "plus_di": 27.0, "minus_di": 18.2, "weight": 0.25}}}
+ "model": "D", "model_since": "2026-09-27", "model_hash": "20315fe7bfe2",
+ "model_spec": {"timeframes": ["1W", "1D", "12H", "4H", "1H", "30M"],
+                "weights": {"1W": 0.08, "1D": 0.12, "12H": 0.17, "4H": 0.22, "1H": 0.26, "30M": 0.15},
+                "ema_chain": [20, 100, 200], "use_di": true},
+ "p2_raw": 0.41, "p2_rescaled": 1, "status": "ok",
+ "by_tf": {"1W": {"bias": 1, "ema20": 2431.5, "ema100": 2388.2, "ema200": 2310.9,
+                  "adx": 24.1, "plus_di": 27.0, "minus_di": 18.2, "weight": 0.08}}}
 ```
 
 - Si no se puede calcular, `status` lleva el motivo (`insufficient_history:1W`, `pending_candles`) y `p2_raw` es
   `null`. Una línea `pending_candles` se **reemplaza** por la definitiva en el catch-up. Para que el archivo siga
   siendo de solo agregar, la línea nueva lleva `supersedes: <n.º de línea>`, y el lector se queda con la última
-  línea de cada `trade_id`.
+  línea de cada par (`trade_id`, `model`).
+- **Cómo se suma un modelo H más adelante** (fuera de esta spec): se define `MODEL_H` en `tools/p2_backtest.py` con
+  su test, se agrega a `MODELS`, y se suma `"H": "<fecha del día>"` a `P2_LOG_MODELS`. No hace falta tocar
+  `tools/p2_model_feedback.py`. Si H usa indicadores que hoy no se calculan (EMA 50, RSI, ATR), antes hay que
+  extender `TFIndicatorSnapshot` (`tools/p2_backtest.py:237`).
 
 ---
 
@@ -233,7 +256,8 @@ Se usa R = |precio de partida − SI|.
    - Si no → `clock_unverified`.
 5. **Estación de horario (RF-15c, N39):** mientras `BROKER_DST_RULE` no esté verificado, en 1H y en las TF menores
    solo se fusionan las velas de la misma estación que el momento del export. 4H, 12H, 1D y 1W se fusionan
-   completas, porque el desfase de 1 h es despreciable para EMA y ADX, y el modelo D necesita 800 velas.
+   completas, porque el desfase de 1 h es despreciable para EMA y ADX, y los modelos de `P2_LOG_MODELS` (hoy D)
+   necesitan 800 velas.
 6. **Fusión:** es una unión por `time`. Si un `time` ya existe, se conserva la vela del banco. Se escribe a un archivo
    temporal y después `os.replace`, archivo por archivo.
 7. **Chequeo final:** los `time` del banco nuevo contienen todos los del banco viejo, y sus velas son idénticas. Si
@@ -293,7 +317,7 @@ cambio se inserta en `backfill_history`.
 | `python cli/main.py candles export --symbol XAUUSD [--wait N]` | Export manual con fusión y verificación | 0 si fusiona. 2 si no se verifica. 6 con `export_failed` |
 | `python cli/main.py candles status` | Tabla con el estado del banco por símbolo | 0 |
 | `python tools/candle_sync.py --symbol S [--wait-seconds N]` | El proceso que usan los disparos automáticos. Escribe `status.json` | Igual que `candles export` |
-| `python cli/main.py p2-model --trade-id ID` | Muestra la línea registrada del análisis, o la calcula a pedido si no existe (RF-12d) | 0. 1 si no existe el análisis |
+| `python cli/main.py p2-model --trade-id ID [--model NAME]` | Muestra las líneas registradas del análisis, una por modelo. Las que faltan (o `--model` con un modelo del registro fuera de la lista) se calculan a pedido y se muestran como `not logged`, sin escribirlas (RF-12d) | 0. 1 si no existe el análisis o el modelo |
 | Exportador de Windows: nuevos `--timeframes`, `--dst-rule {us,eu,none}` y `--out-dir` único | CSV en `_incoming/{SYMBOL}/{run_id}/` | Igual que hoy (`export_p2_ohlc.py:325-327`) |
 | **Wizard de Efficiency** | Los prompts de siempre, con el valor propuesto como default y la marca `(auto)`. Prompt nuevo al final: `Resolution Time (YYYY-MM-DD HH:MM) (auto: 2026-08-21 09:15, ±1 min) >`. Enter acepta, vacío deja el campo vacío | — |
 | **Wizard de Tactical** | Defaults `(auto)` en `Could hit TP?`, `MAE` y `MFE`. Si no hay propuesta, una línea con el motivo | — |
@@ -325,8 +349,9 @@ cambio se inserta en `backfill_history`.
 | T18 | Las propuestas del Tactical se calculan cuando se llega a cada prompt, con los valores ya cargados en `session.state` | Precalcularlas al abrir el wizard | `entry_time`, `exit_time` y los precios se cargan en el mismo wizard, antes de esos prompts |
 | T19 | El banco **no** entra en `tools/backup.py` en esta spec. **Decidido por el usuario el 2026-09-27**: no es crítico por ahora, y no quiere pagar almacenamiento extra en Backblaze. Queda como pendiente en `CLAUDE.md` (sección Backup 3-2-1) | Agregarlo al backup | El riesgo (MT5 guarda poco historial de 1M) queda anotado para analizarlo en otra implementación |
 | T20 | En la superposición, las velas se comparan con una tolerancia relativa de 1e-9 | Compararlas como texto exacto | El formato de los números en el CSV puede cambiar entre versiones de pandas sin que cambie el precio |
-| T21 | El P2 del modelo D se registra en un JSONL aparte, al que solo se le agregan líneas | Una columna en `unified_department` | D3 pide explícitamente que no vaya a la DB, y así el registro no se mezcla con los datos del operador ni con el edge |
+| T21 | El P2 sistemático se registra en un JSONL aparte, al que solo se le agregan líneas | Una columna en `unified_department` | D3 pide explícitamente que no vaya a la DB, y así el registro no se mezcla con los datos del operador ni con el edge |
 | T22 | El registro ocurre al guardar, si hay velas, y además en un catch-up después de cada fusión del banco | Solo al guardar | Como el export es manual o va en segundo plano, al guardar casi nunca hay velas del momento. Sin catch-up, casi ningún análisis quedaría registrado |
+| T23 | Los modelos registrados salen de `P2_LOG_MODELS` (nombre → fecha de alta), con una línea por análisis y modelo, la receta completa y su huella en cada línea (N42, decidido por el usuario el 2026-09-28) | Dejar `MODEL_D` fijo en `tools/p2_model_feedback.py` | Cambiar o sumar un modelo (por ejemplo H) sería editar código y spec. Con la lista, D y H se registran en paralelo sobre los mismos análisis; la fecha de alta evita evaluar H sobre los datos con los que se diseñó, y la huella impide mezclar dos recetas con el mismo nombre |
 
 **Dependencias nuevas:** ninguna (constitución, principio 1). Se usan pandas, SQLAlchemy, Rich, InquirerPy, Click y la
 biblioteca estándar, que ya están en `requirements.txt` o en el entorno.
@@ -409,8 +434,9 @@ biblioteca estándar, que ya están en `requirements.txt` o en el entorno.
 6. **Propuestas en el Tactical Audit.**
 7. **Backfill:** plan, vista, historial, puertas y aplicación tras R9.
 8. **Export automático** (RF-20), solo si el spike funcionó.
-9. **Registro prospectivo del P2 del modelo D** (RF-12 a RF-12d): cálculo y registro, hook al guardar, catch-up
-   después de cada fusión (solo análisis nuevos, N40), y el comando `p2-model`.
+9. **Registro prospectivo del P2 sistemático** (RF-12 a RF-12e): cálculo y registro por cada modelo de
+   `P2_LOG_MODELS` (N42), hook al guardar, catch-up después de cada fusión (solo análisis nuevos, N40, y desde la
+   fecha de alta de cada modelo), y el comando `p2-model`.
 10. **Datos reales:** integrar la rama; **migración con las 3 puertas antes de usar el CLI nuevo** (N41); banco
     real; reporte; demos; backfill; y validación.
 
@@ -439,7 +465,7 @@ biblioteca estándar, que ya están en `requirements.txt` o en el entorno.
 | RF-9, 9b, 9c, 9d | §3.6, T18 |
 | RF-10, 10b, 10c, 10d | §3.6; RF-10c: no se toca `session` |
 | RF-11, 11b, 11c, 11d, 11e | `tools/auto_backfill.py` §3.11, T13, T14; `cli/backfill_view.py` |
-| RF-12, 12b, 12c, 12d | `tools/p2_model_feedback.py` §2.5; hook en `cli/main.py`; catch-up en `tools/candle_sync.py`; T21, T22 |
+| RF-12, 12b, 12c, 12d, 12e | `tools/p2_model_feedback.py` §2.5; hook en `cli/main.py`; catch-up en `tools/candle_sync.py`; `P2_LOG_MODELS` en `config/auto_resolution.py`; T21, T22, T23 |
 | RF-13, 13b, 13c, 13d, 13e | `cli/main.py` (`flow_new_analysis` y el clon); `tools/database.py` |
 | RF-14, 14b | `cli/main.py` (Efficiency), schema y DB |
 | RF-15, 15b, 15c | Exportador §3.9; `candle_bank` §3.8 paso 5; T17 |
@@ -450,4 +476,4 @@ biblioteca estándar, que ya están en `requirements.txt` o en el entorno.
 | RF-20, 20b, 20c, 20d, 20e, 20f | `tools/candle_sync.py`, T8; disparos en `cli/main.py` |
 | RF-21 | `core/outcome_metrics.py` y `docs/criterios-de-acierto.md` |
 
-Los 69 RF y los 8 INV aparecen al menos una vez en esta tabla.
+Los 70 RF y los 8 INV aparecen al menos una vez en esta tabla.
