@@ -4,11 +4,12 @@ tools/candle_bank.py — Banco de velas persistente (spec 002, RF-1 a RF-2d).
 Parte 1 (T11): mecánica pura de lectura/escritura atómica de un `{TF}.csv` y
 la fusión por `time`, sin borrar ni alterar velas existentes (RF-1, RF-1b).
 Parte 2 (T12): candado por símbolo. Parte 3 (T13): verificación del reloj por
-superposición. Nada acá toca todavía la verificación por referencias (T14),
-el filtro de estación de horario (T15) ni `status.json` (T15) -- esas partes
-se agregan en tareas siguientes, sobre estas mismas funciones. Tampoco decide
-todavía SI fusionar según el resultado de la verificación -- eso lo arma la
-tarea que junte las partes 3 y 4 (T15).
+superposición. Parte 4 (T14): verificación por referencias, para cuando no
+hubo superposición (típicamente, el primer export de un símbolo). Nada acá
+toca todavía el filtro de estación de horario (T15) ni `status.json` (T15) --
+esas partes se agregan en tareas siguientes. Tampoco decide todavía SI
+fusionar según el resultado de la verificación -- eso lo arma la tarea que
+junte las partes 3 y 4 (T15).
 
 Formato del CSV: idéntico al que ya lee `tools.p2_backtest.CsvOHLCProvider`
 (`time,open,high,low,close`, `time` = hora de apertura en GT naive), ordenado
@@ -21,12 +22,23 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
+from sqlalchemy import select
 
-from config.auto_resolution import OVERLAP_MIN_BARS
-from tools.p2_backtest import REQUIRED_CSV_COLUMNS
+from config.auto_resolution import MT5_SYMBOL_MAP, OVERLAP_MIN_BARS, REAL_ACCOUNTS
+from tools.database import TacticalAudit, UnifiedDepartment
+from tools.p2_backtest import (
+    CLOCK_MIN_ENTRIES,
+    CLOCK_MISALIGNMENT_MARGIN,
+    CLOCK_TIMEFRAME_PREFERENCE,
+    CsvOHLCProvider,
+    REQUIRED_CSV_COLUMNS,
+    count_entries_in_range,
+    evaluate_clock_entries,
+    open_readonly_session,
+)
 
 # Columnas del CSV, en el orden en que se escriben (mismo orden que ya
 # producen los exports existentes -- no es un requisito de CsvOHLCProvider,
@@ -297,4 +309,131 @@ def verify_overlap(
         verified_timeframe=verified_timeframe if verified else None,
         mismatched_timeframe=mismatched_timeframe,
         overlap_counts=overlap_counts,
+    )
+
+
+# --------------------------------------------------------------------------
+# Verificación del reloj por referencias (T14, RF-2, RF-2b, N29)
+# --------------------------------------------------------------------------
+
+@dataclass
+class ReferenceVerification:
+    """
+    Resultado de verificar el reloj de un export por referencias (fills +
+    Mark Price), para cuando `verify_overlap()` no alcanzó a decidir (típico
+    del primer export de un símbolo, sin nada todavía en el banco).
+
+    `aligned` sigue la misma semántica que `ClockCalibration.aligned`
+    (`tools.p2_backtest`): `None` cuando no hay TF de referencia disponible en
+    el export entrante, no cuando faltan referencias en el rango -- ese caso
+    ya lo cubre `verified=False` con `n_in_range < min_references`.
+    """
+    verified: bool
+    n_in_range: int
+    aligned: Optional[bool]
+    best_offset: Optional[int]
+    timeframe: Optional[str]
+    rate_by_offset: Dict[int, float] = field(default_factory=dict)
+
+
+def gather_reference_entries(
+    mt5_symbol: str,
+    accounts_data_dir: str,
+    real_accounts: Optional[Dict[str, str]] = None,
+    symbol_map: Optional[Dict[str, str]] = None,
+    include_mark_price: bool = True,
+) -> List[Tuple[datetime, float]]:
+    """
+    RF-2b: junta los fills (`entry_time`, `entry_price`, `order_filled=True`)
+    y los Mark Price no retroactivos (`created_at`, `mark_price`) de las
+    cuentas de `real_accounts` (default `REAL_ACCOUNTS`) cuyo `asset` mapea a
+    `mt5_symbol` según `symbol_map` (default `MT5_SYMBOL_MAP`), leídas en
+    `mode=ro` (`tools.p2_backtest.open_readonly_session` -- nunca migra la DB
+    real). Una cuenta cuyo archivo no existe se saltea sin error. Mismo
+    formato `(timestamp, precio)` que ya esperan `evaluate_clock_entries()` y
+    `count_entries_in_range()` (T10).
+    """
+    real_accounts = REAL_ACCOUNTS if real_accounts is None else real_accounts
+    symbol_map = MT5_SYMBOL_MAP if symbol_map is None else symbol_map
+    matching_tickers = [ticker for ticker, sym in symbol_map.items() if sym == mt5_symbol]
+    if not matching_tickers:
+        return []
+
+    entries: List[Tuple[datetime, float]] = []
+    for db_filename in real_accounts.values():
+        db_path = os.path.join(accounts_data_dir, db_filename)
+        if not os.path.exists(db_path):
+            continue
+        session = open_readonly_session(db_path)
+        try:
+            entries += list(session.execute(
+                select(TacticalAudit.entry_time, TacticalAudit.entry_price)
+                .join(UnifiedDepartment, TacticalAudit.trade_id == UnifiedDepartment.id)
+                .where(
+                    TacticalAudit.order_filled == True,  # noqa: E712
+                    TacticalAudit.entry_time.isnot(None),
+                    TacticalAudit.entry_price > 0,
+                    UnifiedDepartment.asset.in_(matching_tickers),
+                )
+            ).all())
+            if include_mark_price:
+                entries += list(session.execute(
+                    select(UnifiedDepartment.created_at, UnifiedDepartment.mark_price)
+                    .where(
+                        UnifiedDepartment.mark_price > 0,
+                        UnifiedDepartment.is_backdated.isnot(True),
+                        UnifiedDepartment.asset.in_(matching_tickers),
+                    )
+                ).all())
+        finally:
+            session.close()
+    return entries
+
+
+def verify_by_references(
+    mt5_symbol: str,
+    incoming_dir: str,
+    export_start: datetime,
+    export_end: datetime,
+    accounts_data_dir: str,
+    real_accounts: Optional[Dict[str, str]] = None,
+    symbol_map: Optional[Dict[str, str]] = None,
+    min_references: int = CLOCK_MIN_ENTRIES,
+    offsets: Sequence[int] = range(-6, 7),
+) -> ReferenceVerification:
+    """
+    RF-2, RF-2b, N29: cuando `verify_overlap()` no verificó ni desalineó (sin
+    superposición todavía), junta las referencias del símbolo
+    (`gather_reference_entries`) y verifica el reloj del export entrante en
+    `incoming_dir`.
+
+    Verificado (`verified=True`) solo si al menos `min_references` referencias
+    caen dentro de `[export_start, export_end]` **y** `evaluate_clock_entries()`
+    da alineado -- misma regla de decisión de `aligned` que
+    `calibrate_clock_offset` (offset 0 óptimo, o dentro de
+    `CLOCK_MISALIGNMENT_MARGIN` del mejor).
+    """
+    entries = gather_reference_entries(mt5_symbol, accounts_data_dir, real_accounts, symbol_map)
+    n_in_range = count_entries_in_range(entries, export_start, export_end)
+
+    provider = CsvOHLCProvider(incoming_dir)
+    tf = next((t for t in CLOCK_TIMEFRAME_PREFERENCE if provider.has_timeframe(t)), None)
+
+    if n_in_range < min_references or tf is None:
+        return ReferenceVerification(
+            verified=False, n_in_range=n_in_range, aligned=None,
+            best_offset=None, timeframe=tf, rate_by_offset={},
+        )
+
+    rates = evaluate_clock_entries(entries, provider, tf, offsets)
+    best = max(rates, key=lambda o: (rates[o], -abs(o)))
+    aligned = best == 0 or rates.get(0, 0.0) >= rates[best] - CLOCK_MISALIGNMENT_MARGIN
+
+    return ReferenceVerification(
+        verified=aligned,
+        n_in_range=n_in_range,
+        aligned=aligned,
+        best_offset=best,
+        timeframe=tf,
+        rate_by_offset=rates,
     )

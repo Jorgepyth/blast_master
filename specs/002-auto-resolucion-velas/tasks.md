@@ -205,11 +205,27 @@
       `verify_overlap` nunca escribe el banco (byte a byte igual antes/después, aunque el resultado sea
       `clock_misaligned`). `pytest -q tests/test_candle_bank.py`: `31 passed in 1.35s`. SUITE:
       `487 passed, 1 skipped, 97 warnings in 8.79s`; sin `.data/`.
-- [ ] T14. `candle_bank`, parte 4: verificación por referencias. Junta fills y Mark Price no retroactivos de las
+- [x] T14. `candle_bank`, parte 4: verificación por referencias. Junta fills y Mark Price no retroactivos de las
       cuentas de `REAL_ACCOUNTS` que mapean al símbolo, con `mode=ro`, exige 10 dentro del rango y
       `evaluate_clock_entries` alineado. (RF-2, RF-2b, N29)
       Hecho cuando: los tests, con DBs de fixture en `tmp_path`, cubren 12 referencias adentro (verifica), 9 adentro
       (`clock_unverified`) y un reloj corrido +3h (`clock_misaligned`). SUITE en verde.
+      **Hecho 2026-09-28:** `gather_reference_entries()` (RF-2b) junta fills y Mark Price no retroactivos de las
+      cuentas de `REAL_ACCOUNTS` cuyo `asset` mapea al símbolo MT5 pedido (vía `MT5_SYMBOL_MAP`), leídas con
+      `tools.p2_backtest.open_readonly_session` (`mode=ro`, nunca migra la DB real) — una cuenta cuyo archivo no
+      existe se saltea. `verify_by_references()` (RF-2, N29) cuenta cuántas caen en `[export_start, export_end]`
+      con `count_entries_in_range` (T10); si son menos que `min_references` (default `CLOCK_MIN_ENTRIES` de
+      `tools/p2_backtest.py`, mismo "10" que la regla de N29 — no se duplicó como constante nueva), corta ahí con
+      `aligned=None`, sin evaluar el reloj. Si alcanzan, corre `evaluate_clock_entries()` (T10) sobre el CSV
+      entrante y aplica la MISMA regla de `aligned` que `calibrate_clock_offset` (offset 0 óptimo, o dentro de
+      `CLOCK_MISALIGNMENT_MARGIN` del mejor).
+      `tests/test_candle_bank.py` +7 tests: `gather_reference_entries` filtra por `asset` y agrega varias
+      cuentas, incluye Mark Price y excluye retroactivos, y saltea un archivo faltante sin error; y los 3
+      escenarios del "hecho cuando" — 12 referencias alineadas verifica (`best_offset=0`), 9 referencias no
+      alcanza (`aligned=None`, sin evaluar), y un CSV corrido +3h dentro del rango desalinea (`aligned=False`,
+      `best_offset=3`) — más un caso sin ninguna TF de `CLOCK_TIMEFRAME_PREFERENCE` en el export entrante.
+      `pytest -q tests/test_candle_bank.py`: `38 passed in 4.79s`. SUITE: `494 passed, 1 skipped, 97 warnings in
+      18.64s`; sin `.data/`.
 - [ ] T15. `candle_bank`, parte 5: filtro por estación de horario (RF-15c), `status.json`, y el banco sin cambios
       ante cualquier fallo (RF-1c). (RF-1c, RF-15c)
       Hecho cuando: los tests prueban que, con la regla sin verificar, en 1H y en las TF menores solo entran las velas

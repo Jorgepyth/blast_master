@@ -13,18 +13,24 @@ from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from tools.candle_bank import (
     CandleBankLockedError,
     OVERLAP_TIMEFRAMES,
     acquire_bank_lock,
     bank_csv_path,
+    gather_reference_entries,
     merge_candle_frames,
     merge_timeframe_into_bank,
     read_candle_csv,
+    verify_by_references,
     verify_overlap,
     write_candle_csv_atomic,
 )
+from tools.database import Base, UnifiedDepartment
+from tools.database import TacticalAudit as TacticalAuditORM
 
 DAY = datetime(2026, 9, 10)
 
@@ -435,3 +441,152 @@ def test_verify_overlap_is_read_only_never_writes_the_bank(tmp_path):
     verify_overlap(str(bank_dir), str(incoming_dir))
 
     assert (bank_dir / "1H.csv").read_bytes() == before
+
+
+# --- verify_by_references / gather_reference_entries (T14, RF-2, RF-2b, N29) --
+
+T0 = datetime(2026, 6, 1, 0, 0)
+
+
+def _make_account_db(path, fills=(), mark_prices=(), asset="XAUUSDT.P"):
+    """
+    DB de cuenta mínima, en un archivo real (no :memory:, porque
+    open_readonly_session necesita un path). `fills`: lista de
+    (entry_time, entry_price). `mark_prices`: lista de (created_at, mark_price).
+    """
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    with Session() as session:
+        campos = dict(
+            state="READY_FOR_NOTION", asset=asset, market_bias="Bullish", calc_edge=0.5,
+            p4_hierarchy="x", p1_timeframe="15M", p1_type="x", nodes_l1=1, nodes_l2=1,
+            tactical_classification="x", long_prob=0.5, short_prob=0.5, no_trade_prob=0.0,
+        )
+        for i, (t, price) in enumerate(fills):
+            tid = f"fill-{i}"
+            session.add(UnifiedDepartment(id=tid, **campos))
+            session.add(TacticalAuditORM(trade_id=tid, entry_time=t, entry_price=price, order_filled=True))
+        for i, (t, price) in enumerate(mark_prices):
+            tid = f"mp-{i}"
+            session.add(UnifiedDepartment(id=tid, created_at=t, mark_price=price, is_backdated=False, **campos))
+        session.commit()
+    engine.dispose()
+
+
+def _write_reference_15m_csv(dir_path, lag_hours=0, start=T0, n_bars=200):
+    """Mismo patrón que tests/test_p2_clock.py::_write_15m_csv: precio único
+    por vela, así que un fill solo cae dentro de UNA."""
+    rows = []
+    for i in range(n_bars):
+        real = start + timedelta(minutes=15 * i)
+        rows.append({"time": (real + timedelta(hours=lag_hours)).strftime("%Y-%m-%d %H:%M:%S"),
+                     "open": 1000 + i, "high": 1000 + i + 0.9, "low": 1000 + i, "close": 1000 + i + 0.5})
+    os.makedirs(dir_path, exist_ok=True)
+    pd.DataFrame(rows).to_csv(os.path.join(dir_path, "15M.csv"), index=False)
+
+
+def _reference_fills(n, start=T0):
+    """Fills cuyo precio es el de la vela real que contiene su entry_time."""
+    result = []
+    for i in range(n):
+        bar = 10 + i * 7
+        t = start + timedelta(minutes=15 * bar + 5)
+        result.append((t, 1000 + bar + 0.4))
+    return result
+
+
+def test_gather_reference_entries_filters_by_asset_and_aggregates_accounts(tmp_path):
+    _make_account_db(tmp_path / "xau.db", fills=_reference_fills(3), asset="XAUUSDT.P")
+    _make_account_db(tmp_path / "btc.db", fills=_reference_fills(5), asset="BTCUSDT.P")  # otro símbolo, no cuenta
+
+    entries = gather_reference_entries(
+        "XAUUSD", str(tmp_path),
+        real_accounts={"000": "xau.db", "002": "btc.db"},
+        symbol_map={"XAUUSDT.P": "XAUUSD", "BTCUSDT.P": "BTCUSD"},
+    )
+    assert len(entries) == 3
+
+
+def test_gather_reference_entries_includes_mark_price_excludes_backdated(tmp_path):
+    _make_account_db(
+        tmp_path / "xau.db",
+        fills=_reference_fills(2),
+        mark_prices=[(T0, 1500.0)],
+        asset="XAUUSDT.P",
+    )
+    with_mp = gather_reference_entries(
+        "XAUUSD", str(tmp_path), real_accounts={"000": "xau.db"},
+        symbol_map={"XAUUSDT.P": "XAUUSD"}, include_mark_price=True,
+    )
+    without_mp = gather_reference_entries(
+        "XAUUSD", str(tmp_path), real_accounts={"000": "xau.db"},
+        symbol_map={"XAUUSDT.P": "XAUUSD"}, include_mark_price=False,
+    )
+    assert len(with_mp) == 3
+    assert len(without_mp) == 2
+
+
+def test_gather_reference_entries_skips_missing_db_file(tmp_path):
+    entries = gather_reference_entries(
+        "XAUUSD", str(tmp_path), real_accounts={"000": "does_not_exist.db"},
+        symbol_map={"XAUUSDT.P": "XAUUSD"},
+    )
+    assert entries == []
+
+
+def test_verify_by_references_twelve_in_range_and_aligned_verifies(tmp_path):
+    _make_account_db(tmp_path / "xau.db", fills=_reference_fills(12), asset="XAUUSDT.P")
+    _write_reference_15m_csv(tmp_path / "incoming", lag_hours=0)
+
+    result = verify_by_references(
+        "XAUUSD", str(tmp_path / "incoming"), T0, T0 + timedelta(days=2),
+        accounts_data_dir=str(tmp_path), real_accounts={"000": "xau.db"},
+        symbol_map={"XAUUSDT.P": "XAUUSD"}, min_references=10,
+    )
+    assert result.verified is True
+    assert result.n_in_range == 12
+    assert result.aligned is True
+    assert result.best_offset == 0
+
+
+def test_verify_by_references_nine_in_range_is_clock_unverified(tmp_path):
+    _make_account_db(tmp_path / "xau.db", fills=_reference_fills(9), asset="XAUUSDT.P")
+    _write_reference_15m_csv(tmp_path / "incoming", lag_hours=0)
+
+    result = verify_by_references(
+        "XAUUSD", str(tmp_path / "incoming"), T0, T0 + timedelta(days=2),
+        accounts_data_dir=str(tmp_path), real_accounts={"000": "xau.db"},
+        symbol_map={"XAUUSDT.P": "XAUUSD"}, min_references=10,
+    )
+    assert result.verified is False
+    assert result.n_in_range == 9
+    assert result.aligned is None  # no llegó a evaluarse: faltaron referencias
+    assert result.best_offset is None
+
+
+def test_verify_by_references_clock_shifted_3h_is_clock_misaligned(tmp_path):
+    _make_account_db(tmp_path / "xau.db", fills=_reference_fills(12), asset="XAUUSDT.P")
+    _write_reference_15m_csv(tmp_path / "incoming", lag_hours=3)  # el bug real del 2026-09-22
+
+    result = verify_by_references(
+        "XAUUSD", str(tmp_path / "incoming"), T0, T0 + timedelta(days=2),
+        accounts_data_dir=str(tmp_path), real_accounts={"000": "xau.db"},
+        symbol_map={"XAUUSDT.P": "XAUUSD"}, min_references=10,
+    )
+    assert result.verified is False
+    assert result.aligned is False
+    assert result.best_offset == 3
+
+
+def test_verify_by_references_no_matching_timeframe_in_incoming_export(tmp_path):
+    _make_account_db(tmp_path / "xau.db", fills=_reference_fills(12), asset="XAUUSDT.P")
+    os.makedirs(tmp_path / "incoming", exist_ok=True)  # sin ningún CSV de CLOCK_TIMEFRAME_PREFERENCE
+
+    result = verify_by_references(
+        "XAUUSD", str(tmp_path / "incoming"), T0, T0 + timedelta(days=2),
+        accounts_data_dir=str(tmp_path), real_accounts={"000": "xau.db"},
+        symbol_map={"XAUUSDT.P": "XAUUSD"}, min_references=10,
+    )
+    assert result.verified is False
+    assert result.timeframe is None
