@@ -35,9 +35,17 @@
       flags en conflicto ocurre después). Se le agregó `monkeypatch` + `init_db("sqlite:///:memory:")` +
       `monkeypatch.setattr(tools.database, "engine_default", ...)`, igual que los otros dos tests. SUITE:
       `429 passed, 1 skipped, 92 warnings in 7.47s`; `find .data -type f` ya no encuentra nada (ni `.data/` existe).
-- [ ] T3. Crear `tests/conftest.py`: un fixture autouse `monkeypatch.chdir(tmp_path)` y un audit hook sobre `open` y
+- [x] T3. Crear `tests/conftest.py`: un fixture autouse `monkeypatch.chdir(tmp_path)` y un audit hook sobre `open` y
       `sqlite3.connect` que hace fallar el test si la ruta cae bajo `<repo>/.data/` o `/mnt/c/`. (RF-16)
       Hecho cuando: SUITE en verde y sin `.data/` en `WT` después de correr.
+      **Hecho 2026-09-28:** `tests/conftest.py` nuevo, con dos capas: (1) fixture autouse `_isolated_cwd` que hace
+      `monkeypatch.chdir(tmp_path)` en cada test; (2) `sys.addaudithook` sobre los eventos `open` y `sqlite3.connect`,
+      instalado una sola vez al importar el archivo, que resuelve la ruta a absoluta y hace fallar la operación
+      (`ForbiddenTestPathError`) si cae bajo el `.data/` real del repo o bajo `/mnt/c/`; deja pasar `:memory:` y
+      cualquier otra ruta. Antes de commitear se probó a mano con un script fuera de la suite (no forma parte de
+      T4, que es el meta-test formal): `open()` y `sqlite3.connect()` bajo `.data/` real bloqueados, `/mnt/c/`
+      bloqueado, `:memory:` y una ruta de `tempfile` permitidos. SUITE: `429 passed, 1 skipped, 92 warnings in
+      6.99s`; `find .data -type f` no encuentra nada, `.data/` no existe.
 - [ ] T4. Meta-test de aislamiento. Corre `pytest` en un subproceso sobre un archivo temporal con un test que abre
       `<repo>/.data/x.db` y otro que abre `/mnt/c/x`. (RF-16)
       Hecho cuando: el meta-test pasa (el subproceso informa 2 fallos por el guard) y SUITE en verde.
