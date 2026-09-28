@@ -15,6 +15,7 @@ codificaciones reales de MT5) -- ningún test de este archivo depende de
 su valor numérico real, solo de que TIMEFRAME_MAP se construya sin
 excepción.
 """
+import os
 import sys
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock
@@ -43,6 +44,7 @@ from windows_export.export_p2_ohlc import (  # noqa: E402
     BACKWARD_MARGIN,
     TIMEFRAME_MAP,
     TIMEFRAME_MINUTES,
+    atomic_write_csv,
     base_offset_from_current,
     compute_backward_start,
     dst_masks,
@@ -50,6 +52,8 @@ from windows_export.export_p2_ohlc import (  # noqa: E402
     exclude_forming_bar,
     export_timeframe,
     gt_naive_to_utc,
+    main,
+    make_run_dir,
     parse_timeframes_arg,
     server_time_to_utc,
     server_time_to_utc_dst,
@@ -372,3 +376,160 @@ def test_export_timeframe_none_rule_matches_todays_single_offset_and_discards_no
     # Un solo offset (+3) para todo: enero y julio quedan a la misma hora GT (01:00), enero 1h corrido.
     assert written["time"].iloc[0] == pd.Timestamp("2026-01-15 01:00")
     assert written["time"].iloc[2] == pd.Timestamp("2026-07-15 01:00")
+
+
+# --- T19 (spec 002, RF-15, plan T2): directorio por corrida y escritura atómica ---
+
+def _frame(closes):
+    return pd.DataFrame({"time": pd.date_range("2026-01-15", periods=len(closes), freq="h"),
+                         "open": closes, "high": closes, "low": closes, "close": closes})
+
+
+def _tmp_leftovers(directory):
+    return [f for f in os.listdir(directory) if f.startswith(".tmp_export_")]
+
+
+def test_atomic_write_csv_writes_the_file_and_leaves_no_temp_file(tmp_path):
+    target = tmp_path / "1H.csv"
+    atomic_write_csv(_frame([1.0, 2.0]), target)
+    assert list(pd.read_csv(target)["close"]) == [1.0, 2.0]
+    assert _tmp_leftovers(tmp_path) == []
+
+
+def test_atomic_write_csv_creates_missing_parent_directories(tmp_path):
+    target = tmp_path / "a" / "b" / "1H.csv"
+    atomic_write_csv(_frame([1.0]), target)
+    assert target.exists()
+
+
+def test_atomic_write_csv_failure_mid_write_leaves_the_existing_file_byte_for_byte(tmp_path, monkeypatch):
+    target = tmp_path / "1H.csv"
+    atomic_write_csv(_frame([1.0, 2.0]), target)
+    before = target.read_bytes()
+
+    def _boom(self, *a, **kw):
+        raise RuntimeError("disco lleno (simulado)")
+
+    monkeypatch.setattr(pd.DataFrame, "to_csv", _boom)
+    with pytest.raises(RuntimeError, match="disco lleno"):
+        atomic_write_csv(_frame([9.0, 9.0, 9.0]), target)
+
+    assert target.read_bytes() == before
+    assert _tmp_leftovers(tmp_path) == []
+
+
+def test_atomic_write_csv_failure_on_a_new_file_leaves_nothing_behind(tmp_path, monkeypatch):
+    monkeypatch.setattr(pd.DataFrame, "to_csv", lambda self, *a, **kw: (_ for _ in ()).throw(RuntimeError("x")))
+    with pytest.raises(RuntimeError):
+        atomic_write_csv(_frame([1.0]), tmp_path / "1H.csv")
+    assert os.listdir(tmp_path) == []
+
+
+def test_make_run_dir_builds_symbol_and_run_id_path(tmp_path):
+    now = datetime(2026, 10, 5, 14, 20, 11, tzinfo=UTC)
+    run_id, run_dir = make_run_dir(tmp_path, "XAUUSD", now)
+    assert run_id == "20261005T142011"
+    assert run_dir == tmp_path / "XAUUSD" / "20261005T142011"
+    assert run_dir.is_dir()
+
+
+def test_make_run_dir_two_runs_in_the_same_second_get_different_directories(tmp_path):
+    now = datetime(2026, 10, 5, 14, 20, 11, tzinfo=UTC)
+    first_id, first_dir = make_run_dir(tmp_path, "XAUUSD", now)
+    second_id, second_dir = make_run_dir(tmp_path, "XAUUSD", now)
+    third_id, third_dir = make_run_dir(tmp_path, "XAUUSD", now)
+
+    assert (first_id, second_id, third_id) == ("20261005T142011", "20261005T142011-1", "20261005T142011-2")
+    assert len({first_dir, second_dir, third_dir}) == 3
+    assert all(d.is_dir() for d in (first_dir, second_dir, third_dir))
+    assert sorted([third_id, first_id, second_id]) == [first_id, second_id, third_id]  # orden alfabético == cronológico
+
+
+def test_make_run_dir_symbols_do_not_share_a_directory(tmp_path):
+    now = datetime(2026, 10, 5, 14, 20, 11, tzinfo=UTC)
+    _, xau = make_run_dir(tmp_path, "XAUUSD", now)
+    _, btc = make_run_dir(tmp_path, "BTCUSD", now)
+    assert xau != btc
+
+
+def _main_args(out_dir, *extra):
+    return ["--symbol", "XAUUSD", "--out-dir", str(out_dir), "--min-anchor", "2026-05-18 12:15:00",
+            "--max-anchor", "2026-05-19 12:15:00", "--server-utc-offset", "2", "--timeframes", "1H", *extra]
+
+
+@pytest.fixture
+def mt5_ready(monkeypatch):
+    monkeypatch.setattr(exporter_module.mt5, "initialize", lambda *a, **k: True)
+
+
+def _run_dir_from(capsys):
+    lines = [l for l in capsys.readouterr().out.splitlines() if l.startswith("RUN_DIR: ")]
+    assert len(lines) == 1
+    return lines[0][len("RUN_DIR: "):]
+
+
+def test_main_per_run_dir_writes_under_symbol_and_run_id_and_prints_the_path(mt5_ready, monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(exporter_module.mt5, "copy_rates_range", lambda *a, **k: _fake_rates(["2026-01-15 10:00"]))
+
+    assert main(_main_args(tmp_path, "--per-run-dir")) == 0
+
+    run_dir = _run_dir_from(capsys)
+    assert os.path.dirname(os.path.dirname(run_dir)) == str(tmp_path)
+    assert os.path.basename(os.path.dirname(run_dir)) == "XAUUSD"
+    assert os.path.exists(os.path.join(run_dir, "1H.csv"))
+    assert not (tmp_path / "1H.csv").exists()  # nada directo en --out-dir
+
+
+def test_main_without_per_run_dir_keeps_writing_straight_into_out_dir(mt5_ready, monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(exporter_module.mt5, "copy_rates_range", lambda *a, **k: _fake_rates(["2026-01-15 10:00"]))
+
+    assert main(_main_args(tmp_path)) == 0
+
+    assert (tmp_path / "1H.csv").exists()
+    assert "RUN_DIR" not in capsys.readouterr().out
+    assert os.listdir(tmp_path) == ["1H.csv"]
+
+
+def test_two_runs_do_not_overwrite_each_other(mt5_ready, monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(exporter_module.mt5, "copy_rates_range", lambda *a, **k: _fake_rates(["2026-01-15 10:00"]))
+    assert main(_main_args(tmp_path, "--per-run-dir")) == 0
+    first_dir = _run_dir_from(capsys)
+    first_bytes = open(os.path.join(first_dir, "1H.csv"), "rb").read()
+
+    monkeypatch.setattr(exporter_module.mt5, "copy_rates_range",
+                        lambda *a, **k: _fake_rates(["2026-01-16 10:00", "2026-01-16 11:00"]))
+    assert main(_main_args(tmp_path, "--per-run-dir")) == 0
+    second_dir = _run_dir_from(capsys)
+
+    assert first_dir != second_dir
+    assert open(os.path.join(first_dir, "1H.csv"), "rb").read() == first_bytes  # la primera quedó intacta
+    assert len(pd.read_csv(os.path.join(second_dir, "1H.csv"))) == 2
+    assert len(os.listdir(tmp_path / "XAUUSD")) == 2
+
+
+def test_failure_mid_run_leaves_finished_timeframes_complete_no_partial_csv_and_other_runs_untouched(
+        mt5_ready, monkeypatch, tmp_path, capsys):
+    # Corrida A completa.
+    monkeypatch.setattr(exporter_module.mt5, "copy_rates_range", lambda *a, **k: _fake_rates(["2026-01-15 10:00"]))
+    assert main(_main_args(tmp_path, "--per-run-dir")) == 0
+    dir_a = _run_dir_from(capsys)
+    a_bytes = open(os.path.join(dir_a, "1H.csv"), "rb").read()
+
+    # Corrida B: 1H sale bien, la segunda TF (30M) falla a mitad de la corrida.
+    calls = {"n": 0}
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        return _fake_rates(["2026-01-17 10:00"]) if calls["n"] == 1 else None  # None => RuntimeError
+
+    monkeypatch.setattr(exporter_module.mt5, "copy_rates_range", flaky)
+    args_b = _main_args(tmp_path, "--per-run-dir")
+    args_b[args_b.index("--timeframes") + 1] = "1H,30M"
+    with pytest.raises(RuntimeError, match="copy_rates_range devolvió None"):
+        main(args_b)
+    dir_b = _run_dir_from(capsys)
+
+    assert dir_b != dir_a
+    assert open(os.path.join(dir_a, "1H.csv"), "rb").read() == a_bytes  # la corrida A ni se tocó
+    assert sorted(os.listdir(dir_b)) == ["1H.csv"]  # 1H completo; 30M no existe, ni a medias, ni un temporal
+    assert len(pd.read_csv(os.path.join(dir_b, "1H.csv"))) == 1

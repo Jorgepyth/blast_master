@@ -323,9 +323,35 @@
       `DST_TRANSITION_HOUR` rompe 3 tests (revertido).
       `pytest -q tests/test_export_p2_ohlc.py`: `42 passed in 1.68s`. SUITE: `539 passed, 1 skipped, 97 warnings in
       14.44s`; sin `.data/`.
-- [ ] T19. Exportador, parte 3: un directorio único por corrida y escritura atómica por archivo. (RF-15, plan T2)
+- [x] T19. Exportador, parte 3: un directorio único por corrida y escritura atómica por archivo. (RF-15, plan T2)
       Hecho cuando: los tests prueban que dos corridas no se pisan y que un fallo a mitad no deja CSV a medias. SUITE en
       verde.
+      **Hecho 2026-09-28:** `windows_export/export_p2_ohlc.py`. `atomic_write_csv()` (temporal en el mismo
+      directorio + `os.replace`; si falla, borra el temporal y deja el destino como estaba) reemplaza el `to_csv`
+      directo de `export_timeframe` — vale en los dos modos. `make_run_dir(base, symbol)` crea
+      `{base}/{SIMBOLO}/{run_id}/` con `run_id = YYYYmmddTHHMMSS` (UTC) y `mkdir` sin `exist_ok` (atómico: dos
+      corridas nunca comparten carpeta); si el segundo ya existe prueba `-1`, `-2`…, que además mantienen el orden
+      alfabético == cronológico. `main()` gana `--per-run-dir` e imprime `RUN_ID: …` y `RUN_DIR: …` (lo que va a
+      parsear `tools/candle_sync.py`, T20). El directorio se crea recién con MT5 inicializado y el reloj resuelto,
+      así que un fallo temprano no deja carpetas vacías.
+      **Decisión de diseño:** `--per-run-dir` es opt-in. Sin el flag, el script escribe directo en `--out-dir`, como
+      siempre, para no redirigir en silencio las corridas manuales que hoy alimentan el cuaderno
+      (`MT5Exports/{SYMBOL}/`, INV-6). T20 tiene que pasar `--per-run-dir` con `--out-dir` = `MT5_INCOMING_DIR`.
+      Una corrida que falla deja su directorio con las TF que sí terminaron (completas, nunca a medias), para poder
+      auditarla; quien orquesta se guía por el código de salida (RF-20e).
+      **No incluido, porque ninguna tarea lo pide:** la retención de "las últimas 5 corridas por símbolo" de
+      plan.md §2.4. Lo natural es hacerlo en T20 (`candle_sync.py`), que es quien sabe cuándo una corrida ya se
+      fusionó.
+      `tests/test_export_p2_ohlc.py` +11 tests, con el stand-in de `MetaTrader5` y `main()` de punta a punta:
+      `atomic_write_csv` escribe sin dejar temporales, crea directorios, y ante un fallo a mitad de escritura deja
+      el archivo existente byte a byte igual (o nada, si era nuevo) y sin temporal; `make_run_dir` arma la ruta, da
+      3 directorios distintos para 3 corridas del mismo segundo y no mezcla símbolos; `main` con `--per-run-dir`
+      escribe bajo `{SIMBOLO}/{run_id}/` e imprime la ruta, sin el flag escribe directo como siempre; dos corridas
+      seguidas no se pisan (la primera queda byte a byte igual); y una corrida que falla en la 2ª TF deja el 1H
+      completo, sin 30M ni temporales, y la corrida anterior intacta. Comprobaciones de mutación: `mkdir(exist_ok=True)`
+      rompe 3 tests y no limpiar el temporal rompe 2 (revertidas).
+      `pytest -q tests/test_export_p2_ohlc.py`: `53 passed in 0.87s`. SUITE: `550 passed, 1 skipped, 97 warnings in
+      10.58s`; sin `.data/`.
 - [ ] T20. `tools/candle_sync.py`: arma el comando del exportador desde la configuración, lo corre con
       `EXPORT_TIMEOUT_S` y llama a la fusión. (RF-20e, RF-20f, RF-1c)
       Hecho cuando: los tests, con un exportador falso en `tmp_path`, cubren éxito con fusión, timeout con

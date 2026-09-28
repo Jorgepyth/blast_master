@@ -46,6 +46,18 @@ Solo funciones de LECTURA de MetaTrader5 (copy_rates_range). PROHIBIDO:
 order_send, order_check, o cualquier función de escritura -- no se
 importan ni se usan en este archivo.
 
+DIRECTORIO POR CORRIDA (spec 002, RF-15, plan T2): con `--per-run-dir`,
+`--out-dir` es la carpeta BASE y cada corrida escribe en un directorio nuevo
+`{out-dir}/{SIMBOLO}/{run_id}/` (run_id = fecha-hora UTC, `YYYYmmddTHHMMSS`,
+con sufijo `-1`, `-2`... si dos corridas caen en el mismo segundo), así que
+una corrida nunca pisa los archivos de otra ni deja un directorio mezclado
+si falla a mitad. La ruta se imprime en una línea `RUN_DIR: <ruta>`. Sin el
+flag, los CSV se escriben directo en `--out-dir`, como siempre. En los dos
+modos, cada CSV se escribe de forma atómica (temporal + os.replace): un
+fallo a mitad de escritura nunca deja un CSV a medias. Una corrida que
+falla deja su directorio con las TF que sí terminaron, para poder auditarla;
+quien orquesta (tools/candle_sync.py) se guía por el código de salida.
+
 Uso:
     python export_p2_ohlc.py --out-dir C:\\ruta\\destino ^
         --min-anchor "2026-05-18 12:15:00" --max-anchor "2026-09-03 18:19:00"
@@ -62,7 +74,9 @@ Windows que tenga instalado `pip install MetaTrader5 pandas`.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -360,6 +374,53 @@ def compute_backward_start(min_anchor_gt: datetime, timeframe: str, min_bars: in
     return min_anchor_gt - span * BACKWARD_MARGIN - timedelta(days=BACKWARD_BUFFER_DAYS)
 
 
+def atomic_write_csv(df: pd.DataFrame, path: Path) -> None:
+    """
+    Escribe `df` en `path` de forma atómica: a un temporal en el MISMO
+    directorio y `os.replace()` al final (atómico dentro de un filesystem).
+    Un fallo a mitad de escritura no deja `path` a medias -- queda el archivo
+    anterior completo (o ninguno), y el temporal se borra (RF-15, plan T2,
+    baseline H14: antes `to_csv` escribía directo sobre el destino).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp_export_", suffix=".csv")
+    try:
+        with os.fdopen(fd, "w", newline="") as f:
+            df.to_csv(f, index=False)
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.remove(tmp_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def make_run_dir(base_dir: Path, symbol: str, now_utc: Optional[datetime] = None) -> Tuple[str, Path]:
+    """
+    Crea `{base_dir}/{symbol}/{run_id}/` y devuelve `(run_id, ruta)`. `run_id`
+    es `YYYYmmddTHHMMSS` en UTC; si ya existe (dos corridas en el mismo
+    segundo) prueba `-1`, `-2`... La creación usa `mkdir` sin `exist_ok`, que es
+    atómico, así que dos corridas simultáneas nunca terminan en el mismo
+    directorio. Los sufijos ordenan después del run_id base, o sea que el
+    orden alfabético sigue siendo el cronológico.
+    """
+    now = now_utc if now_utc is not None else datetime.now(UTC)
+    stem = now.strftime("%Y%m%dT%H%M%S")
+    parent = base_dir / symbol
+    parent.mkdir(parents=True, exist_ok=True)
+    attempt = 0
+    while True:
+        run_id = stem if attempt == 0 else f"{stem}-{attempt}"
+        run_dir = parent / run_id
+        try:
+            run_dir.mkdir()
+        except FileExistsError:
+            attempt += 1
+            continue
+        return run_id, run_dir
+
+
 def export_timeframe(symbol: str, timeframe: str, date_from_utc: datetime, date_to_utc: datetime,
                      out_dir: Path, server_utc_offset_hours: float = 0.0,
                      dst_rule: str = "none") -> ExportResult:
@@ -421,7 +482,7 @@ def export_timeframe(symbol: str, timeframe: str, date_from_utc: datetime, date_
 
     out = df[REQUIRED_COLUMNS]
     out_path = out_dir / f"{timeframe}.csv"
-    out.to_csv(out_path, index=False)
+    atomic_write_csv(out, out_path)
 
     return ExportResult(
         timeframe=timeframe,
@@ -458,6 +519,11 @@ def main(argv: Optional[list] = None) -> int:
              "override-able si cambia de broker/cuenta).",
     )
     parser.add_argument("--out-dir", required=True, type=Path)
+    parser.add_argument(
+        "--per-run-dir", action="store_true",
+        help="Escribe en un directorio nuevo por corrida, {out-dir}/{SIMBOLO}/{run_id}/ (spec 002, RF-15), "
+             "en vez de directo en --out-dir. Imprime la ruta en una línea 'RUN_DIR: <ruta>'.",
+    )
     parser.add_argument(
         "--min-anchor", required=True,
         help="MIN(timestamp_entry) real, hora GT naive, formato 'YYYY-MM-DD HH:MM:SS'. "
@@ -497,7 +563,8 @@ def main(argv: Optional[list] = None) -> int:
         print(str(e), file=sys.stderr)
         return 1
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
+    if not args.per_run_dir:
+        args.out_dir.mkdir(parents=True, exist_ok=True)
 
     if not mt5.initialize():
         print(f"mt5.initialize() falló: {mt5.last_error()}", file=sys.stderr)
@@ -524,6 +591,15 @@ def main(argv: Optional[list] = None) -> int:
             print(f"Regla DST: {args.dst_rule} -> offset base (invierno) UTC{base_offset:+g}; "
                   "cada vela se convierte con el offset de su fecha.\n")
 
+        # El directorio por corrida se crea recién acá, con MT5 ya inicializado y el
+        # reloj resuelto: si algo de lo anterior falla, no queda un directorio vacío.
+        if args.per_run_dir:
+            run_id, target_dir = make_run_dir(args.out_dir, args.symbol)
+            print(f"RUN_ID: {run_id}")
+            print(f"RUN_DIR: {target_dir}\n", flush=True)
+        else:
+            target_dir = args.out_dir
+
         min_anchor = datetime.strptime(args.min_anchor, "%Y-%m-%d %H:%M:%S")
         max_anchor = datetime.strptime(args.max_anchor, "%Y-%m-%d %H:%M:%S")
         now_gt = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=GT_OFFSET_HOURS)
@@ -536,7 +612,7 @@ def main(argv: Optional[list] = None) -> int:
             date_to_srv = gt_naive_to_server(date_to_gt, server_offset)
             print(f"[{tf}] pidiendo {date_from_srv:%Y-%m-%d %H:%M} -> {date_to_srv:%Y-%m-%d %H:%M} (reloj servidor) ...")
             result = export_timeframe(
-                args.symbol, tf, date_from_srv, date_to_srv, args.out_dir, base_offset, args.dst_rule
+                args.symbol, tf, date_from_srv, date_to_srv, target_dir, base_offset, args.dst_rule
             )
             print(
                 f"[{tf}] {result.rows} velas escritas en {result.path} "
