@@ -254,9 +254,24 @@
       T11 con `to_csv` mockeado) deja el banco byte a byte igual, sin temporales.
       `pytest -q tests/test_candle_bank.py`: `52 passed in 1.33s`. SUITE: `508 passed, 1 skipped, 97 warnings in
       8.47s`; sin `.data/`.
-- [ ] T16. `candle_bank`, parte 6: `import_legacy()` desde `MT5Exports/{SYMBOL}/`, sin el `5M.csv` de XAU. (RF-2c)
+- [x] T16. `candle_bank`, parte 6: `import_legacy()` desde `MT5Exports/{SYMBOL}/`, sin el `5M.csv` de XAU. (RF-2c)
       Hecho cuando: el test, con un directorio de fixture que imita `MT5Exports`, prueba que se importa lo
       verificado, que el 5M queda excluido e informado, y que el origen no se modifica. SUITE en verde.
+      **Hecho 2026-09-28:** `import_legacy()` es la única función del módulo que arma una orquestación completa
+      hasta ahora (de solo lectura sobre el origen): junta las TF presentes en `legacy_dir`, reusa
+      `verify_by_references()` (T14) sobre TODO el rango de fechas del origen — así "verificado" significa lo
+      mismo que en un export nuevo, `min_entries` referencias en rango y reloj alineado — y solo si verifica,
+      importa cada TF con `merge_timeframe_into_bank_checked()` (T15). Si no verifica, no escribe nada y **todas**
+      las TF presentes quedan en `excluded` con el motivo (`clock_unverified`/`clock_misaligned`); ni el
+      directorio del banco se crea. `LEGACY_IMPORT_EXCLUSIONS = {("XAUUSD", "5M")}` (baseline H11) excluye ese par
+      puntual aunque XAU verifique — un TF `"5M"` de cualquier otro símbolo no se toca, la exclusión es por
+      `(símbolo, TF)`, no solo por nombre de TF.
+      `tests/test_candle_bank.py` +8 tests: importa todas las TF presentes cuando verifica; excluye XAU/5M con
+      motivo aunque el resto verifique; el mismo nombre `"5M"` en BTC no se excluye; con pocas referencias no
+      importa nada y ni crea el directorio del banco; un reloj corrido excluye todo con `clock_misaligned`; un
+      origen vacío da `aligned=None`; y el origen queda byte a byte igual después de importar.
+      `pytest -q tests/test_candle_bank.py`: `60 passed in 1.80s`. SUITE: `516 passed, 1 skipped, 97 warnings in
+      9.03s`; sin `.data/`.
 - [ ] T17. Exportador, parte 1: agregar `5M` y `1M` al mapa de TF, a la duración y al rango hacia atrás, más el
       argumento `--timeframes`. (RF-15)
       Hecho cuando: los tests, con el stand-in de `MetaTrader5`, cubren el mapa y `compute_backward_start` para

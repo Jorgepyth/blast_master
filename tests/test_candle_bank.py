@@ -19,6 +19,8 @@ from sqlalchemy.orm import sessionmaker
 import tools.candle_bank
 from tools.candle_bank import (
     CandleBankLockedError,
+    LEGACY_EXCLUSION_REASON,
+    LEGACY_IMPORT_EXCLUSIONS,
     OVERLAP_TIMEFRAMES,
     STATUS_JSON_FILENAME,
     acquire_bank_lock,
@@ -26,6 +28,7 @@ from tools.candle_bank import (
     build_status_payload,
     filter_by_export_season,
     gather_reference_entries,
+    import_legacy,
     merge_candle_frames,
     merge_timeframe_into_bank,
     merge_timeframe_into_bank_checked,
@@ -731,3 +734,116 @@ def test_merge_checked_write_failure_mid_fusion_leaves_bank_byte_for_byte_untouc
 
     assert (bank_dir / "1H.csv").read_bytes() == before
     assert [f for f in os.listdir(bank_dir) if f.startswith(".tmp_candle_bank_")] == []
+
+
+# --- import_legacy (T16, RF-2c) ----------------------------------------------
+
+def test_import_legacy_exclusions_only_covers_xau_5m():
+    assert LEGACY_IMPORT_EXCLUSIONS == frozenset({("XAUUSD", "5M")})
+
+
+def test_import_legacy_aligned_symbol_imports_all_present_timeframes(tmp_path):
+    _make_account_db(tmp_path / "btc.db", fills=_reference_fills(12), asset="BTCUSDT.P")
+    legacy_dir = tmp_path / "legacy" / "BTCUSD"
+    _write_reference_15m_csv(legacy_dir, lag_hours=0)  # 15M, alineado
+    _write_csv(legacy_dir / "1H.csv", [T0, T0 + timedelta(hours=1)], [500.0, 501.0])
+
+    bank_dir = tmp_path / "bank" / "BTCUSD"
+    result = import_legacy(
+        "BTCUSD", str(legacy_dir), str(bank_dir), str(tmp_path),
+        real_accounts={"002": "btc.db"}, symbol_map={"BTCUSDT.P": "BTCUSD"}, min_entries=10,
+    )
+
+    assert result.aligned is True
+    assert set(result.imported) == {"15M", "1H"}
+    assert result.excluded == {}
+    on_disk = read_candle_csv(bank_csv_path(str(bank_dir), "1H"))
+    assert len(on_disk) == 2
+
+
+def test_import_legacy_excludes_xau_5m_even_when_symbol_verifies(tmp_path):
+    _make_account_db(tmp_path / "xau.db", fills=_reference_fills(12), asset="XAUUSDT.P")
+    legacy_dir = tmp_path / "legacy" / "XAUUSD"
+    _write_reference_15m_csv(legacy_dir, lag_hours=0)
+    _write_csv(legacy_dir / "5M.csv", [T0, T0 + timedelta(minutes=5)], [1800.0, 1801.0])  # el contaminado
+
+    bank_dir = tmp_path / "bank" / "XAUUSD"
+    result = import_legacy(
+        "XAUUSD", str(legacy_dir), str(bank_dir), str(tmp_path),
+        real_accounts={"000": "xau.db"}, symbol_map={"XAUUSDT.P": "XAUUSD"}, min_entries=10,
+    )
+
+    assert result.aligned is True
+    assert "15M" in result.imported
+    assert result.excluded == {"5M": LEGACY_EXCLUSION_REASON}
+    assert not os.path.exists(bank_csv_path(str(bank_dir), "5M"))
+
+
+def test_import_legacy_5m_exclusion_is_scoped_to_xauusd_only(tmp_path):
+    _make_account_db(tmp_path / "btc.db", fills=_reference_fills(12), asset="BTCUSDT.P")
+    legacy_dir = tmp_path / "legacy" / "BTCUSD"
+    _write_reference_15m_csv(legacy_dir, lag_hours=0)
+    _write_csv(legacy_dir / "5M.csv", [T0], [30000.0])  # mismo nombre de TF, otro símbolo
+
+    bank_dir = tmp_path / "bank" / "BTCUSD"
+    result = import_legacy(
+        "BTCUSD", str(legacy_dir), str(bank_dir), str(tmp_path),
+        real_accounts={"002": "btc.db"}, symbol_map={"BTCUSDT.P": "BTCUSD"}, min_entries=10,
+    )
+    assert "5M" in result.imported
+    assert result.excluded == {}
+
+
+def test_import_legacy_insufficient_references_excludes_everything_and_writes_nothing(tmp_path):
+    _make_account_db(tmp_path / "xau.db", fills=_reference_fills(3), asset="XAUUSDT.P")  # < 10
+    legacy_dir = tmp_path / "legacy" / "XAUUSD"
+    _write_reference_15m_csv(legacy_dir, lag_hours=0)
+    _write_csv(legacy_dir / "1H.csv", [T0], [1800.0])
+
+    bank_dir = tmp_path / "bank" / "XAUUSD"
+    result = import_legacy(
+        "XAUUSD", str(legacy_dir), str(bank_dir), str(tmp_path),
+        real_accounts={"000": "xau.db"}, symbol_map={"XAUUSDT.P": "XAUUSD"}, min_entries=10,
+    )
+    assert result.imported == {}
+    assert set(result.excluded) == {"15M", "1H"}
+    assert all(v == "clock_unverified" for v in result.excluded.values())
+    assert not os.path.exists(bank_dir)  # nada se escribió: el directorio del banco ni se creó
+
+
+def test_import_legacy_misaligned_clock_excludes_everything_with_reason(tmp_path):
+    _make_account_db(tmp_path / "xau.db", fills=_reference_fills(12), asset="XAUUSDT.P")
+    legacy_dir = tmp_path / "legacy" / "XAUUSD"
+    _write_reference_15m_csv(legacy_dir, lag_hours=3)  # corrido, el bug real del 2026-09-22
+
+    bank_dir = tmp_path / "bank" / "XAUUSD"
+    result = import_legacy(
+        "XAUUSD", str(legacy_dir), str(bank_dir), str(tmp_path),
+        real_accounts={"000": "xau.db"}, symbol_map={"XAUUSDT.P": "XAUUSD"}, min_entries=10,
+    )
+    assert result.imported == {}
+    assert result.excluded == {"15M": "clock_misaligned"}
+
+
+def test_import_legacy_empty_source_directory_returns_none_aligned(tmp_path):
+    result = import_legacy(
+        "NOPE", str(tmp_path / "legacy" / "NOPE"), str(tmp_path / "bank" / "NOPE"), str(tmp_path),
+        real_accounts={}, symbol_map={},
+    )
+    assert result.aligned is None
+    assert result.imported == {}
+    assert result.excluded == {}
+
+
+def test_import_legacy_never_modifies_the_source_directory(tmp_path):
+    _make_account_db(tmp_path / "xau.db", fills=_reference_fills(12), asset="XAUUSDT.P")
+    legacy_dir = tmp_path / "legacy" / "XAUUSD"
+    _write_reference_15m_csv(legacy_dir, lag_hours=0)
+    before = (legacy_dir / "15M.csv").read_bytes()
+
+    import_legacy(
+        "XAUUSD", str(legacy_dir), str(tmp_path / "bank" / "XAUUSD"), str(tmp_path),
+        real_accounts={"000": "xau.db"}, symbol_map={"XAUUSDT.P": "XAUUSD"}, min_entries=10,
+    )
+
+    assert (legacy_dir / "15M.csv").read_bytes() == before

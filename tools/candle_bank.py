@@ -8,10 +8,13 @@ superposición. Parte 4 (T14): verificación por referencias, para cuando no
 hubo superposición (típicamente, el primer export de un símbolo). Parte 5
 (T15): filtro por estación de horario, `status.json`, y una fusión con chequeo
 de que ninguna vela del banco se pierda o cambie (si el chequeo falla, no
-escribe nada -- el banco queda exactamente como estaba). Nada acá arma
-todavía la orquestación completa "candado → verificar → filtrar → fusionar →
-status.json" para UN símbolo -- eso es de una tarea posterior (T16 en
-adelante), que compone estas piezas.
+escribe nada -- el banco queda exactamente como estaba). Parte 6 (T16):
+`import_legacy()`, el único lugar de este módulo que arma una orquestación
+completa -- de solo lectura sobre el origen -- para poblar el banco la
+primera vez desde los CSV que ya existían antes de esta spec. Nada acá arma
+todavía la orquestación de un export NUEVO ("candado → verificar → filtrar →
+fusionar → status.json"); eso es de una tarea posterior, que compone estas
+mismas piezas para ese caso.
 
 Formato del CSV: idéntico al que ya lee `tools.p2_backtest.CsvOHLCProvider`
 (`time,open,high,low,close`, `time` = hora de apertura en GT naive), ordenado
@@ -24,7 +27,7 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, FrozenSet, List, Optional, Sequence, Tuple
 
 import pandas as pd
 from sqlalchemy import select
@@ -609,3 +612,114 @@ def merge_timeframe_into_bank_checked(bank_dir: str, timeframe: str, incoming_df
     _assert_bank_not_regressed(bank_before, merged, timeframe)
     write_candle_csv_atomic(bank_path, merged)
     return len(merged) - len(bank_before)
+
+
+# --------------------------------------------------------------------------
+# Import inicial del banco (T16, RF-2c)
+# --------------------------------------------------------------------------
+
+# El 5M.csv actual de XAU es anterior a la corrección del reloj del
+# 2026-09-22 (baseline H11) -- no se importa aunque el resto del símbolo
+# verifique. Se informa como excluido; el archivo original no se toca.
+LEGACY_IMPORT_EXCLUSIONS: FrozenSet[Tuple[str, str]] = frozenset({("XAUUSD", "5M")})
+LEGACY_EXCLUSION_REASON = "legacy_precontamination"
+
+
+@dataclass
+class LegacyImportResult:
+    """`aligned` sigue la semántica de `ClockCalibration.aligned`: `None` sin
+    referencias/TF suficientes para decidir, `False` desalineado. Con
+    `aligned` distinto de `True`, `imported` queda vacío y CADA TF presente en
+    el origen aparece en `excluded`, sin excepción -- si no se puede confiar
+    en el reloj del símbolo, no se importa nada de él (RF-2c)."""
+    symbol: str
+    aligned: Optional[bool]
+    imported: Dict[str, int] = field(default_factory=dict)
+    excluded: Dict[str, str] = field(default_factory=dict)
+
+
+def _timeframes_present_in(directory: str) -> List[str]:
+    """Nombres de TF (`{TF}.csv` sin la extensión) presentes en `directory`,
+    ignorando archivos ocultos (`.lock`, `.tmp_*`) y `status.json`."""
+    if not os.path.isdir(directory):
+        return []
+    return sorted(
+        filename[: -len(".csv")]
+        for filename in os.listdir(directory)
+        if filename.endswith(".csv") and not filename.startswith(".")
+    )
+
+
+def _time_range_across_timeframes(
+    directory: str, timeframes: Sequence[str]
+) -> Tuple[Optional[datetime], Optional[datetime]]:
+    """`(min, max)` de `time` entre los CSV de `timeframes` presentes en
+    `directory`. `(None, None)` si ninguno tiene ninguna vela."""
+    mins: List[datetime] = []
+    maxs: List[datetime] = []
+    for tf in timeframes:
+        df = read_candle_csv(bank_csv_path(directory, tf))
+        if len(df):
+            mins.append(df["time"].min())
+            maxs.append(df["time"].max())
+    if not mins:
+        return None, None
+    return min(mins), max(maxs)
+
+
+def import_legacy(
+    symbol: str,
+    legacy_dir: str,
+    bank_dir: str,
+    accounts_data_dir: str,
+    real_accounts: Optional[Dict[str, str]] = None,
+    symbol_map: Optional[Dict[str, str]] = None,
+    offsets: Sequence[int] = range(-6, 7),
+    min_entries: int = CLOCK_MIN_ENTRIES,
+    exclusions: FrozenSet[Tuple[str, str]] = LEGACY_IMPORT_EXCLUSIONS,
+) -> LegacyImportResult:
+    """
+    RF-2c: cuando se crea el banco de `symbol` por primera vez, importa los
+    CSV que ya existían en `legacy_dir` (los actuales de `MT5Exports/{symbol}/`)
+    a `bank_dir`, **solo si el reloj del símbolo verifica** -- reusa
+    `verify_by_references()` (T14) sobre TODO el rango de fechas que cubre
+    `legacy_dir`, así que "verificado" acá significa lo mismo que en un export
+    nuevo: `min_entries` referencias dentro de ese rango y `evaluate_clock_entries`
+    alineado. `legacy_dir` es de **solo lectura** -- ninguna función que se
+    llama acá escribe ahí.
+
+    Excepción explícita (RF-2c, baseline H11): aunque `symbol` verifique,
+    cualquier `(symbol, TF)` en `exclusions` (por defecto, solo XAU/5M) se
+    excluye igual.
+    """
+    real_accounts = REAL_ACCOUNTS if real_accounts is None else real_accounts
+    symbol_map = MT5_SYMBOL_MAP if symbol_map is None else symbol_map
+
+    present = _timeframes_present_in(legacy_dir)
+    if not present:
+        return LegacyImportResult(symbol=symbol, aligned=None)
+
+    export_start, export_end = _time_range_across_timeframes(legacy_dir, present)
+    ref = verify_by_references(
+        symbol, legacy_dir, export_start, export_end, accounts_data_dir,
+        real_accounts=real_accounts, symbol_map=symbol_map,
+        min_references=min_entries, offsets=offsets,
+    )
+
+    if not ref.verified:
+        reason = "clock_misaligned" if ref.aligned is False else "clock_unverified"
+        return LegacyImportResult(
+            symbol=symbol, aligned=ref.aligned, imported={},
+            excluded={tf: reason for tf in present},
+        )
+
+    imported: Dict[str, int] = {}
+    excluded: Dict[str, str] = {}
+    for tf in present:
+        if (symbol, tf) in exclusions:
+            excluded[tf] = LEGACY_EXCLUSION_REASON
+            continue
+        incoming_df = read_candle_csv(bank_csv_path(legacy_dir, tf))
+        imported[tf] = merge_timeframe_into_bank_checked(bank_dir, tf, incoming_df)
+
+    return LegacyImportResult(symbol=symbol, aligned=True, imported=imported, excluded=excluded)
