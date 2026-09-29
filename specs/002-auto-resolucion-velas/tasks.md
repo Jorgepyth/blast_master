@@ -483,7 +483,8 @@
       carpeta temporal, y **fusionó en 16 s** (reloj verificado por referencias, 9 TF) después del arreglo T22a. Sobre
       `BROKER_DST_RULE`: los datos son consistentes con `us` pero no lo prueban (`spike.md`). **Sigue abierta (tuya):**
       cargar `WINDOWS_PYTHON`, `EXPORTER_WIN_PATH` y `BROKER_DST_RULE` en el `.env` del checkout principal; por eso T22
-      queda sin marcar.
+      queda sin marcar. (Tras T57 ya se puede: `EXPORTER_WIN_PATH` existe en el checkout principal. Valores en
+      `spike.md`.)
 - [x] T22a. *(Tarea agregada el 2026-09-29, a partir de lo que mostró el spike; no altera la numeración de las demás.)*
       Endurecer el exportador y `candle_sync` con los defectos que el spike encontró contra MT5 real. (RF-15, RF-20e)
       Hecho cuando: un export con un rango que MT5 rechazaría de un solo pedido se completa partiéndolo en tramos; una
@@ -712,10 +713,19 @@
       Hecho cuando: las 4 copias y después las 4 reales tienen las 5 columnas nuevas y `backfill_history`,
       `integrity_check` da `ok`, el conteo de filas de cada tabla es igual antes y después, y el backup del día
       figura en `tools/backup.py list`.
-- [ ] T59. 🖐 Crear el banco real con `candles import-legacy` en el checkout principal. Escribe en `.data/`, así que
+- [x] T59. 🖐 Crear el banco real con `candles import-legacy` en el checkout principal. Escribe en `.data/`, así que
       requiere tu aprobación. (RF-2c)
       Hecho cuando: `candles status` muestra XAUUSD y BTCUSD verificados, USTEC en `clock_unverified`, y el 5M de XAU
       excluido.
+      **Hecho 2026-09-29 (con aprobación del usuario; solo se escribió `.data/candle_bank/`, 21 MB):** XAUUSD y
+      BTCUSD `verified` con las 9 TF; USTEC (9 de 10 referencias) y US500 (6 de 10) quedan `clock_unverified` y sin
+      velas. Se usó el código de la rama de la sesión (el banco real se escribió con `CANDLE_BANK_DIR`,
+      `ACCOUNTS_DATA_DIR` y `LEGACY_EXPORTS_DIR` apuntando al `.data/` real). **Encontró un defecto mío (T16):**
+      `import_legacy` no aplicaba el filtro de estación; el 1H de XAU quedó con 18 velas de invierno y el export
+      siguiente dio `clock_misaligned`. Se arregló en T16b (`14aa72e`) y el banco de XAU (creado minutos antes por esta
+      misma tarea) se rehízo desde cero. Cobertura: XAU 1M 139 326 velas desde 2026-05-10, 5M desde 2026-05-05; BTC 1M
+      137 793 desde 2026-06-24 (el símbolo de BTC solo tiene ~3 meses de 1M en el servidor). El 5M de XAU del
+      *import legacy* está excluido (`LEGACY_IMPORT_EXCLUSIONS`); el 5M que hay en el banco vino del export nuevo.
 - [ ] T60. Correr `resolution-report` sobre las DBs reales, en solo lectura. (RF-6, RF-17, RF-21)
       Hecho cuando: el `.md` generado se muestra, y el S1 direccional de XAU se compara con el 61% de
       `analisis-overlap-2d.md`, explicando cualquier diferencia (1M/5M, ancla).
