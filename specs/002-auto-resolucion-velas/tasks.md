@@ -508,6 +508,24 @@
       `Válidas` con su tilde.
       SUITE: `633 passed, 3 skipped, 97 warnings in 20.14s`; sin `.data/`.
 
+- [x] T16b. *(Tarea agregada el 2026-09-29: corrección de T16 a partir de la primera corrida real.)* `import_legacy`
+      aplica el filtro de estación de horario. (RF-2c, RF-15c, plan decisión T17)
+      Hecho cuando: el import inicial solo trae, en 1H y más finas, las velas de la misma estación que el momento del
+      import, y un test reproduce el caso real. SUITE en verde.
+      **Qué pasó:** en T16 omití el filtro razonando que RF-2c no lo mencionaba, pero la decisión T17 del plan sí lo
+      pedía ("el import inicial solo trae velas de la estación de horario actual mientras `BROKER_DST_RULE` no esté
+      verificado"). En T59, `candles export --symbol XAUUSD` contra el banco recién importado dio `clock_misaligned`:
+      18 velas de 1H del 5-6 de marzo (invierno, antes del cambio de EE.UU.) venían con 1 h de error del exportador
+      viejo, y el chequeo de superposición las detectó. BTCUSD no se afectó (su 1H empieza el 19 de abril).
+      **Arreglo:** `import_legacy()` recibe `export_moment` y `dst_rule` (obligatorios, por keyword: la omisión fue el
+      error) y pasa cada TF por `filter_by_export_season`; `import_legacy_with_status()` toma la regla de
+      `BROKER_DST_RULE` y "ahora" (GT) si no se le pasan. El banco real de XAUUSD (con las 18 velas malas, creado ese
+      mismo día por T59) se rehízo desde cero: el banco no modifica velas, así que no había otra forma limpia.
+      Tests +4 en `tests/test_candle_bank.py`: solo las TF rápidas pierden las velas de la estación opuesta; `none`
+      importa todo; la regla sale de la configuración; y **el caso real** (legacy con velas de invierno mal etiquetadas
+      + export nuevo bien etiquetado: con el filtro la superposición verifica). Los tests con fechas de junio ahora
+      fijan `export_moment` y `dst_rule` para no depender del día en que se corran. Mutación: sin el filtro se rompen 3.
+
 ## Etapa 3 — Resolvedor, métricas y reporte (solo lectura)
 
 - [ ] T23. `first_touch_detail()` en `core/p2_ground_truth.py`. (RF-4, RF-4b, RF-4f)
@@ -675,9 +693,14 @@
 
 ## Etapa 10 — Datos reales, demos y validación
 
-- [ ] T57. 🖐 Integrar la rama a `feature/tactical-tier-gate-df`, solo con tu aprobación y la lista explícita de
+- [x] T57. 🖐 Integrar la rama a `feature/tactical-tier-gate-df`, solo con tu aprobación y la lista explícita de
       commits. (—)
       Hecho cuando: `git log` de la rama principal contiene los commits de la spec, y R1 se cumple.
+      **Hecho 2026-09-29 (primera integración, con aprobación del usuario):** avance rápido (fast-forward, sin mezclar ni
+      reescribir) de `feature/tactical-tier-gate-df` de `158869b` a `ac395b1`: 27 commits (`6162742` … `ac395b1`), 32
+      archivos. Se verificó antes que ninguno chocara con los cambios sin commitear o sin trackear del usuario en el
+      principal (ninguno) y después que quedaron idénticos; `git diff CLAUDE.md` vacío. **Cada commit posterior
+      (T16b, …) requiere otra integración**, que se pide aparte.
 - [ ] T58. 🖐 **Migración de esquema de las 4 DBs reales con las 3 puertas**, antes de correr cualquier comando del
       CLI nuevo en el checkout principal (N41, NFR-1, R9, constitución principio 5):
       1. copiar las 4 `.data/flight_account_*.db` a un directorio temporal, correr `init_db` sobre cada copia, y

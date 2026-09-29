@@ -684,6 +684,9 @@ def import_legacy(
     offsets: Sequence[int] = range(-6, 7),
     min_entries: int = CLOCK_MIN_ENTRIES,
     exclusions: FrozenSet[Tuple[str, str]] = LEGACY_IMPORT_EXCLUSIONS,
+    *,
+    export_moment: datetime,
+    dst_rule: str,
 ) -> LegacyImportResult:
     """
     RF-2c: cuando se crea el banco de `symbol` por primera vez, importa los
@@ -698,6 +701,15 @@ def import_legacy(
     Excepción explícita (RF-2c, baseline H11): aunque `symbol` verifique,
     cualquier `(symbol, TF)` en `exclusions` (por defecto, solo XAU/5M) se
     excluye igual.
+
+    Estación de horario (plan.md decisión T17, RF-15c): los CSV legacy los
+    escribió el exportador viejo, con UN solo offset para toda la corrida, así que
+    en 1H y más finas las velas de la estación opuesta a la del export tienen 1 h
+    de error. Por eso, igual que en un export nuevo, se pasan por
+    `filter_by_export_season(export_moment, dst_rule)` y solo entran las de la
+    misma estación. `export_moment` y `dst_rule` son obligatorios a propósito: en
+    T16 se omitió este filtro y en la primera corrida real dejó 18 velas de 1H de
+    marzo con 1 h de corrimiento en el banco de XAUUSD (2026-09-29).
     """
     real_accounts = REAL_ACCOUNTS if real_accounts is None else real_accounts
     symbol_map = MT5_SYMBOL_MAP if symbol_map is None else symbol_map
@@ -727,6 +739,7 @@ def import_legacy(
             excluded[tf] = LEGACY_EXCLUSION_REASON
             continue
         incoming_df = read_candle_csv(bank_csv_path(legacy_dir, tf))
+        incoming_df = filter_by_export_season(incoming_df, tf, export_moment, dst_rule)
         imported[tf] = merge_timeframe_into_bank_checked(bank_dir, tf, incoming_df)
 
     return LegacyImportResult(symbol=symbol, aligned=True, imported=imported, excluded=excluded)
@@ -925,20 +938,28 @@ def import_legacy_with_status(
     accounts_data_dir: str,
     real_accounts: Optional[Dict[str, str]] = None,
     symbol_map: Optional[Dict[str, str]] = None,
+    export_moment: Optional[datetime] = None,
+    dst_rule: Optional[str] = None,
 ) -> LegacyImportResult:
     """
     `import_legacy()` (RF-2c) con el candado del símbolo y `status.json`: lo que
-    llama `candles import-legacy`. Sin CSV legacy no toca nada (ni siquiera
+    llama `candles import-legacy`. `dst_rule` sale de `BROKER_DST_RULE` y
+    `export_moment` es "ahora" (hora GT naive) si no se pasan. Sin CSV legacy no toca nada (ni siquiera
     crea el directorio del banco). Si el símbolo ya tiene un export en curso,
     levanta `CandleBankLockedError`. `status.json` queda con
     `run_id="legacy_import"` y, si el reloj verificó, `verified_by="references"`.
     """
     if not _timeframes_present_in(legacy_dir):
         return LegacyImportResult(symbol=symbol, aligned=None)
+    import config.auto_resolution as auto_cfg  # en la llamada, para leer el valor vigente
+    dst_rule = auto_cfg.BROKER_DST_RULE if dst_rule is None else dst_rule
+    if export_moment is None:
+        export_moment = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=6)  # GT naive
     with acquire_bank_lock(bank_dir):
         result = import_legacy(
             symbol, legacy_dir, bank_dir, accounts_data_dir,
             real_accounts=real_accounts, symbol_map=symbol_map,
+            export_moment=export_moment, dst_rule=dst_rule,
         )
         if result.aligned is True:
             sync = SyncResult(symbol, SYNC_RESULT_MERGED, verified_by="references",

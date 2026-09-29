@@ -78,6 +78,7 @@ def env(tmp_path, monkeypatch):
     # `cli()` abre el engine de cuenta para CUALQUIER subcomando (cli/main.py): se lo fija en memoria.
     monkeypatch.setattr(tools.database, "engine_default", init_db("sqlite:///:memory:"))
     e = Env(tmp_path)
+    monkeypatch.setattr(auto_cfg, "BROKER_DST_RULE", "none")  # los datos de fixture son de junio: sin depender de la fecha de hoy
     for name, path in (("CANDLE_BANK_DIR", e.bank_root), ("LEGACY_EXPORTS_DIR", e.legacy_root),
                        ("ACCOUNTS_DATA_DIR", e.accounts_dir), ("MT5_INCOMING_DIR", e.incoming_root)):
         monkeypatch.setattr(auto_cfg, name, str(path))

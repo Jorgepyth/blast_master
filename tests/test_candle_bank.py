@@ -52,6 +52,7 @@ from tools.database import Base, UnifiedDepartment
 from tools.database import TacticalAudit as TacticalAuditORM
 
 DAY = datetime(2026, 9, 10)
+EXPORT_MOMENT = datetime(2026, 9, 15, 12)  # un momento de verano fijo, para que los tests no dependan de la fecha de hoy
 
 
 def _frame(times, closes):
@@ -760,6 +761,7 @@ def test_import_legacy_aligned_symbol_imports_all_present_timeframes(tmp_path):
     result = import_legacy(
         "BTCUSD", str(legacy_dir), str(bank_dir), str(tmp_path),
         real_accounts={"002": "btc.db"}, symbol_map={"BTCUSDT.P": "BTCUSD"}, min_entries=10,
+        export_moment=EXPORT_MOMENT, dst_rule="none",
     )
 
     assert result.aligned is True
@@ -779,6 +781,7 @@ def test_import_legacy_excludes_xau_5m_even_when_symbol_verifies(tmp_path):
     result = import_legacy(
         "XAUUSD", str(legacy_dir), str(bank_dir), str(tmp_path),
         real_accounts={"000": "xau.db"}, symbol_map={"XAUUSDT.P": "XAUUSD"}, min_entries=10,
+        export_moment=EXPORT_MOMENT, dst_rule="none",
     )
 
     assert result.aligned is True
@@ -797,6 +800,7 @@ def test_import_legacy_5m_exclusion_is_scoped_to_xauusd_only(tmp_path):
     result = import_legacy(
         "BTCUSD", str(legacy_dir), str(bank_dir), str(tmp_path),
         real_accounts={"002": "btc.db"}, symbol_map={"BTCUSDT.P": "BTCUSD"}, min_entries=10,
+        export_moment=EXPORT_MOMENT, dst_rule="none",
     )
     assert "5M" in result.imported
     assert result.excluded == {}
@@ -812,6 +816,7 @@ def test_import_legacy_insufficient_references_excludes_everything_and_writes_no
     result = import_legacy(
         "XAUUSD", str(legacy_dir), str(bank_dir), str(tmp_path),
         real_accounts={"000": "xau.db"}, symbol_map={"XAUUSDT.P": "XAUUSD"}, min_entries=10,
+        export_moment=EXPORT_MOMENT, dst_rule="none",
     )
     assert result.imported == {}
     assert set(result.excluded) == {"15M", "1H"}
@@ -828,6 +833,7 @@ def test_import_legacy_misaligned_clock_excludes_everything_with_reason(tmp_path
     result = import_legacy(
         "XAUUSD", str(legacy_dir), str(bank_dir), str(tmp_path),
         real_accounts={"000": "xau.db"}, symbol_map={"XAUUSDT.P": "XAUUSD"}, min_entries=10,
+        export_moment=EXPORT_MOMENT, dst_rule="none",
     )
     assert result.imported == {}
     assert result.excluded == {"15M": "clock_misaligned"}
@@ -836,7 +842,7 @@ def test_import_legacy_misaligned_clock_excludes_everything_with_reason(tmp_path
 def test_import_legacy_empty_source_directory_returns_none_aligned(tmp_path):
     result = import_legacy(
         "NOPE", str(tmp_path / "legacy" / "NOPE"), str(tmp_path / "bank" / "NOPE"), str(tmp_path),
-        real_accounts={}, symbol_map={},
+        real_accounts={}, symbol_map={}, export_moment=EXPORT_MOMENT, dst_rule="none",
     )
     assert result.aligned is None
     assert result.imported == {}
@@ -852,6 +858,7 @@ def test_import_legacy_never_modifies_the_source_directory(tmp_path):
     import_legacy(
         "XAUUSD", str(legacy_dir), str(tmp_path / "bank" / "XAUUSD"), str(tmp_path),
         real_accounts={"000": "xau.db"}, symbol_map={"XAUUSDT.P": "XAUUSD"}, min_entries=10,
+        export_moment=EXPORT_MOMENT, dst_rule="none",
     )
 
     assert (legacy_dir / "15M.csv").read_bytes() == before
@@ -1082,7 +1089,8 @@ def _legacy_env(tmp_path, fills, lag_hours=0, five_minute=False):
 def _import_with_status(tmp_path, legacy_dir, bank_dir):
     return import_legacy_with_status(
         "XAUUSD", str(legacy_dir), str(bank_dir), str(tmp_path),
-        real_accounts={"000": "xau.db"}, symbol_map={"XAUUSDT.P": "XAUUSD"})
+        real_accounts={"000": "xau.db"}, symbol_map={"XAUUSDT.P": "XAUUSD"},
+        export_moment=EXPORT_MOMENT, dst_rule="none")
 
 
 def test_import_legacy_with_status_verified_writes_status_and_imports(tmp_path):
@@ -1136,3 +1144,80 @@ def test_import_legacy_with_status_with_the_lock_held_raises_and_leaves_the_bank
 
     assert not (bank_dir / "15M.csv").exists()
     assert read_bank_status(str(bank_dir)) is None
+
+
+# --- import_legacy y la estación de horario (plan decisión T17; hallazgo real del 2026-09-29) ---
+
+def _legacy_with_two_seasons(tmp_path):
+    """Legacy que verifica el reloj (15M de junio, 12 referencias) y trae además 1H y 1D con una vela de enero
+    (invierno) y una de julio (verano)."""
+    legacy_dir, bank_dir = _legacy_env(tmp_path, 12)
+    january, july = datetime(2026, 1, 15, 10), datetime(2026, 7, 15, 10)
+    _write_csv(legacy_dir / "1H.csv", [january, july], [111.0, 222.0])
+    _write_csv(legacy_dir / "1D.csv", [january, july], [333.0, 444.0])
+    return legacy_dir, bank_dir, january, july
+
+
+def test_import_legacy_drops_opposite_season_candles_on_fast_timeframes_only(tmp_path):
+    legacy_dir, bank_dir, january, july = _legacy_with_two_seasons(tmp_path)
+
+    result = import_legacy(
+        "XAUUSD", str(legacy_dir), str(bank_dir), str(tmp_path),
+        real_accounts={"000": "xau.db"}, symbol_map={"XAUUSDT.P": "XAUUSD"}, min_entries=10,
+        export_moment=datetime(2026, 9, 15, 12), dst_rule="us",
+    )
+
+    assert result.aligned is True
+    assert list(read_candle_csv(bank_csv_path(str(bank_dir), "1H"))["time"]) == [july]  # enero (invierno) no entra
+    assert set(read_candle_csv(bank_csv_path(str(bank_dir), "1D"))["time"]) == {january, july}  # TF lenta: completa
+    assert result.imported["1H"] == 1 and result.imported["1D"] == 2
+
+
+def test_import_legacy_with_rule_none_imports_everything(tmp_path):
+    legacy_dir, bank_dir, january, july = _legacy_with_two_seasons(tmp_path)
+
+    import_legacy(
+        "XAUUSD", str(legacy_dir), str(bank_dir), str(tmp_path),
+        real_accounts={"000": "xau.db"}, symbol_map={"XAUUSDT.P": "XAUUSD"}, min_entries=10,
+        export_moment=datetime(2026, 9, 15, 12), dst_rule="none",
+    )
+
+    assert set(read_candle_csv(bank_csv_path(str(bank_dir), "1H"))["time"]) == {january, july}
+
+
+def test_import_legacy_with_status_takes_the_rule_from_the_configuration(tmp_path, monkeypatch):
+    import config.auto_resolution as auto_cfg
+    legacy_dir, bank_dir, january, july = _legacy_with_two_seasons(tmp_path)
+    monkeypatch.setattr(auto_cfg, "BROKER_DST_RULE", "us")
+
+    import_legacy_with_status(
+        "XAUUSD", str(legacy_dir), str(bank_dir), str(tmp_path),
+        real_accounts={"000": "xau.db"}, symbol_map={"XAUUSDT.P": "XAUUSD"},
+        export_moment=datetime(2026, 9, 15, 12))  # sin dst_rule: sale de la configuración
+
+    assert list(read_candle_csv(bank_csv_path(str(bank_dir), "1H"))["time"]) == [july]
+
+
+def test_legacy_import_then_fresh_export_verifies_by_overlap_with_no_false_misalignment(tmp_path):
+    """El caso real: un legacy con velas de invierno mal etiquetadas + un export nuevo con ellas bien
+    etiquetadas. Con el filtro, el banco no arrastra las malas y la superposición (solo verano) verifica."""
+    legacy_dir, bank_dir = _legacy_env(tmp_path, 12)
+    winter_hours = [datetime(2026, 3, 5, 21) + timedelta(hours=h) for h in range(3)]      # mal etiquetadas en el legacy
+    summer_hours = [datetime(2026, 7, 15, 0) + timedelta(hours=h) for h in range(12)]
+    _write_csv(legacy_dir / "1H.csv", winter_hours + summer_hours, [100.0 + h for h in range(15)])
+    import_legacy_with_status(
+        "XAUUSD", str(legacy_dir), str(bank_dir), str(tmp_path),
+        real_accounts={"000": "xau.db"}, symbol_map={"XAUUSDT.P": "XAUUSD"},
+        export_moment=datetime(2026, 9, 15, 12), dst_rule="us")
+
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    fixed_winter = [t - timedelta(hours=1) for t in winter_hours]  # el export nuevo las etiqueta bien
+    _write_csv(incoming / "1H.csv", fixed_winter + summer_hours, [200.0 + h for h in range(3)] + [100.0 + h for h in range(3, 15)])
+
+    result = merge_incoming_run(
+        str(bank_dir), str(incoming), "XAUUSD", "r1", str(tmp_path),
+        export_moment=datetime(2026, 9, 15, 12), dst_rule="us",
+        real_accounts={"000": "xau.db"}, symbol_map={"XAUUSDT.P": "XAUUSD"})
+
+    assert result.result == SYNC_RESULT_MERGED and result.verified_by == "overlap"
