@@ -535,9 +535,19 @@
 
 ## Etapa 3 — Resolvedor, métricas y reporte (solo lectura)
 
-- [ ] T23. `first_touch_detail()` en `core/p2_ground_truth.py`. (RF-4, RF-4b, RF-4f)
+- [x] T23. `first_touch_detail()` en `core/p2_ground_truth.py`. (RF-4, RF-4b, RF-4f)
       Hecho cuando: los tests nuevos cubren el índice, el nivel y el caso ambiguo, y `tests/test_p2_ground_truth.py`
       sigue en verde sin cambios. SUITE en verde.
+      **Hecho 2026-09-29:** `first_touch_detail()` devuelve `FirstTouchDetail(direction, incomplete, bar_index, level,
+      ambiguous)`, en el orden del plan (§3.2, paso 5). `level` es `LEVEL_VALIDATION` o `LEVEL_INVALIDATION`. Una vela
+      que toca los dos niveles devuelve su índice con `ambiguous=True`, para que T26 la refine con una TF más fina. El
+      campo se llama `bar_index` y no `index` porque `index` taparía el método de la tupla. Solo agregados: 76 líneas
+      nuevas, ninguna borrada; `first_touch_direction` y `tests/test_p2_ground_truth.py` sin cambios. El recorrido
+      quedó repetido a propósito (el plan pide "solo agregados"): un test con 3000 caminos al azar exige que los dos
+      primeros campos coincidan siempre con `first_touch_direction`. Tests: +15 en `tests/test_p2_first_touch_detail.py`.
+      Mutación: sin la rama ambigua, con el índice corrido en 1, con los niveles cruzados, con `>` en vez de `>=` o
+      con la vela ambigua sin índice, fallan entre 3 y 11 tests.
+      SUITE: `652 passed, 3 skipped, 97 warnings in 16.97s`; sin `.data/`.
 - [ ] T24. `core/candle_resolution.py`, parte 1: cobertura por TF y códigos `pending_candles` y `no_history`. (RF-4c,
       RF-4g)
       Hecho cuando: los tests prueban un ancla anterior al banco (`no_history`) y un banco que termina antes del

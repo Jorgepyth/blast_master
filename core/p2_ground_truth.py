@@ -103,3 +103,79 @@ def first_touch_direction(
             return (thesis_direction if lower_level == edge_validation_price else opposite), False
 
     return None, True
+
+
+LEVEL_VALIDATION = "validation"      # tocó edge_validation_price: la tesis se confirmó
+LEVEL_INVALIDATION = "invalidation"  # tocó structural_invalidation: la tesis se invalidó
+
+
+class FirstTouchDetail(NamedTuple):
+    """
+    Resultado de `first_touch_detail`, en el orden del plan de la spec 002
+    (§3.2, paso 5): (dirección, incompleto, índice, nivel, ambiguo).
+
+      - direction, incomplete: exactamente lo que devuelve
+        `first_touch_direction` con los mismos argumentos.
+      - bar_index: posición, en el camino recibido, de la vela que tocó (o de
+        la vela ambigua). None si no hubo toque.
+      - level: LEVEL_VALIDATION o LEVEL_INVALIDATION. None si no hubo toque o
+        si la vela fue ambigua.
+      - ambiguous: la vela `bar_index` tocó los dos niveles (RF-4b).
+    """
+    direction: Optional[str]
+    incomplete: bool
+    bar_index: Optional[int]
+    level: Optional[str]
+    ambiguous: bool
+
+
+def first_touch_detail(
+    thesis_direction: Optional[str],
+    ohlc_path_forward: Sequence[OhlcBar],
+    entry_price: float,
+    edge_validation_price: float,
+    structural_invalidation: float,
+) -> FirstTouchDetail:
+    """
+    Spec 002 (RF-4, RF-4b, RF-4f): misma firma y misma regla de toque que
+    `first_touch_direction`, pero dice también en qué vela fue el toque y qué
+    nivel tocó. Con eso el resolvedor saca la hora del toque (la apertura de
+    esa vela, N19) y distingue una tesis confirmada de una invalidada. Si la
+    primera vela que toca algo toca los dos niveles, devuelve su índice marcado
+    como ambiguo, para que el llamador la recorra con una TF más fina (plan
+    §3.2); acá no se adivina un orden.
+
+    `first_touch_direction` no cambia: sus llamadores actuales quedan como
+    están (RF-4f). El recorrido está repetido a propósito, y
+    `tests/test_p2_first_touch_detail.py` exige, con caminos al azar, que los
+    dos primeros campos coincidan siempre con `first_touch_direction`.
+    """
+    if thesis_direction is None:
+        return FirstTouchDetail(None, True, None, None, False)
+
+    opposite = "short" if thesis_direction == "long" else "long"
+
+    if edge_validation_price > structural_invalidation:
+        upper_level, lower_level = edge_validation_price, structural_invalidation
+    else:
+        upper_level, lower_level = structural_invalidation, edge_validation_price
+
+    for index, bar in enumerate(ohlc_path_forward):
+        touched_upper = bar.high >= upper_level
+        touched_lower = bar.low <= lower_level
+
+        if touched_upper and touched_lower:
+            return FirstTouchDetail(None, True, index, None, True)
+
+        if touched_upper:
+            touched_level = upper_level
+        elif touched_lower:
+            touched_level = lower_level
+        else:
+            continue
+
+        if touched_level == edge_validation_price:
+            return FirstTouchDetail(thesis_direction, False, index, LEVEL_VALIDATION, False)
+        return FirstTouchDetail(opposite, False, index, LEVEL_INVALIDATION, False)
+
+    return FirstTouchDetail(None, True, None, None, False)
