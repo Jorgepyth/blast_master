@@ -94,6 +94,28 @@ exige mercado abierto), y `tools/p2_backtest.py:calibrate_clock_offset()` valida
 contra fills + `mark_price` y aborta los pipelines si no cuadra. Para US100 el símbolo MT5
 es `USTEC`, y su historia semanal (732 velas) no alcanza el mínimo de 800 de los modelos P2.
 
+**Pendiente con fecha: confirmar `BROKER_DST_RULE` (spec 002; anotado el 2026-09-29 a pedido del
+usuario).** El `.env` tiene `BROKER_DST_RULE=us`: se asume que el servidor del broker cambia de hora
+con el calendario de EE.UU. Es consistente con lo medido, pero **no está probado**
+(`specs/002-auto-resolucion-velas/spike.md`). Solo se distingue de `eu` en los días en que EE.UU. y
+Europa tienen horarios distintos: **del lunes 26 al viernes 30 de octubre de 2026** (Europa cambia el
+25, EE.UU. el 1 de noviembre) y, si esa se pierde, **del lunes 15 al viernes 26 de marzo de 2027**
+(EE.UU. cambia el 14, Europa el 28). Si una sesión se abre en esas fechas o después y este párrafo
+sigue aquí, avisale al usuario al empezar:
+- **Dentro de la ventana**, con MT5 y el mercado abiertos: `python cli/main.py candles export --symbol
+  XAUUSD` (y BTCUSD). Si fusiona (`merged`), `us` queda confirmada. Si el broker siguiera la regla
+  europea, el exportador deduciría mal el offset base (`base_offset_from_current`), las velas más viejas
+  saldrían corridas 1 h y la fusión se rechazaría con `clock_misaligned`, sin tocar el banco. Conviene
+  hacerlo lo más tarde posible dentro de la ventana: pasado el cambio, el filtro de estación
+  (`filter_by_export_season`) ya no deja entrar al banco las velas de 1H y menores de la estación anterior.
+- **Si la ventana pasó sin export:** comparar solo los fills y mark prices de esos días con las velas de
+  un export posterior (los CSV de `_incoming`, que no pasan por ese filtro), con `evaluate_clock_entries`:
+  con la regla correcta calzan sin desplazamiento.
+- **Si resulta `eu`:** cambiar el `.env` y rehacer las velas del banco del 8 al 29 de marzo de 2026 y del
+  25 de octubre al 1 de noviembre de 2026, que se convirtieron con la regla equivocada.
+
+Con el resultado confirmado, anotarlo en `spike.md` y borrar este párrafo, con aprobación del usuario.
+
 ## Auditoría de análisis de datos (`jupyter/*.ipynb`)
 
 **Los notebooks de `jupyter/` no están auditados, y ya se encontraron bugs que invierten
