@@ -708,6 +708,9 @@
       archivos. Se verificó antes que ninguno chocara con los cambios sin commitear o sin trackear del usuario en el
       principal (ninguno) y después que quedaron idénticos; `git diff CLAUDE.md` vacío. **Cada commit posterior
       (T16b, …) requiere otra integración**, que se pide aparte.
+      **2.ª integración 2026-09-29 (aprobada por el usuario):** `ac395b1` → `3c557a6`, 4 commits (T16b, registro de
+      T59, cierre de T22 y el recordatorio de `BROKER_DST_RULE` en `CLAUDE.md`, pedido por el usuario), 6 archivos.
+      Mismas verificaciones: ningún choque, `git status` idéntico, los 30 archivos del usuario byte a byte iguales.
 - [ ] T58. 🖐 **Migración de esquema de las 4 DBs reales con las 3 puertas**, antes de correr cualquier comando del
       CLI nuevo en el checkout principal (N41, NFR-1, R9, constitución principio 5):
       1. copiar las 4 `.data/flight_account_*.db` a un directorio temporal, correr `init_db` sobre cada copia, y
