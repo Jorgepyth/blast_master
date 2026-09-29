@@ -466,7 +466,7 @@
       se ve en `status`. +7 tests en `tests/test_candle_bank.py` y +1 en `tests/test_config_auto_resolution.py`.
       Mutación: hacer que `export` ignore el código de salida rompe 3 tests.
       SUITE: `622 passed, 3 skipped, 97 warnings in 18.68s`; sin `.data/`.
-- [ ] T22. 🖐 **Spike de interoperabilidad**, con MT5 abierto en Windows:
+- [x] T22. 🖐 **Spike de interoperabilidad**, con MT5 abierto en Windows:
       - encontrar el Python de Windows que tiene `MetaTrader5`;
       - correr `candles export --symbol XAUUSD` desde `WT`, con el banco en un directorio temporal y
         `ACCOUNTS_DATA_DIR` apuntando a `.data/` real en solo lectura;
@@ -485,6 +485,12 @@
       cargar `WINDOWS_PYTHON`, `EXPORTER_WIN_PATH` y `BROKER_DST_RULE` en el `.env` del checkout principal; por eso T22
       queda sin marcar. (Tras T57 ya se puede: `EXPORTER_WIN_PATH` existe en el checkout principal. Valores en
       `spike.md`.)
+      **Cerrada 2026-09-29:** el usuario cargó `WINDOWS_PYTHON`, `EXPORTER_WIN_PATH`, `BROKER_DST_RULE=us` y
+      `AUTO_EXPORT=false` en el `.env` del principal. Se verificó leyendo solo esas 4 claves con `dotenv_values`: los
+      valores coinciden con `spike.md` y las barras invertidas llegan intactas. `BROKER_DST_RULE=us` sigue sin probar:
+      a pedido del usuario, quedó un recordatorio con fecha en `CLAUDE.md` (sección "Reloj de las velas exportadas").
+      Con el `.env` cargado, `test_windows_paths_have_no_default` fallaba si la suite corría en el principal (la
+      config lee ese `.env`); ahora reimporta la config sin las variables y sin leer ningún `.env`.
 - [x] T22a. *(Tarea agregada el 2026-09-29, a partir de lo que mostró el spike; no altera la numeración de las demás.)*
       Endurecer el exportador y `candle_sync` con los defectos que el spike encontró contra MT5 real. (RF-15, RF-20e)
       Hecho cuando: un export con un rango que MT5 rechazaría de un solo pedido se completa partiéndolo en tramos; una
@@ -734,6 +740,11 @@
       Hecho cuando: queda documentado en `validation.md` con la salida, y la Flight Session se borra al terminar.
 - [ ] T62. 🖐 Demo del export automático con MT5 abierto y con MT5 cerrado. Solo si T22 funcionó. (RF-20 a RF-20e)
       Hecho cuando: las dos salidas quedan en `validation.md`.
+      **Decisión pendiente antes de activar `AUTO_EXPORT` (postergada por el usuario el 2026-09-29): retención de
+      corridas.** Cada export deja una carpeta de 2 a 11 MB en `C:\Users\jcifu\MT5Exports\_incoming\<SÍMBOLO>\`
+      (5 corridas y 36 MB hoy) y nada las borra. A mano no importa, pero con el export automático varias corridas por
+      día crecerían sin límite. El plan (§2.4) propone conservar las últimas 5 por símbolo, para poder auditarlas; no
+      está implementado ni tiene tarea. Las 2 corridas del spike ya se borraron, con aprobación del usuario.
 - [ ] T63. 🖐 Backfill real:
       1. dry-run y revisión de la vista git-graph;
       2. las 3 puertas (copia, backup y tu aprobación);

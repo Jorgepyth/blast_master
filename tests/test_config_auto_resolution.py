@@ -10,6 +10,7 @@ import importlib
 import os
 import sys
 
+import dotenv
 import pytest
 
 import config.auto_resolution as auto_resolution_config
@@ -97,10 +98,20 @@ def test_legacy_exports_dir_defaults_to_the_folder_that_contains_the_incoming_di
     assert auto_resolution_config.LEGACY_EXPORTS_DIR == os.path.dirname(auto_resolution_config.MT5_INCOMING_DIR)
 
 
-def test_windows_paths_have_no_default():
-    # Los fija el spike (T22); hasta entonces, None -- el export sigue manual (N31).
-    assert auto_resolution_config.WINDOWS_PYTHON is None
-    assert auto_resolution_config.EXPORTER_WIN_PATH is None
+def test_windows_paths_have_no_default(monkeypatch):
+    # Sin default en el código: el usuario las carga en su `.env` (T22). Se reimporta el módulo sin las
+    # variables y sin leer ningún `.env`, para no depender de la máquina: desde T22 el `.env` del checkout
+    # principal sí las tiene, y con él cargado este test fallaba.
+    for var in ("WINDOWS_PYTHON", "EXPORTER_WIN_PATH"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: False)
+    sys.modules.pop("config.auto_resolution", None)
+    try:
+        reloaded = importlib.import_module("config.auto_resolution")
+        assert reloaded.WINDOWS_PYTHON is None
+        assert reloaded.EXPORTER_WIN_PATH is None
+    finally:
+        sys.modules["config.auto_resolution"] = auto_resolution_config
 
 
 def test_paths_are_absolute_even_when_first_imported_from_tmp_path(tmp_path, monkeypatch):
