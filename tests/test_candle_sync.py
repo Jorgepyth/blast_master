@@ -62,6 +62,9 @@ if mode == "ok":
     print("WINPID: 4242")
     print("RUN_ID: " + run_id)
     print("RUN_DIR: " + run_dir)
+elif mode == "ok_partial":  # el exportador salteó el 1M (RF-15) pero el resto salió bien
+    print("SKIPPED_TF: 1M")
+    print("RUN_ID: " + run_id)
 else:  # "no_run_id"
     print("done")
 '''
@@ -141,8 +144,8 @@ def test_build_export_command_from_configuration():
 
     assert command[:4] == ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command"]
     script = command[4]
-    assert script.startswith("Write-Output ('WINPID: ' + $PID); & 'C:\\Py\\python.exe' "
-                             "'C:\\repo\\windows_export\\export_p2_ohlc.py'")
+    assert script.startswith("$env:PYTHONIOENCODING = 'utf-8'; Write-Output ('WINPID: ' + $PID); "
+                             "& 'C:\\Py\\python.exe' 'C:\\repo\\windows_export\\export_p2_ohlc.py'")
     for expected in ("'--symbol' 'XAUUSD'", "'--out-dir' 'C:\\Users\\x\\_incoming'", "'--per-run-dir'",
                      "'--min-anchor' '2026-05-18 12:15:00'", "'--max-anchor' '2026-09-03 18:19:00'",
                      "'--dst-rule' 'us'"):
@@ -404,8 +407,8 @@ def test_main_wait_seconds_bounds_the_wait_for_the_exporter(env, capsys):
 def test_powershell_argv_prints_the_windows_pid_first_and_keeps_the_exit_code():
     argv = powershell_argv(["C:\\Windows\\System32\\PING.EXE", "-n", "3", "127.0.0.1"])
     assert argv[:4] == ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command"]
-    assert argv[4] == ("Write-Output ('WINPID: ' + $PID); & 'C:\\Windows\\System32\\PING.EXE' '-n' '3' "
-                       "'127.0.0.1'; exit $LASTEXITCODE")
+    assert argv[4] == ("$env:PYTHONIOENCODING = 'utf-8'; Write-Output ('WINPID: ' + $PID); "
+                       "& 'C:\\Windows\\System32\\PING.EXE' '-n' '3' '127.0.0.1'; exit $LASTEXITCODE")
     assert '"' not in argv[4]  # las comillas dobles se estropean camino a Windows
 
 
@@ -480,3 +483,31 @@ def test_kill_windows_tree_reports_a_failing_taskkill(tmp_path):
 
 def test_kill_windows_tree_reports_a_missing_taskkill_without_raising():
     assert kill_windows_tree(4242, taskkill_command=["/definitely/not/taskkill"]) == "/definitely/not/taskkill not found"
+
+
+# --- Spike (2026-09-29): un export parcial (una TF salteada) se fusiona y se nota -----
+
+def test_exporter_run_lists_the_timeframes_it_skipped():
+    run = ExporterRun(returncode=0, stdout="SKIPPED_TF: 1M\r\nSKIPPED_TF: 5M\r\nRUN_ID: r1\r\n")
+    assert run.skipped_timeframes == ["1M", "5M"]
+    assert ExporterRun(returncode=0, stdout="RUN_ID: r1\n").skipped_timeframes == []
+
+
+def test_a_partial_export_still_merges_and_says_which_timeframes_were_skipped(env):
+    env.seed_bank(12)
+    env.seed_payload(15)
+
+    result = env.sync("ok_partial")
+
+    assert result.result == "merged" and result.bars_added == {"1H": 3}
+    assert result.error == "exporter skipped timeframes: 1M"
+    assert read_bank_status(str(env.bank_dir))["last_error"] == "exporter skipped timeframes: 1M"
+    assert candle_sync.format_result_line(result).endswith("-- exporter skipped timeframes: 1M")
+
+
+def test_a_complete_export_has_no_skipped_note_in_the_summary_line(env):
+    env.seed_bank(12)
+    env.seed_payload(15)
+    result = env.sync("ok")
+    assert result.error is None
+    assert "--" not in candle_sync.format_result_line(result)

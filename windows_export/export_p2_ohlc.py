@@ -80,7 +80,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -421,6 +421,60 @@ def make_run_dir(base_dir: Path, symbol: str, now_utc: Optional[datetime] = None
         return run_id, run_dir
 
 
+# Tope de barras por llamada a copy_rates_range. MEDIDO contra MT5 real el
+# 2026-09-29 (terminal con maxbars=100000): devuelve bien hasta ~57 700 barras
+# (XAUUSD 1M, 60 días) y falla con `(-2, 'Terminal: Invalid params')` en rangos
+# de ~70 000 o más (5M a 365 días, 1M a 90 días). Con el rango que pide este
+# script (desde 800 velas antes del análisis más viejo), el 1M solo ya son
+# ~140 000 barras: sin partir el rango, el export fallaba siempre en 1M. 30 000
+# deja margen, incluso para un terminal con menos `maxbars`.
+MAX_BARS_PER_CALL = 30_000
+
+
+def split_range(date_from: datetime, date_to: datetime, timeframe_minutes: int,
+                max_bars: int = MAX_BARS_PER_CALL) -> List[Tuple[datetime, datetime]]:
+    """
+    Parte `[date_from, date_to]` en tramos consecutivos, sin solaparse, cada uno
+    de a lo sumo `max_bars` velas de `timeframe_minutes` (contando el mercado
+    abierto 24/7, así que en la práctica traen menos). `copy_rates_range` es
+    inclusivo en los dos extremos, por eso cada tramo termina un segundo antes
+    de donde empieza el siguiente. Un rango corto queda en un único tramo.
+    """
+    span = timedelta(minutes=timeframe_minutes * max_bars)
+    chunks: List[Tuple[datetime, datetime]] = []
+    start = date_from
+    while start <= date_to:
+        end = min(start + span - timedelta(seconds=1), date_to)
+        chunks.append((start, end))
+        start = end + timedelta(seconds=1)
+    return chunks or [(date_from, date_to)]
+
+
+def fetch_rates(symbol: str, timeframe: str, date_from_utc: datetime, date_to_utc: datetime) -> pd.DataFrame:
+    """
+    Todas las velas de `symbol`/`timeframe` en el rango, pedidas por tramos
+    (`split_range`) y unidas, ordenadas y sin `time` repetido. Un tramo que MT5
+    rechaza (`None`) levanta `RuntimeError`; uno sin velas simplemente no aporta.
+    Un DataFrame vacío significa "MT5 no tiene nada en todo el rango".
+    """
+    mt5_tf = TIMEFRAME_MAP[timeframe]
+    frames = []
+    for chunk_from, chunk_to in split_range(date_from_utc, date_to_utc, TIMEFRAME_MINUTES[timeframe]):
+        rates = mt5.copy_rates_range(symbol, mt5_tf, chunk_from, chunk_to)
+        if rates is None:
+            raise RuntimeError(
+                f"copy_rates_range devolvió None para {symbol}/{timeframe} "
+                f"({chunk_from} -> {chunk_to}). Error MT5: {mt5.last_error()}. "
+                "Verificar: símbolo visible en Market Watch, terminal logueado, "
+                "rango de fechas dentro del historial disponible."
+            )
+        if len(rates):
+            frames.append(pd.DataFrame(rates))
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True).drop_duplicates(subset="time").sort_values("time").reset_index(drop=True)
+
+
 def export_timeframe(symbol: str, timeframe: str, date_from_utc: datetime, date_to_utc: datetime,
                      out_dir: Path, server_utc_offset_hours: float = 0.0,
                      dst_rule: str = "none") -> ExportResult:
@@ -437,17 +491,7 @@ def export_timeframe(symbol: str, timeframe: str, date_from_utc: datetime, date_
     vela suma +1h si cae en horario de verano y las de la hora del cambio se
     descartan (RF-15b, N34).
     """
-    mt5_tf = TIMEFRAME_MAP[timeframe]
-    rates = mt5.copy_rates_range(symbol, mt5_tf, date_from_utc, date_to_utc)
-    if rates is None:
-        raise RuntimeError(
-            f"copy_rates_range devolvió None para {symbol}/{timeframe} "
-            f"({date_from_utc} -> {date_to_utc}). Error MT5: {mt5.last_error()}. "
-            "Verificar: símbolo visible en Market Watch, terminal logueado, "
-            "rango de fechas dentro del historial disponible."
-        )
-
-    df = pd.DataFrame(rates)
+    df = fetch_rates(symbol, timeframe, date_from_utc, date_to_utc)
     if df.empty:
         raise RuntimeError(
             f"copy_rates_range para {symbol}/{timeframe} devolvió 0 velas "
@@ -606,14 +650,23 @@ def main(argv: Optional[list] = None) -> int:
         date_to_gt = max(max_anchor, now_gt)  # nunca pedir menos que "ahora"
 
         results = []
+        skipped: List[str] = []
         for tf in timeframes_to_export:
             start_gt = compute_backward_start(min_anchor, tf)
             date_from_srv = gt_naive_to_server(start_gt, server_offset)
             date_to_srv = gt_naive_to_server(date_to_gt, server_offset)
             print(f"[{tf}] pidiendo {date_from_srv:%Y-%m-%d %H:%M} -> {date_to_srv:%Y-%m-%d %H:%M} (reloj servidor) ...")
-            result = export_timeframe(
-                args.symbol, tf, date_from_srv, date_to_srv, target_dir, base_offset, args.dst_rule
-            )
+            try:
+                result = export_timeframe(
+                    args.symbol, tf, date_from_srv, date_to_srv, target_dir, base_offset, args.dst_rule
+                )
+            except RuntimeError as exc:
+                # RF-15: si MT5 no entrega una temporalidad (poca historia de 1M, rango
+                # rechazado), se informa y se sigue con las demás -- cada CSV es independiente.
+                print(f"AVISO: {tf} no se pudo exportar, se sigue con las demás: {exc}", file=sys.stderr)
+                print(f"SKIPPED_TF: {tf}")
+                skipped.append(tf)
+                continue
             print(
                 f"[{tf}] {result.rows} velas escritas en {result.path} "
                 f"({result.first_time} .. {result.last_time})"
@@ -624,11 +677,13 @@ def main(argv: Optional[list] = None) -> int:
         print("\nResumen:")
         for r in results:
             print(f"  {r.timeframe}: {r.rows} filas")
+        for tf in skipped:
+            print(f"  {tf}: NO exportada")
 
     finally:
         mt5.shutdown()
 
-    return 0
+    return 0 if results else 1
 
 
 if __name__ == "__main__":

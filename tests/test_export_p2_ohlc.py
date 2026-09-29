@@ -53,8 +53,11 @@ from windows_export.export_p2_ohlc import (  # noqa: E402
     export_timeframe,
     gt_naive_to_utc,
     main,
+    MAX_BARS_PER_CALL,
+    fetch_rates,
     make_run_dir,
     parse_timeframes_arg,
+    split_range,
     server_time_to_utc,
     server_time_to_utc_dst,
     utc_to_gt_naive,
@@ -507,7 +510,7 @@ def test_two_runs_do_not_overwrite_each_other(mt5_ready, monkeypatch, tmp_path, 
     assert len(os.listdir(tmp_path / "XAUUSD")) == 2
 
 
-def test_failure_mid_run_leaves_finished_timeframes_complete_no_partial_csv_and_other_runs_untouched(
+def test_a_timeframe_that_fails_mid_run_is_skipped_and_reported_and_the_rest_is_kept(
         mt5_ready, monkeypatch, tmp_path, capsys):
     # Corrida A completa.
     monkeypatch.setattr(exporter_module.mt5, "copy_rates_range", lambda *a, **k: _fake_rates(["2026-01-15 10:00"]))
@@ -515,21 +518,101 @@ def test_failure_mid_run_leaves_finished_timeframes_complete_no_partial_csv_and_
     dir_a = _run_dir_from(capsys)
     a_bytes = open(os.path.join(dir_a, "1H.csv"), "rb").read()
 
-    # Corrida B: 1H sale bien, la segunda TF (30M) falla a mitad de la corrida.
+    # Corrida B: 1H sale bien, la segunda TF (30M) es rechazada por MT5 (RF-15: se informa y se sigue).
     calls = {"n": 0}
 
     def flaky(*a, **k):
         calls["n"] += 1
-        return _fake_rates(["2026-01-17 10:00"]) if calls["n"] == 1 else None  # None => RuntimeError
+        return _fake_rates(["2026-01-17 10:00"]) if calls["n"] == 1 else None  # None => MT5 rechazó el rango
 
     monkeypatch.setattr(exporter_module.mt5, "copy_rates_range", flaky)
     args_b = _main_args(tmp_path, "--per-run-dir")
     args_b[args_b.index("--timeframes") + 1] = "1H,30M"
-    with pytest.raises(RuntimeError, match="copy_rates_range devolvió None"):
-        main(args_b)
-    dir_b = _run_dir_from(capsys)
 
+    assert main(args_b) == 0  # 1H se exportó: la corrida sirve
+
+    captured = capsys.readouterr()
+    dir_b = [l for l in captured.out.splitlines() if l.startswith("RUN_DIR: ")][0][len("RUN_DIR: "):]
+    assert "SKIPPED_TF: 30M" in captured.out
+    assert "30M no se pudo exportar, se sigue con las demás" in captured.err
     assert dir_b != dir_a
     assert open(os.path.join(dir_a, "1H.csv"), "rb").read() == a_bytes  # la corrida A ni se tocó
     assert sorted(os.listdir(dir_b)) == ["1H.csv"]  # 1H completo; 30M no existe, ni a medias, ni un temporal
     assert len(pd.read_csv(os.path.join(dir_b, "1H.csv"))) == 1
+
+
+def test_when_every_timeframe_fails_the_exit_code_is_1(mt5_ready, monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(exporter_module.mt5, "copy_rates_range", lambda *a, **k: None)
+    args = _main_args(tmp_path)
+    args[args.index("--timeframes") + 1] = "1H,5M"
+    assert main(args) == 1
+    out = capsys.readouterr().out
+    assert "SKIPPED_TF: 1H" in out and "SKIPPED_TF: 5M" in out
+
+
+# --- Spike (2026-09-29): MT5 rechaza rangos de ~60 mil barras o más ---------------
+
+def test_split_range_short_range_is_a_single_chunk():
+    a, b = datetime(2026, 9, 1), datetime(2026, 9, 2)
+    assert split_range(a, b, timeframe_minutes=60) == [(a, b)]
+
+
+def test_split_range_long_range_is_contiguous_non_overlapping_and_capped():
+    a, b = datetime(2026, 5, 10), datetime(2026, 9, 29)  # el rango real del 1M: ~142 días
+    chunks = split_range(a, b, timeframe_minutes=1)
+
+    assert len(chunks) > 1
+    assert chunks[0][0] == a and chunks[-1][1] == b
+    for (start, end), (next_start, _) in zip(chunks, chunks[1:]):
+        assert next_start == end + timedelta(seconds=1)  # sin huecos ni solapes
+    for start, end in chunks:
+        assert (end - start) < timedelta(minutes=MAX_BARS_PER_CALL)  # ningún tramo supera el tope
+
+
+def test_split_range_a_single_instant_is_one_chunk():
+    t = datetime(2026, 9, 29, 12)
+    assert split_range(t, t, timeframe_minutes=1) == [(t, t)]
+
+
+def _limited_mt5(monkeypatch, limit_bars, log):
+    """Un MT5 que, como el real, devuelve None si el rango pedido implica más de `limit_bars` velas de 1M."""
+    def copy_rates_range(symbol, tf, a, b):
+        log.append((a, b))
+        minutes = (b - a).total_seconds() / 60
+        if minutes > limit_bars:
+            return None  # (-2, 'Terminal: Invalid params')
+        first = int(pd.Timestamp(a).timestamp() // 60 * 60)
+        last = int(pd.Timestamp(b).timestamp() // 60 * 60)
+        return [{"time": t, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5} for t in range(first, last + 1, 60)]
+    monkeypatch.setattr(exporter_module.mt5, "copy_rates_range", copy_rates_range)
+
+
+def test_fetch_rates_survives_the_mt5_range_limit_by_chunking_and_returns_every_candle_once(monkeypatch):
+    calls = []
+    _limited_mt5(monkeypatch, limit_bars=60_000, log=calls)
+    a = datetime(2026, 8, 1, tzinfo=UTC)
+    b = a + timedelta(days=150)  # 216 000 velas de 1M: un solo pedido fallaría
+
+    df = fetch_rates("XAUUSD", "1M", a, b)
+
+    assert len(calls) > 1
+    assert len(df) == 150 * 24 * 60 + 1  # todas las velas, ni una menos ni repetida en los bordes de tramo
+    assert df["time"].is_monotonic_increasing and df["time"].is_unique
+
+
+def test_the_same_range_without_chunking_is_rejected_by_the_emulated_mt5(monkeypatch):
+    """Sanity del emulador: sin partir el rango, este MT5 falso rechaza el pedido, como el real."""
+    _limited_mt5(monkeypatch, limit_bars=60_000, log=[])
+    a = datetime(2026, 8, 1, tzinfo=UTC)
+    assert exporter_module.mt5.copy_rates_range("XAUUSD", 9, a, a + timedelta(days=150)) is None
+
+
+def test_fetch_rates_a_chunk_rejected_by_mt5_raises(monkeypatch):
+    monkeypatch.setattr(exporter_module.mt5, "copy_rates_range", lambda *a, **k: None)
+    with pytest.raises(RuntimeError, match="copy_rates_range devolvió None"):
+        fetch_rates("XAUUSD", "1M", datetime(2026, 9, 1), datetime(2026, 9, 2))
+
+
+def test_fetch_rates_without_any_candle_returns_an_empty_frame(monkeypatch):
+    monkeypatch.setattr(exporter_module.mt5, "copy_rates_range", lambda *a, **k: [])
+    assert fetch_rates("XAUUSD", "1M", datetime(2026, 9, 1), datetime(2026, 9, 2)).empty

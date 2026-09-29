@@ -478,6 +478,36 @@
       cargás `WINDOWS_PYTHON`, `EXPORTER_WIN_PATH` y `BROKER_DST_RULE` en el `.env` del checkout principal. Si
       falla, `AUTO_EXPORT` queda desactivado y la Etapa 8 se salta.
 
+      **Avance 2026-09-29 (parte automática hecha; ver `spike.md`):** con MT5 abierto se encontró el Python de Windows
+      (3.12.10, con `MetaTrader5 5.0.6180`), se corrió `candles export --symbol XAUUSD` con el banco y las DBs en una
+      carpeta temporal, y **fusionó en 16 s** (reloj verificado por referencias, 9 TF) después del arreglo T22a. Sobre
+      `BROKER_DST_RULE`: los datos son consistentes con `us` pero no lo prueban (`spike.md`). **Sigue abierta (tuya):**
+      cargar `WINDOWS_PYTHON`, `EXPORTER_WIN_PATH` y `BROKER_DST_RULE` en el `.env` del checkout principal; por eso T22
+      queda sin marcar.
+- [x] T22a. *(Tarea agregada el 2026-09-29, a partir de lo que mostró el spike; no altera la numeración de las demás.)*
+      Endurecer el exportador y `candle_sync` con los defectos que el spike encontró contra MT5 real. (RF-15, RF-20e)
+      Hecho cuando: un export con un rango que MT5 rechazaría de un solo pedido se completa partiéndolo en tramos; una
+      TF que falla no tira abajo a las demás y se informa; los mensajes de Windows llegan con tildes; y la corrida real
+      contra MT5 funciona. SUITE en verde.
+      **Hecho 2026-09-29:** (1) `windows_export/export_p2_ohlc.py`: `split_range()` + `fetch_rates()` piden el rango en
+      tramos de a lo sumo `MAX_BARS_PER_CALL = 30 000` velas (límite **medido**: MT5 falla con `Invalid params` a partir
+      de ~60-70 mil; el 1M del rango real son ~140 mil, así que sin esto el export fallaba siempre) y unen los tramos sin
+      repetir velas. (2) Una TF que MT5 rechaza o no tiene ya no aborta el export (RF-15, que T17 había dejado para
+      después): se informa por stderr y por una línea `SKIPPED_TF: <tf>`, y el código de salida es 0 si al menos una TF se
+      exportó y 1 si ninguna. (3) `tools/candle_sync.py`: fija `PYTHONIOENCODING=utf-8` en el wrapper de PowerShell (el
+      error salía con `�`), lee las `SKIPPED_TF` y, si la fusión igual ocurrió, lo deja en `SyncResult.error` (`exporter
+      skipped timeframes: 1M`), en `status.json` (`last_error`) y en la línea de resumen, para que un export parcial no
+      pase inadvertido.
+      Tests: `tests/test_export_p2_ohlc.py` +12 (tramos contiguos, sin solapes y bajo el tope; un MT5 emulado con el
+      límite real rechaza el pedido único y acepta el partido, con todas las velas exactamente una vez; una TF que falla
+      se saltea y la corrida A queda intacta; si fallan todas, código 1) — el test T19 de "falla a mitad de corrida" se
+      reescribió porque ese comportamiento cambió a propósito; `tests/test_candle_sync.py` +3 (lectura de `SKIPPED_TF`,
+      export parcial que igual fusiona y avisa, export completo sin nota) y 2 ajustados al nuevo prefijo. Mutación:
+      sin partir el rango se rompen 10 tests.
+      Verificado con MT5 real: la corrida que antes fallaba en 1M ahora fusiona las 9 TF, y el Python de Windows entrega
+      `Válidas` con su tilde.
+      SUITE: `633 passed, 3 skipped, 97 warnings in 20.14s`; sin `.data/`.
+
 ## Etapa 3 — Resolvedor, métricas y reporte (solo lectura)
 
 - [ ] T23. `first_touch_detail()` en `core/p2_ground_truth.py`. (RF-4, RF-4b, RF-4f)

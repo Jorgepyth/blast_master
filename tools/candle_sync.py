@@ -68,6 +68,7 @@ _ANCHOR_FORMAT = "%Y-%m-%d %H:%M:%S"
 _GT_OFFSET_HOURS = 6  # Guatemala = UTC-6, sin horario de verano (convención del repo).
 _RUN_ID_LINE = re.compile(r"^RUN_ID:\s*(\S+)\s*$", re.MULTILINE)
 _WINPID_LINE = re.compile(r"^WINPID:\s*(\d+)", re.MULTILINE)
+_SKIPPED_TF_LINE = re.compile(r"^SKIPPED_TF:\s*(\S+)\s*$", re.MULTILINE)
 
 # powershell.exe arranca con el directorio actual de quien lo lanza; desde WSL eso
 # es una ruta UNC (`\\wsl.localhost\...`) que cmd.exe rechaza ("no se permiten
@@ -102,13 +103,15 @@ def powershell_argv(call_parts: Sequence[str]) -> List[str]:
     desde `powershell.exe`. La primera línea que imprime es `WINPID: <n>`, el PID
     de Windows del propio PowerShell: como matar `powershell.exe` desde WSL NO
     mata al programa que lanzó (verificado con Windows real), esa línea permite
-    matar el árbol entero con `taskkill /T` al vencer el timeout. Termina con
+    matar el árbol entero con `taskkill /T` al vencer el timeout. Antes fija
+    `PYTHONIOENCODING=utf-8`: sin eso el Python de Windows escribe sus mensajes
+    en cp1252 y las tildes llegaban como `�` (visto en el spike, 2026-09-29). Termina con
     `exit $LASTEXITCODE`: sin eso PowerShell aplasta cualquier código a 1
     (verificado). Solo comillas simples: las dobles se estropean en el camino
     WSL -> línea de comandos de Windows.
     """
     call = " ".join(_ps_quote(part) for part in call_parts)
-    script = f"Write-Output ('WINPID: ' + $PID); & {call}; exit $LASTEXITCODE"
+    script = f"$env:PYTHONIOENCODING = 'utf-8'; Write-Output ('WINPID: ' + $PID); & {call}; exit $LASTEXITCODE"
     return ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script]
 
 
@@ -160,6 +163,11 @@ class ExporterRun:
     def run_id(self) -> Optional[str]:
         match = _RUN_ID_LINE.search(self.stdout)
         return match.group(1) if match else None
+
+    @property
+    def skipped_timeframes(self) -> List[str]:
+        """TF que el exportador no pudo traer y salteó (RF-15); el resto sí se exportó."""
+        return _SKIPPED_TF_LINE.findall(self.stdout)
 
     @property
     def windows_pid(self) -> Optional[int]:
@@ -360,11 +368,14 @@ def _launch_and_merge(
     if not run_id or not os.path.isdir(incoming_dir):
         return failed("no_run_dir: the exporter finished OK but reported no usable RUN_ID", run_id)
 
-    return merge_incoming_run(
+    result = merge_incoming_run(
         bank_dir, incoming_dir, mt5_symbol, run_id, accounts_data_dir,
         export_moment=now_gt, dst_rule=dst_rule,
         real_accounts=real_accounts, symbol_map=symbol_map,
     )
+    if result.result == SYNC_RESULT_MERGED and run.skipped_timeframes:
+        result.error = f"exporter skipped timeframes: {', '.join(run.skipped_timeframes)}"
+    return result
 
 
 def sync_symbol(
@@ -439,7 +450,8 @@ def format_result_line(result: SyncResult) -> str:
     de RF-20e/RF-20f."""
     if result.result == SYNC_RESULT_MERGED:
         added = ", ".join(f"{tf}: +{n}" for tf, n in result.bars_added.items()) or "no new candles"
-        return f"Candle export merged for {result.symbol} (clock verified by {result.verified_by}; {added})"
+        line = f"Candle export merged for {result.symbol} (clock verified by {result.verified_by}; {added})"
+        return f"{line} -- {result.error}" if result.error else line
     if result.result == SYNC_RESULT_LOCKED:
         return f"Candle export skipped: export_in_progress ({result.symbol})"
     if result.result == cfg.REASON_EXPORT_FAILED:
