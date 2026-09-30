@@ -41,6 +41,20 @@ verdict: APPROVED
   la herencia a propósito. La herencia nunca pasa por encima de un `clock_misaligned`. Se volvieron a correr C1, C2 y
   la contradicción interna: RF-2e aparece en `plan.md` y en `tasks.md`. Sin dependencias nuevas (constitución,
   principio 1): `mt5.account_info()` es de solo lectura, como el resto del exportador. Veredicto: sigue `APPROVED`.
+- **Quinta pasada (2026-09-30), por un defecto encontrado en el banco real y una corrección aprobada por el usuario:**
+  decisión **N44**. N39 dejaba entrar completas las TF de 4H o más también en el import legacy, cuyos CSV tienen un
+  solo desfase, y el banco real quedó con 3.824 velas de invierno duplicadas, corridas 1 h. Lo encontró otra sesión (P2
+  banco v2) y se confirmó en solo lectura. Es un defecto de la spec (N39 decía algo equivocado para el import legacy),
+  así que la spec cambia primero (F9). Además, contradecía a la decisión T17 del plan, que ya pedía el filtro en todo
+  el import. Cambios:
+  - **spec:** N39 corregida, N44 nueva, RF-15c;
+  - **plan:** §3.8 (import inicial y limpieza única) y decisión T17;
+  - **tareas:** T16c (código) y T59c (🖐, limpieza del banco real), agregadas sin renumerar.
+
+  Contradicción interna: la limpieza quita filas, y R4 dice "el banco nunca pierde velas". N44 lo registra como
+  única excepción: cada vela queda una vez, con su hora correcta. `_assert_bank_not_regressed` sigue protegiendo toda
+  fusión; la limpieza no es una fusión, y verifica aparte que solo se quitaron las copias. Veredicto: sigue
+  `APPROVED`.
 
 ## Resultado de la segunda pasada
 

@@ -286,7 +286,15 @@ Se usa R = |precio de partida − SI|.
 8. Se actualiza `status.json` y se libera el candado.
 
 **Import inicial (RF-2c):** la misma verificación por referencias se aplica a `MT5Exports/{SYMBOL}/*.csv`, sin copiar
-`XAUUSD/5M.csv`.
+`XAUUSD/5M.csv`. El filtro de estación del paso 5 se aplica a **todas** las TF, no solo a 1H y menores (N44): los CSV
+legacy tienen un solo desfase para todo el año, así que sus velas de 4H o más de la otra estación quedarían duplicadas,
+corridas 1 h, junto a las del primer export nuevo.
+
+**Limpieza única (N44):** `tools/dedup_candle_bank.py` busca en 4H, 12H, 1D y 1W los pares de velas con el mismo
+`open`, `high`, `low` y `close` a exactamente 1 h, y quita la de 1 h antes. En esas TF dos velas reales nunca están a
+1 h, así que un par así solo puede ser la misma vela con dos etiquetas. Por defecto solo informa; con `--apply` toma el
+candado del símbolo, copia los archivos afectados a `.data/archives/`, reescribe cada CSV de forma atómica y verifica
+que no quede ningún par y que el resto de las velas no cambió. No toca 1H ni las TF menores.
 
 ### 3.9 Conversión con horario de verano en el exportador (RF-15b, N34)
 
@@ -366,7 +374,7 @@ cambio se inserta en `backfill_history`.
 | T14 | Las puertas de R9 las hace cumplir el comando: ensayo automático sobre una copia temporal, chequeo de que haya backup de las últimas 24 h, y confirmación escribiendo `APPLY` | Dejarlas como checklist manual | Una checklist manual es fácil de saltear. El comando falla con un código distinto en cada puerta |
 | T15 | Reporte en Markdown y en inglés, más un resumen en consola | (a) Sumarlo al comando `report` que ya existe. (b) HTML | (a) El comando `report` tiene otra fuente y otro propósito. (b) Markdown se lee y se versiona fácil. Inglés por N30 |
 | T16 | Constantes de reglas en `config/auto_resolution.py` y rutas de la máquina en `.env` | (a) Todo en `.env`. (b) Todo fijo en el código | (a) Las reglas (48 h, 0.5R) son decisiones del proyecto y deben quedar versionadas. (b) Las rutas cambian de una máquina a otra |
-| T17 | El import inicial solo trae velas de la estación de horario actual mientras `BROKER_DST_RULE` no esté verificado | (a) Importar todo con un solo offset. (b) Reetiquetar según una regla supuesta | (a) Las velas de invierno tendrían 1 h de error. (b) Sería inventar la regla. Los análisis de mayo a septiembre caen todos en la estación actual |
+| T17 | El import inicial solo trae velas de la estación de horario actual mientras `BROKER_DST_RULE` no esté verificado, en **todas** las TF (T16 y T16b lo aplicaron solo a 1H y menores; corregido en T16c, N44) | (a) Importar todo con un solo offset. (b) Reetiquetar según una regla supuesta | (a) Las velas de invierno tendrían 1 h de error. (b) Sería inventar la regla. Los análisis de mayo a septiembre caen todos en la estación actual |
 | T18 | Las propuestas del Tactical se calculan cuando se llega a cada prompt, con los valores ya cargados en `session.state` | Precalcularlas al abrir el wizard | `entry_time`, `exit_time` y los precios se cargan en el mismo wizard, antes de esos prompts |
 | T19 | El banco **no** entra en `tools/backup.py` en esta spec. **Decidido por el usuario el 2026-09-27**: no es crítico por ahora, y no quiere pagar almacenamiento extra en Backblaze. Queda como pendiente en `CLAUDE.md` (sección Backup 3-2-1) | Agregarlo al backup | El riesgo (MT5 guarda poco historial de 1M) queda anotado para analizarlo en otra implementación |
 | T20 | En la superposición, las velas se comparan con una tolerancia relativa de 1e-9 | Compararlas como texto exacto | El formato de los números en el CSV puede cambiar entre versiones de pandas sin que cambie el precio |

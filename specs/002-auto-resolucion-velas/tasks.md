@@ -533,6 +533,14 @@
       + export nuevo bien etiquetado: con el filtro la superposición verifica). Los tests con fechas de junio ahora
       fijan `export_moment` y `dst_rule` para no depender del día en que se corran. Mutación: sin el filtro se rompen 3.
 
+- [ ] T16c. *(Tarea agregada el 2026-09-30 por la decisión N44 del usuario; corrección de T16 y T16b.)* El import
+      legacy filtra por estación en todas las TF, no solo en 1H y menores. Nueva `find_relabeled_duplicates()` en
+      `tools/candle_bank.py` y nueva herramienta `tools/dedup_candle_bank.py`: por defecto solo informa; con `--apply`
+      respalda, limpia y verifica (plan.md §3.8, "Limpieza única"). (RF-1, RF-2c, RF-15c, N39, N44)
+      Hecho cuando: un test reproduce el caso real (CSV legacy con velas de invierno a +3 h y export nuevo a +2 h: ya
+      no quedan pares en 1D); los tests de la herramienta prueban que el modo por defecto no escribe nada, que `--apply`
+      respalda los bytes originales, quita solo la copia de 1 h antes de cada par, no toca 1H ni un par con precios
+      distintos, y que una segunda corrida no encuentra nada. SUITE en verde.
 - [x] T22b. *(Tarea agregada el 2026-09-30 por la decisión N43 del usuario; no altera la numeración.)* Herencia del
       reloj verificado entre símbolos del mismo servidor: el exportador imprime `SERVER:` y `BASE_UTC_OFFSET:`,
       `candle_sync` los pasa a la fusión, `status.json` guarda `verified_export`, y `merge_incoming_run` prueba la
@@ -791,6 +799,12 @@
       `.data/candle_bank/`, aprobado por el usuario junto con T59. (RF-2e, N43)
       Hecho cuando: `candles status` muestra US500 y USTEC `verified` por `inherited:...`, o el motivo exacto por el
       que no heredaron.
+- [ ] T59c. 🖐 *(Agregada el 2026-09-30, N44.)* Limpiar el banco real con `tools/dedup_candle_bank.py`: primero
+      sin `--apply`, y después con `--apply`. Escribe en `.data/candle_bank/`, aprobado por el usuario el 2026-09-30.
+      (RF-1, N44)
+      Hecho cuando: se quitaron exactamente los 3.824 pares medidos (XAU 1W 509, 1D 407, 12H 362, 4H 528; BTC 1W 272,
+      1D 505, 12H 504, 4H 737), la copia de respaldo existe, una segunda corrida sin `--apply` da 0, y 1H y las TF
+      menores quedaron byte a byte iguales.
 - [ ] T60. Correr `resolution-report` sobre las DBs reales, en solo lectura. (RF-6, RF-17, RF-21)
       Hecho cuando: el `.md` generado se muestra, y el S1 direccional de XAU se compara con el 61% de
       `analisis-overlap-2d.md`, explicando cualquier diferencia (1M/5M, ancla).
@@ -827,11 +841,11 @@
 | INV-6 | T11, T16 (origen intacto) |
 | INV-7 | T7, T37 |
 | INV-8 | T42, T64 (ningún campo de juicio propuesto) |
-| RF-1, RF-1b | T11, T21 |
+| RF-1, RF-1b | T11, T21, T16c, T59c |
 | RF-1c | T15, T20 |
 | RF-1d | T12, T20 |
 | RF-2, RF-2b | T10, T14 |
-| RF-2c | T16, T21, T59 |
+| RF-2c | T16, T21, T59, T16c |
 | RF-2d | T13 |
 | RF-2e | T22b, T59b |
 | RF-3 | T31, T39 |
@@ -862,7 +876,7 @@
 | RF-14, RF-14b | T35, T36, T43 |
 | RF-15 | T9, T17, T19 |
 | RF-15b | T18, T22 |
-| RF-15c | T15 |
+| RF-15c | T15, T16c |
 | RF-16 | T3, T4 |
 | RF-16b | T2 |
 | RF-17 | T29, T32 |
