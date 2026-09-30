@@ -1,11 +1,19 @@
-# Pre-registro: P2 banco v2 (temporalidades cortas)
+# Pre-registro: P2 banco v2 (temporalidades cortas), v1.1
 
-- **Fecha:** 2026-09-29.
+- **Fecha:** 2026-09-29 (v1.0) y 2026-09-30 (v1.1).
 - **Base:** commit `3c557a6`, rama `claude/p2-banco-v2-eval-f63a69` (worktree `.claude/worktrees/p2-banco-v2-eval-f63a69`).
 - **Origen:** prompt v1.2 del 2026-09-29, "P2 banco v2 (temporalidades cortas)".
 - **Cuándo se fijó:** este archivo se commitea **solo, antes de calcular cualquier predicción, acierto o prueba del
   banco v2** (F0). Si hay que corregir algo, se commitea una versión nueva **antes de F3** y el reporte cita el
   sha256 de las dos.
+- **Versión 1.1 (2026-09-30), commiteada también antes de F3.** Un solo cambio de regla, decidido por el usuario:
+  al leer el banco se quita la copia repetida de las velas de invierno en 4H, 12H, 1D y 1W (§2).
+  - La v1.0 es el commit `e99e69d`, sha256 `c569e760a77b4cd821afde9518aea7a2ee0678d3a2955101e70c679611719e44`.
+  - Entre la v1.0 y la v1.1 se calculó, **sin ningún ground truth ni acierto**: el reloj, los filtros, la cobertura
+    por TF, las condiciones de F2b del 2H nativo, la comparación F2d y cuántas señales y predicciones cambian con las
+    velas repetidas (`00_protocolo.md` §5). Ninguna cifra de acierto existía al fijar esta versión.
+  - Precisión agregada, que no cambia ningún resultado con los datos actuales: en el remuestreo, un tramo que empieza
+    en la hora del cambio de horario se descarta (§6).
 - **Qué ya se sabía:** los resultados del banco v1 (`jupyter/p2_edge_evaluation.ipynb`, 2026-09-23), sobre los mismos
   análisis. Por eso **todo resultado retrospectivo del banco v2 es exploratorio** (R9). La evidencia independiente son
   los análisis con `created_at` posterior al commit de este archivo (§13).
@@ -29,6 +37,17 @@ Decisión que informa: si algún 2X debe reemplazar a D como feedback impreso de
 - **Fuera:** US100 y US500. Su reloj no está verificado en el banco (`status.json`: `clock_unverified`).
 - **Velas:** `.data/candle_bank/{XAUUSD,BTCUSD}/{TF}.csv`, en solo lectura. Se cargan una vez, y todos los predictores
   usan ese mismo snapshot. El reporte registra, para cada archivo, filas, primera y última vela y sha256.
+- **Velas repetidas (v1.1):** el banco tiene, en 4H, 12H, 1D y 1W, cada vela de invierno dos veces: OHLC idéntico y
+  etiquetas separadas por 1 h (una del import de los CSV viejos, con offset único +3; otra del export nuevo, con +2 en
+  invierno). Al leer, sin tocar el banco, se quita una copia de cada par:
+  - par = dos velas consecutivas a exactamente 1 h, con los cuatro precios iguales;
+  - queda la que abre en la frontera del servidor con `BROKER_DST_RULE` (1W: domingo 00:00; el resto: múltiplo de
+    su duración);
+  - si las dos o ninguna están en la frontera, queda la más nueva y se cuenta como "sin resolver" (hoy son 0);
+  - 1H y las TF más finas no se tocan: no tienen el problema.
+
+  Consecuencia conocida: BTC tiene 809 semanas reales, no 1081. Sus 7 primeros análisis no llegan a 800 velas 1W
+  cerradas, y ahí los modelos que usan 1W (A a G y D-EQ) no opinan. Los 2X sí, porque no usan 1W.
 - **2H:** fuente según §6. Nunca se integra al banco.
 - **Reloj:**
   - `calibrate_clock_offset` sobre el banco de cada cuenta. Si `aligned` no es `True` en alguna, **se aborta** (§12).
@@ -157,6 +176,8 @@ En ese caso, se remuestrea desde el 1H del banco:
 - **OHLC:** apertura de la primera 1H, máximo y mínimo del tramo, cierre de la última 1H. Si el tramo tiene una sola
   1H, esa vela.
 - **Vela cerrada:** solo si `time + 120 min <= ancla`.
+- **Hora del cambio de horario (v1.1):** un tramo que empieza en la hora del cambio se descarta, igual que el
+  exportador descarta la vela nativa de esa hora.
 
 **F2d.** Si existen las dos series (nativa y remuestreada), se comparan donde se superponen:
 - % de velas con OHLC idéntico (tolerancia 1e-9);
@@ -320,8 +341,8 @@ puede".
 
 ## 13. Evidencia independiente (R9)
 
-- Son los análisis de XAU y BTC con `created_at` posterior al commit de este archivo. Hoy son 0: el último es XAU
-  2026-09-16 y BTC 2026-09-01.
+- Son los análisis de XAU y BTC con `created_at` posterior al commit de la v1.1 de este archivo. Hoy son 0: el último
+  es XAU 2026-09-16 y BTC 2026-09-01.
 - Se evalúan con **exactamente** estas reglas: los mismos 2A–2E, los pesos de 2F congelados en §10, las mismas
   etiquetas y ningún modelo re-elegido.
 
@@ -338,6 +359,7 @@ puede".
 | Ventana S4 | 48 h |
 | Ancla | `created_at − 20 min` |
 | `BROKER_DST_RULE` | `us` (del `.env`) |
+| Limpieza de velas repetidas (v1.1) | 4H, 12H, 1D y 1W, al leer |
 
 **Qué no se hace:**
 - no se toca ningún modelo existente, `tools/p2_backtest.py`, `tools/edge_evaluation.py`, `core/*`, `cli/*` ni
