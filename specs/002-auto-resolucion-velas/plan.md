@@ -189,6 +189,9 @@ test lo verifica (RF-18).
 **Casos límite:**
 - el ancla es anterior a la vela más vieja del banco en todas las TF → `no_history`;
 - el banco termina antes del toque y del fin del horizonte → `pending_candles`;
+- el banco todavía no llega al ancla (su última vela cierra en el ancla o antes), o no tiene velas de la escalera →
+  `pending_candles`, porque es temporal y lo arregla el próximo export (agregado en T24; un reloj sin verificar se
+  informa antes, RF-4e);
 - el ancla cae dentro de una vela de 1M → se empieza en la vela siguiente (N17).
 
 ### 3.2 Primer toque con refinamiento (RF-4, RF-4b)

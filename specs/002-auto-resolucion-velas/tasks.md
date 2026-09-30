@@ -576,10 +576,23 @@
       Mutación: sin la rama ambigua, con el índice corrido en 1, con los niveles cruzados, con `>` en vez de `>=` o
       con la vela ambigua sin índice, fallan entre 3 y 11 tests.
       SUITE: `652 passed, 3 skipped, 97 warnings in 16.97s`; sin `.data/`.
-- [ ] T24. `core/candle_resolution.py`, parte 1: cobertura por TF y códigos `pending_candles` y `no_history`. (RF-4c,
+- [x] T24. `core/candle_resolution.py`, parte 1: cobertura por TF y códigos `pending_candles` y `no_history`. (RF-4c,
       RF-4g)
       Hecho cuando: los tests prueban un ancla anterior al banco (`no_history`) y un banco que termina antes del
       toque (`pending_candles`). SUITE en verde.
+      **Hecho 2026-09-30:** `core/candle_resolution.py` nuevo y puro (sin DB ni disco). Tiene:
+      - `LADDER` (1M → 1H) y `LADDER_MINUTES`; un test exige que coincida con `TIMEFRAME_MINUTES` del backtest,
+        repetida para que `core/` no dependa de `tools/`;
+      - `bank_coverage()` → `BankCoverage`, con el tramo de cada TF, `start`, `end` y `covering(t)`, que T25 usará
+        para elegir la TF más fina;
+      - `anchor_missing_reason()`: `no_history` si el ancla es anterior a la vela más vieja en todas las TF, y
+        `pending_candles` si el banco todavía no llega al ancla o no tiene velas de la escalera;
+      - `untouched_missing_reason()`: sin toque, `pending_candles` hasta que el camino llegue al fin del horizonte.
+        El cálculo del horizonte queda para T26.
+      Los dos casos que el plan no cubría (banco que no llega al ancla, banco sin velas de la escalera) quedaron
+      escritos en plan.md §3.1. Tests: 18 en `tests/test_candle_resolution.py`, incluido el del banco que termina
+      antes del toque. Mutación: 6 bordes, y cada uno rompe 1 o 2 tests.
+      SUITE: `694 passed, 3 skipped, 97 warnings in 26.75s`; sin `.data/`.
 - [ ] T25. `candle_resolution`, parte 2: camino multi-TF con escalera y empalme en el borde de la TF gruesa, sin
       huecos, empezando en la primera vela de 1M en el ancla o después. (RF-4, N17, N18)
       Hecho cuando: los tests prueban la secuencia 1M → 5M → 1H en un fixture, que no hay huecos ni velas repetidas,
