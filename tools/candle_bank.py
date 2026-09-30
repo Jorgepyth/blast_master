@@ -33,6 +33,7 @@ import pandas as pd
 from sqlalchemy import select
 
 from config.auto_resolution import (
+    INHERIT_MIN_OWN_REFERENCES,
     MT5_SYMBOL_MAP,
     OVERLAP_MIN_BARS,
     REAL_ACCOUNTS,
@@ -536,10 +537,13 @@ def build_status_payload(
     result: str,
     bars_added: Dict[str, int],
     last_error: Optional[str] = None,
+    verified_export: Optional[dict] = None,
 ) -> dict:
     """Arma el dict de `status.json` con la forma exacta del ejemplo de
     plan.md §2.3. `clock`: `"verified"`, o uno de los `REASON_*` de
-    `config.auto_resolution` (`clock_misaligned`, `clock_unverified`, ...)."""
+    `config.auto_resolution` (`clock_misaligned`, `clock_unverified`, ...).
+    `verified_export` (N43): el último export fusionado, lo que compara la
+    herencia del reloj (`find_clock_donor`)."""
     return {
         "symbol": symbol,
         "clock": clock,
@@ -547,6 +551,7 @@ def build_status_payload(
         "dst_rule": dst_rule,
         "last_export": {"run_id": run_id, "result": result, "bars_added": dict(bars_added)},
         "last_error": last_error,
+        "verified_export": dict(verified_export) if verified_export is not None else None,
     }
 
 
@@ -573,6 +578,119 @@ def write_bank_status(bank_dir: str, status: dict) -> None:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
         raise
+
+
+# --------------------------------------------------------------------------
+# Herencia del reloj entre símbolos del mismo servidor (T22b, RF-2e, N43)
+# --------------------------------------------------------------------------
+
+# `verified_by` de un export verificado por herencia: "inherited:<donante>".
+INHERITED_PREFIX = "inherited:"
+# Solo estas cuentan como verificación directa: un símbolo que heredó no es donante (sin cadenas).
+DIRECT_CLOCK_VERIFICATIONS: Tuple[str, ...] = ("overlap", "references")
+
+
+@dataclass
+class InheritanceVerification:
+    """Resultado de `verify_by_inheritance`. `reason` (en inglés, N30) dice por
+    qué no heredó; es None cuando heredó. `n_checkable` son las referencias
+    propias que caen en una vela del export, y `n_fit` las que además calzan."""
+    verified: bool
+    donor: Optional[str]
+    n_checkable: int = 0
+    n_fit: int = 0
+    reason: Optional[str] = None
+
+
+def find_clock_donor(
+    bank_root: str,
+    mt5_symbol: str,
+    server: str,
+    base_utc_offset: float,
+    dst_rule: str,
+) -> Optional[str]:
+    """
+    N43, plan.md §3.8 paso 4b: el primer símbolo del banco (en orden
+    alfabético, sin contar `mt5_symbol`) con el reloj verificado y cuyo último
+    export fusionado (`verified_export` de su `status.json`) se verificó
+    directamente, con el mismo servidor, desfase base y regla de horario.
+    `None` si no hay ninguno. Un `status.json` ilegible se saltea.
+    """
+    if not os.path.isdir(bank_root):
+        return None
+    for name in sorted(os.listdir(bank_root)):
+        if name == mt5_symbol:
+            continue
+        try:
+            status = read_bank_status(os.path.join(bank_root, name))
+        except (ValueError, OSError):
+            continue
+        if not status or status.get("clock") != "verified":
+            continue
+        export = status.get("verified_export") or {}
+        donor_offset = export.get("base_utc_offset")
+        if (export.get("verified_by") in DIRECT_CLOCK_VERIFICATIONS
+                and export.get("server") == server
+                and export.get("dst_rule") == dst_rule
+                and donor_offset is not None and float(donor_offset) == float(base_utc_offset)):
+            return name
+    return None
+
+
+def verify_by_inheritance(
+    mt5_symbol: str,
+    bank_dir: str,
+    incoming_dir: str,
+    accounts_data_dir: str,
+    server: Optional[str],
+    base_utc_offset: Optional[float],
+    dst_rule: str,
+    real_accounts: Optional[Dict[str, str]] = None,
+    symbol_map: Optional[Dict[str, str]] = None,
+    min_own_references: int = INHERIT_MIN_OWN_REFERENCES,
+) -> InheritanceVerification:
+    """
+    RF-2e, N43: para un export que no se verificó por superposición y tiene
+    menos de 10 referencias. Busca un donante entre los otros símbolos del
+    banco (`find_clock_donor`, en la carpeta que contiene a `bank_dir`) y
+    exige que las referencias propias que caen en una vela del export (en la
+    TF de `CLOCK_TIMEFRAME_PREFERENCE`, igual que `verify_by_references`)
+    sean al menos `min_own_references` y calcen **todas** sin desplazamiento.
+    Solo lectura.
+    """
+    if not server or base_utc_offset is None:
+        return InheritanceVerification(False, None, reason="the exporter did not report its server and base offset")
+    donor = find_clock_donor(os.path.dirname(os.path.abspath(bank_dir)), mt5_symbol, server, base_utc_offset, dst_rule)
+    if donor is None:
+        return InheritanceVerification(False, None, reason=(
+            f"no directly verified symbol on {server} (base offset UTC{float(base_utc_offset):+g}, "
+            f"DST rule {dst_rule}) to inherit the clock from"))
+
+    provider = CsvOHLCProvider(incoming_dir)
+    tf = next((t for t in CLOCK_TIMEFRAME_PREFERENCE if provider.has_timeframe(t)), None)
+    if tf is None:
+        return InheritanceVerification(False, donor, reason="no 15M, 30M or 1H candles to check the own reference prices")
+
+    # La misma prueba que `evaluate_clock_entries` con desplazamiento 0, pero contando.
+    n_checkable = n_fit = 0
+    for entry_time, entry_price in gather_reference_entries(mt5_symbol, accounts_data_dir, real_accounts, symbol_map):
+        bar = provider.bar_containing(tf, entry_time)
+        if bar is None:
+            continue
+        n_checkable += 1
+        high, low = bar
+        if low <= float(entry_price) <= high:
+            n_fit += 1
+
+    if n_checkable < min_own_references:
+        return InheritanceVerification(False, donor, n_checkable, n_fit, reason=(
+            f"only {n_checkable} own reference prices fall on exported candles, "
+            f"need {min_own_references} to inherit the clock of {donor}"))
+    if n_fit < n_checkable:
+        return InheritanceVerification(False, donor, n_checkable, n_fit, reason=(
+            f"{n_checkable - n_fit} of {n_checkable} own reference prices do not fit the candles, "
+            f"so the clock of {donor} is not inherited"))
+    return InheritanceVerification(True, donor, n_checkable, n_fit)
 
 
 # --------------------------------------------------------------------------
@@ -779,6 +897,8 @@ class SyncResult:
     bars_added: Dict[str, int] = field(default_factory=dict)
     run_id: Optional[str] = None
     error: Optional[str] = None
+    # Solo en `merged` (N43): cómo se verificó y con qué servidor, desfase base y regla se convirtió.
+    verified_export: Optional[dict] = None
 
 
 def merge_incoming_run(
@@ -794,6 +914,9 @@ def merge_incoming_run(
     min_references: int = CLOCK_MIN_ENTRIES,
     overlap_min_bars: int = OVERLAP_MIN_BARS,
     offsets: Sequence[int] = range(-6, 7),
+    server: Optional[str] = None,
+    base_utc_offset: Optional[float] = None,
+    min_own_references: int = INHERIT_MIN_OWN_REFERENCES,
 ) -> SyncResult:
     """
     Plan.md §3.8, pasos 2 a 7, para el export de `incoming_dir` (`{TF}.csv` por
@@ -804,7 +927,10 @@ def merge_incoming_run(
        en cualquier TF -> `clock_misaligned`, sin fusionar nada.
     2. Sin superposición suficiente, por referencias (`verify_by_references`,
        sobre el rango de fechas del export): `clock_misaligned` si el reloj está
-       corrido, `clock_unverified` si faltan referencias.
+       corrido.
+    2b. Si faltan referencias, por herencia (`verify_by_inheritance`, N43), con
+       el `server` y el `base_utc_offset` que informó el exportador; si tampoco,
+       `clock_unverified`.
     3. Verificado: para cada TF presente, filtra por estación de horario
        (`filter_by_export_season`, en 1H y más finas) y fusiona con
        `merge_timeframe_into_bank_checked`, TF por TF.
@@ -833,17 +959,25 @@ def merge_incoming_run(
             real_accounts=real_accounts, symbol_map=symbol_map,
             min_references=min_references, offsets=offsets,
         )
-        if not ref.verified:
-            if ref.aligned is False:
-                return result(
-                    REASON_CLOCK_MISALIGNED,
-                    error=f"reference prices fit best with candles shifted {ref.best_offset:+d}h",
-                )
+        if ref.verified:
+            verified_by = "references"
+        elif ref.aligned is False:
             return result(
-                REASON_CLOCK_UNVERIFIED,
-                error=f"{ref.n_in_range} reference prices in the exported range, need {min_references}",
+                REASON_CLOCK_MISALIGNED,
+                error=f"reference prices fit best with candles shifted {ref.best_offset:+d}h",
             )
-        verified_by = "references"
+        else:
+            inherited = verify_by_inheritance(
+                mt5_symbol, bank_dir, incoming_dir, accounts_data_dir, server, base_utc_offset, dst_rule,
+                real_accounts=real_accounts, symbol_map=symbol_map, min_own_references=min_own_references,
+            )
+            if not inherited.verified:
+                return result(
+                    REASON_CLOCK_UNVERIFIED,
+                    error=(f"{ref.n_in_range} reference prices in the exported range, need {min_references}; "
+                           f"{inherited.reason}"),
+                )
+            verified_by = INHERITED_PREFIX + inherited.donor
 
     bars_added: Dict[str, int] = {}
     current_tf: Optional[str] = None
@@ -857,7 +991,10 @@ def merge_incoming_run(
             REASON_EXPORT_FAILED, verified_by=verified_by, bars_added=bars_added,
             error=f"merge failed on {current_tf}: {exc}",
         )
-    return result(SYNC_RESULT_MERGED, verified_by=verified_by, bars_added=bars_added)
+    verified_export = {"run_id": run_id, "verified_by": verified_by, "server": server,
+                       "base_utc_offset": base_utc_offset, "dst_rule": dst_rule}
+    return result(SYNC_RESULT_MERGED, verified_by=verified_by, bars_added=bars_added,
+                  verified_export=verified_export)
 
 
 def write_sync_status(bank_dir: str, sync: SyncResult) -> None:
@@ -867,7 +1004,8 @@ def write_sync_status(bank_dir: str, sync: SyncResult) -> None:
     verificó; un export que no verifica NO le quita esa confianza a un banco
     que ya la tenía (sus velas no cambiaron), y sin confianza previa queda con
     el motivo (`clock_misaligned`/`clock_unverified`). Un `export_failed` no
-    dice nada del reloj: conserva lo que había.
+    dice nada del reloj: conserva lo que había. `verified_export` (N43) es el
+    del último export fusionado: uno que no se fusiona lo deja como estaba.
     """
     prior = read_bank_status(bank_dir) or {}
     prior_clock = prior.get("clock")
@@ -879,9 +1017,10 @@ def write_sync_status(bank_dir: str, sync: SyncResult) -> None:
         clock, verified_by = sync.result, None
     else:
         clock, verified_by = prior_clock or REASON_CLOCK_UNVERIFIED, None
+    verified_export = sync.verified_export if sync.result == SYNC_RESULT_MERGED else prior.get("verified_export")
     write_bank_status(bank_dir, build_status_payload(
         sync.symbol, clock, verified_by, DST_RULE_STATUS_LABEL, sync.run_id,
-        sync.result, sync.bars_added, sync.error,
+        sync.result, sync.bars_added, sync.error, verified_export=verified_export,
     ))
 
 
@@ -962,8 +1101,11 @@ def import_legacy_with_status(
             export_moment=export_moment, dst_rule=dst_rule,
         )
         if result.aligned is True:
+            # Sin servidor ni desfase base: un símbolo importado de legacy no es donante (N43).
             sync = SyncResult(symbol, SYNC_RESULT_MERGED, verified_by="references",
-                              bars_added=dict(result.imported), run_id=LEGACY_IMPORT_RUN_ID)
+                              bars_added=dict(result.imported), run_id=LEGACY_IMPORT_RUN_ID,
+                              verified_export={"run_id": LEGACY_IMPORT_RUN_ID, "verified_by": "references",
+                                               "server": None, "base_utc_offset": None, "dst_rule": dst_rule})
         elif result.aligned is False:
             sync = SyncResult(symbol, REASON_CLOCK_MISALIGNED, run_id=LEGACY_IMPORT_RUN_ID,
                               error="legacy CSVs: the clock does not fit the reference prices")

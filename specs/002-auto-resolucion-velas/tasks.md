@@ -533,7 +533,7 @@
       + export nuevo bien etiquetado: con el filtro la superposición verifica). Los tests con fechas de junio ahora
       fijan `export_moment` y `dst_rule` para no depender del día en que se corran. Mutación: sin el filtro se rompen 3.
 
-- [ ] T22b. *(Tarea agregada el 2026-09-30 por la decisión N43 del usuario; no altera la numeración.)* Herencia del
+- [x] T22b. *(Tarea agregada el 2026-09-30 por la decisión N43 del usuario; no altera la numeración.)* Herencia del
       reloj verificado entre símbolos del mismo servidor: el exportador imprime `SERVER:` y `BASE_UTC_OFFSET:`,
       `candle_sync` los pasa a la fusión, `status.json` guarda `verified_export`, y `merge_incoming_run` prueba la
       herencia cuando faltan referencias (plan.md §3.8, paso 4b). (RF-2, RF-2e, N43)
@@ -541,6 +541,25 @@
       su vez heredó, otro servidor, otro desfase base, otra regla, menos de 5 referencias propias, una que no calza y
       superposición desalineada. También, que el import legacy nunca hereda ni sirve de donante, y que un export que no
       se fusiona conserva el `verified_export` anterior. SUITE en verde.
+      **Hecho 2026-09-30:** el exportador imprime `SERVER:` (de `mt5.account_info()`, de solo lectura) y
+      `BASE_UTC_OFFSET:`. `ExporterRun` los lee y `candle_sync` los pasa a `merge_incoming_run`, que prueba la herencia
+      con `verify_by_inheritance()` y `find_clock_donor()` (plan §3.8, paso 4b). `status.json` guarda
+      `verified_export`, y el resumen dice "clock inherited from XAUUSD". `INHERIT_MIN_OWN_REFERENCES = 5` está en la
+      configuración. Tests: +18 en `tests/test_candle_bank.py`, +3 en `tests/test_candle_sync.py` y +2 en
+      `tests/test_export_p2_ohlc.py`. Mutación: aceptar un donante que heredó, otro servidor u otro desfase, quitar el
+      mínimo de 5 o el "calzan todas", o perder `verified_export` en un export que no se fusiona: en cada caso falla al
+      menos un test.
+      **Encontrado de paso (commit aparte, anterior a este):** al correr `test_config_auto_resolution.py` antes que
+      `test_cli_candles.py` (fuera del orden alfabético), 6 tests del CLI fallaron y apareció un `.data/candle_bank/BTCUSD`
+      vacío en el worktree. Causa: los tests que reimportan la configuración restauraban `sys.modules` pero no el
+      atributo del paquete `config`, así que el CLI recibía un módulo sin los monkeypatch y apuntaba al banco por
+      defecto. El guard de `conftest.py` frenó la escritura de archivos, pero no la creación de la carpeta, porque solo
+      auditaba `open` y `sqlite3.connect`. No se tocó nada real: sin cambios de hoy en el banco del principal ni en
+      `_incoming`, y la carpeta vacía se borró. Arreglo: un helper que restaura las dos cosas, más un test de
+      regresión que falla sin él; y el guard ahora también audita `os.mkdir`, `os.rename`/`os.replace`, `os.remove` y
+      `os.rmdir`, con 3 casos nuevos en su meta-test.
+      SUITE: `676 passed, 3 skipped, 97 warnings in 21.21s`; sin `.data/`, también corriendo esos archivos en el orden
+      que falló.
 
 ## Etapa 3 — Resolvedor, métricas y reporte (solo lectura)
 

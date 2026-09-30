@@ -49,6 +49,7 @@ from sqlalchemy import select  # noqa: E402
 
 import config.auto_resolution as cfg  # noqa: E402
 from tools.candle_bank import (  # noqa: E402
+    INHERITED_PREFIX,
     CandleBankLockedError,
     SYNC_RESULT_LOCKED,
     SYNC_RESULT_MERGED,
@@ -69,6 +70,9 @@ _GT_OFFSET_HOURS = 6  # Guatemala = UTC-6, sin horario de verano (convención de
 _RUN_ID_LINE = re.compile(r"^RUN_ID:\s*(\S+)\s*$", re.MULTILINE)
 _WINPID_LINE = re.compile(r"^WINPID:\s*(\d+)", re.MULTILINE)
 _SKIPPED_TF_LINE = re.compile(r"^SKIPPED_TF:\s*(\S+)\s*$", re.MULTILINE)
+# N43: servidor de la cuenta y desfase base del export, para la herencia del reloj.
+_SERVER_LINE = re.compile(r"^SERVER:[ \t]*(\S(?:.*\S)?)[ \t\r]*$", re.MULTILINE)
+_BASE_UTC_OFFSET_LINE = re.compile(r"^BASE_UTC_OFFSET:\s*([-+]?\d+(?:\.\d+)?)\s*$", re.MULTILINE)
 
 # powershell.exe arranca con el directorio actual de quien lo lanza; desde WSL eso
 # es una ruta UNC (`\\wsl.localhost\...`) que cmd.exe rechaza ("no se permiten
@@ -173,6 +177,18 @@ class ExporterRun:
     def windows_pid(self) -> Optional[int]:
         match = _WINPID_LINE.search(self.stdout)
         return int(match.group(1)) if match else None
+
+    @property
+    def server(self) -> Optional[str]:
+        """Servidor de la cuenta abierta en MT5 (línea `SERVER:`, N43)."""
+        match = _SERVER_LINE.search(self.stdout)
+        return match.group(1) if match else None
+
+    @property
+    def base_utc_offset(self) -> Optional[float]:
+        """Desfase de invierno del servidor con que se convirtió el export (línea `BASE_UTC_OFFSET:`, N43)."""
+        match = _BASE_UTC_OFFSET_LINE.search(self.stdout)
+        return float(match.group(1)) if match else None
 
 
 def kill_windows_tree(
@@ -372,6 +388,7 @@ def _launch_and_merge(
         bank_dir, incoming_dir, mt5_symbol, run_id, accounts_data_dir,
         export_moment=now_gt, dst_rule=dst_rule,
         real_accounts=real_accounts, symbol_map=symbol_map,
+        server=run.server, base_utc_offset=run.base_utc_offset,
     )
     if result.result == SYNC_RESULT_MERGED and run.skipped_timeframes:
         result.error = f"exporter skipped timeframes: {', '.join(run.skipped_timeframes)}"
@@ -450,7 +467,10 @@ def format_result_line(result: SyncResult) -> str:
     de RF-20e/RF-20f."""
     if result.result == SYNC_RESULT_MERGED:
         added = ", ".join(f"{tf}: +{n}" for tf, n in result.bars_added.items()) or "no new candles"
-        line = f"Candle export merged for {result.symbol} (clock verified by {result.verified_by}; {added})"
+        verified_by = result.verified_by or ""
+        how = (f"clock inherited from {verified_by[len(INHERITED_PREFIX):]}" if verified_by.startswith(INHERITED_PREFIX)
+               else f"clock verified by {result.verified_by}")
+        line = f"Candle export merged for {result.symbol} ({how}; {added})"
         return f"{line} -- {result.error}" if result.error else line
     if result.result == SYNC_RESULT_LOCKED:
         return f"Candle export skipped: export_in_progress ({result.symbol})"

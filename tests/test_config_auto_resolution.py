@@ -43,6 +43,7 @@ def test_business_rule_constants():
     assert auto_resolution_config.SWEEP_R == pytest.approx(1.0)
     assert auto_resolution_config.SWEEP_H == 48
     assert auto_resolution_config.OVERLAP_MIN_BARS == 10
+    assert auto_resolution_config.INHERIT_MIN_OWN_REFERENCES == 5  # N43
     assert auto_resolution_config.S4_WINDOW_H == 48
 
 

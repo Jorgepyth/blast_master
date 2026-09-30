@@ -62,6 +62,11 @@ if mode == "ok":
     print("WINPID: 4242")
     print("RUN_ID: " + run_id)
     print("RUN_DIR: " + run_dir)
+elif mode == "ok_server":  # como el exportador real desde N43: informa servidor y desfase base
+    print("WINPID: 4242\r")
+    print("SERVER: ICMarketsSC-Demo\r")
+    print("BASE_UTC_OFFSET: 2\r")
+    print("RUN_ID: " + run_id + "\r")
 elif mode == "ok_partial":  # el exportador salteó el 1M (RF-15) pero el resto salió bien
     print("SKIPPED_TF: 1M")
     print("RUN_ID: " + run_id)
@@ -511,3 +516,32 @@ def test_a_complete_export_has_no_skipped_note_in_the_summary_line(env):
     result = env.sync("ok")
     assert result.error is None
     assert "--" not in candle_sync.format_result_line(result)
+
+
+# --- herencia del reloj (T22b, RF-2e, N43): servidor y desfase base del export ----
+
+def test_exporter_run_reads_the_server_and_the_base_offset_lines():
+    run = ExporterRun(returncode=0, stdout="WINPID: 1\r\nSERVER: ICMarketsSC-Demo\r\nBASE_UTC_OFFSET: 2\r\n")
+    assert (run.server, run.base_utc_offset) == ("ICMarketsSC-Demo", 2.0)
+    assert ExporterRun(returncode=0, stdout="BASE_UTC_OFFSET: -3.5\n").base_utc_offset == -3.5
+    assert ExporterRun(returncode=0, stdout="SERVER: Broker Name-Live 2\n").server == "Broker Name-Live 2"
+    silent = ExporterRun(returncode=0, stdout="RUN_ID: x\n")
+    assert (silent.server, silent.base_utc_offset) == (None, None)
+
+
+def test_a_merged_export_records_its_server_and_base_offset_in_status_json(env):
+    env.seed_bank(12)
+    env.seed_payload(15)
+
+    result = env.sync("ok_server")
+
+    assert result.result == "merged"
+    assert read_bank_status(str(env.bank_dir))["verified_export"] == {
+        "run_id": "20261005T142011", "verified_by": "overlap", "server": "ICMarketsSC-Demo",
+        "base_utc_offset": 2.0, "dst_rule": "none"}
+
+
+def test_the_summary_line_says_when_the_clock_was_inherited():
+    result = candle_sync.SyncResult("US500", "merged", verified_by="inherited:XAUUSD", bars_added={"15M": 200})
+    assert candle_sync.format_result_line(result) == (
+        "Candle export merged for US500 (clock inherited from XAUUSD; 15M: +200)")

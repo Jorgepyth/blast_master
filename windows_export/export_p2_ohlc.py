@@ -42,7 +42,8 @@ servidor y la regla real del broker son [NO VERIFICADO] hasta el spike de
 interoperabilidad (T22). tools/p2_backtest.py:calibrate_clock_offset() lo
 verifica contra las entradas reales y bloquea el reporte si el reloj no cuadra.
 
-Solo funciones de LECTURA de MetaTrader5 (copy_rates_range). PROHIBIDO:
+Solo funciones de LECTURA de MetaTrader5 (copy_rates_range, symbol_info_tick,
+account_info). PROHIBIDO:
 order_send, order_check, o cualquier función de escritura -- no se
 importan ni se usan en este archivo.
 
@@ -326,6 +327,18 @@ def infer_server_utc_offset(tick_epoch: float, now_utc_epoch: float,
     if not -12 <= hours <= 14:
         raise RuntimeError(f"Offset de servidor inferido fuera de rango: {hours}h.")
     return hours
+
+
+def account_server_name() -> Optional[str]:
+    """
+    Nombre del servidor de la cuenta abierta en el terminal (p.ej.
+    `ICMarketsSC-Demo`), de `mt5.account_info()`, que es de solo lectura.
+    `None` si no hay sesión. Lo usa la herencia del reloj del banco (spec 002,
+    N43): dos símbolos del mismo servidor comparten el reloj.
+    """
+    info = mt5.account_info()
+    server = getattr(info, "server", None) if info is not None else None
+    return server.strip() if isinstance(server, str) and server.strip() else None
 
 
 def detect_server_utc_offset(symbol: str) -> int:
@@ -634,6 +647,12 @@ def main(argv: Optional[list] = None) -> int:
         else:
             print(f"Regla DST: {args.dst_rule} -> offset base (invierno) UTC{base_offset:+g}; "
                   "cada vela se convierte con el offset de su fecha.\n")
+
+        # Para la herencia del reloj en el banco (spec 002, N43): candle_sync lee estas dos líneas.
+        server_name = account_server_name()
+        if server_name:
+            print(f"SERVER: {server_name}")
+        print(f"BASE_UTC_OFFSET: {base_offset:g}", flush=True)
 
         # El directorio por corrida se crea recién acá, con MT5 ya inicializado y el
         # reloj resuelto: si algo de lo anterior falla, no queda un directorio vacío.

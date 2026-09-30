@@ -53,6 +53,11 @@ SWEEP_H = 48          # horas del horizonte de Liquidity Sweep
 # la regla de referencias de `tools.p2_backtest.CLOCK_MIN_ENTRIES` (N32).
 OVERLAP_MIN_BARS = 10
 
+# Herencia del reloj (N43, RF-2e): un símbolo con menos de CLOCK_MIN_ENTRIES
+# referencias hereda el reloj verificado de otro del mismo servidor solo si
+# tiene al menos estas referencias propias en velas exportadas, y calzan todas.
+INHERIT_MIN_OWN_REFERENCES = 5
+
 # Ventana del criterio de acierto secundario S4 (docs/criterios-de-acierto.md,
 # N35). Coincide numéricamente con SWEEP_H, pero es una constante conceptualmente
 # distinta -- no fusionar.

@@ -29,9 +29,11 @@ from tools.candle_bank import (
     SyncResult,
     acquire_bank_lock,
     bank_csv_path,
+    INHERITED_PREFIX,
     build_status_payload,
     collect_bank_status,
     filter_by_export_season,
+    find_clock_donor,
     gather_reference_entries,
     import_legacy,
     import_legacy_with_status,
@@ -666,6 +668,7 @@ def test_build_status_payload_matches_plan_example_shape():
         "symbol": "XAUUSD", "clock": "verified", "verified_by": "overlap", "dst_rule": "unverified",
         "last_export": {"run_id": "20261005T142011", "result": "merged", "bars_added": {"1M": 412, "15M": 28}},
         "last_error": None,
+        "verified_export": None,  # N43: lo llena write_sync_status con el último export fusionado
     }
 
 
@@ -1221,3 +1224,203 @@ def test_legacy_import_then_fresh_export_verifies_by_overlap_with_no_false_misal
         real_accounts={"000": "xau.db"}, symbol_map={"XAUUSDT.P": "XAUUSD"})
 
     assert result.result == SYNC_RESULT_MERGED and result.verified_by == "overlap"
+
+
+# --- herencia del reloj entre símbolos del mismo servidor (T22b, RF-2e, N43) ----
+
+SERVER = "ICMarketsSC-Demo"
+
+
+def _verified_export(verified_by="overlap", server=SERVER, base_utc_offset=2, dst_rule="none", run_id="run-0"):
+    return {"run_id": run_id, "verified_by": verified_by, "server": server,
+            "base_utc_offset": base_utc_offset, "dst_rule": dst_rule}
+
+
+def _donor(bank_root, symbol="XAUUSD", clock="verified", **export):
+    """`status.json` de un símbolo que ya fusionó un export verificado (el posible donante)."""
+    verified_export = _verified_export(**export)
+    write_bank_status(str(bank_root / symbol), build_status_payload(
+        symbol, clock, verified_export["verified_by"], "unverified", "run-0", "merged", {},
+        verified_export=verified_export))
+
+
+def _heir(tmp_path, own_fills):
+    """US500 en su primer export (banco vacío), con `own_fills` referencias propias."""
+    _make_account_db(tmp_path / "us500.db", fills=own_fills, asset="US500")
+    bank_dir, incoming_dir = tmp_path / "bank" / "US500", tmp_path / "incoming"
+    bank_dir.mkdir(parents=True)
+    _write_reference_15m_csv(incoming_dir, lag_hours=0)
+    return bank_dir, incoming_dir
+
+
+def _merge_heir(tmp_path, bank_dir, incoming_dir, **kw):
+    kw.setdefault("export_moment", datetime(2026, 6, 5, 12))
+    kw.setdefault("dst_rule", "none")
+    kw.setdefault("server", SERVER)
+    kw.setdefault("base_utc_offset", 2)
+    return merge_incoming_run(str(bank_dir), str(incoming_dir), "US500", "run-1", str(tmp_path),
+                              real_accounts={"001": "us500.db"}, symbol_map={"US500": "US500"}, **kw)
+
+
+def test_inherits_the_clock_of_a_directly_verified_symbol_on_the_same_server(tmp_path):
+    _donor(tmp_path / "bank")
+    bank_dir, incoming_dir = _heir(tmp_path, _reference_fills(6))  # 6 < 10: por referencias no alcanza
+
+    result = _merge_heir(tmp_path, bank_dir, incoming_dir)
+
+    assert result.result == SYNC_RESULT_MERGED
+    assert result.verified_by == INHERITED_PREFIX + "XAUUSD" == "inherited:XAUUSD"
+    assert result.bars_added["15M"] == 200
+    assert result.verified_export == _verified_export(verified_by="inherited:XAUUSD", run_id="run-1")
+
+
+@pytest.mark.parametrize("donor_change", [
+    {"verified_by": "inherited:BTCUSD"},   # el donante también heredó: sin cadenas
+    {"server": "OtherBroker-Live"},         # otro servidor
+    {"base_utc_offset": 3},                 # otro desfase base
+    {"dst_rule": "us"},                     # otra regla de horario
+    {"server": None, "base_utc_offset": None, "verified_by": "references"},  # verificado por import legacy
+    {"clock": "clock_unverified"},          # el donante no tiene el reloj verificado
+])
+def test_no_inheritance_from_a_symbol_that_is_not_a_valid_donor(tmp_path, donor_change):
+    _donor(tmp_path / "bank", **donor_change)
+    bank_dir, incoming_dir = _heir(tmp_path, _reference_fills(6))
+
+    result = _merge_heir(tmp_path, bank_dir, incoming_dir)
+
+    assert result.result == "clock_unverified"
+    assert "6 reference prices in the exported range, need 10" in result.error
+    assert "no directly verified symbol" in result.error
+    assert os.listdir(bank_dir) == []
+
+
+def test_no_inheritance_without_any_other_symbol(tmp_path):
+    bank_dir, incoming_dir = _heir(tmp_path, _reference_fills(6))
+    result = _merge_heir(tmp_path, bank_dir, incoming_dir)
+    assert result.result == "clock_unverified" and "no directly verified symbol" in result.error
+
+
+def test_inheritance_needs_five_own_reference_prices(tmp_path):
+    _donor(tmp_path / "bank")
+    bank_dir, incoming_dir = _heir(tmp_path, _reference_fills(4))
+
+    result = _merge_heir(tmp_path, bank_dir, incoming_dir)
+
+    assert result.result == "clock_unverified"
+    assert "only 4 own reference prices" in result.error and "need 5" in result.error and "XAUUSD" in result.error
+    assert os.listdir(bank_dir) == []
+
+
+def test_a_single_own_reference_that_does_not_fit_blocks_the_inheritance(tmp_path):
+    _donor(tmp_path / "bank")
+    fills = _reference_fills(6)
+    fills[2] = (fills[2][0], 5000.0)  # fuera de su vela
+    bank_dir, incoming_dir = _heir(tmp_path, fills)
+
+    result = _merge_heir(tmp_path, bank_dir, incoming_dir)
+
+    assert result.result == "clock_unverified"
+    assert "1 of 6 own reference prices do not fit" in result.error
+    assert os.listdir(bank_dir) == []
+
+
+def test_own_references_outside_the_exported_candles_do_not_count(tmp_path):
+    # Solo cuentan las que caen en una vela del export: 4 adentro + 3 un mes antes = no alcanza.
+    _donor(tmp_path / "bank")
+    fills = _reference_fills(4) + [(t - timedelta(days=30), p) for t, p in _reference_fills(3)]
+    bank_dir, incoming_dir = _heir(tmp_path, fills)
+
+    result = _merge_heir(tmp_path, bank_dir, incoming_dir)
+
+    assert result.result == "clock_unverified" and "only 4 own reference prices" in result.error
+
+
+def test_inheritance_never_overrides_an_overlap_mismatch(tmp_path):
+    _donor(tmp_path / "bank")
+    bank_dir, incoming_dir = _heir(tmp_path, _reference_fills(6))
+    times, closes = _hourly(T0, 12)
+    _write_csv(bank_dir / "1H.csv", times, closes)
+    before = (bank_dir / "1H.csv").read_bytes()
+    bad = list(closes)
+    bad[3] = 9999.0
+    _write_csv(incoming_dir / "1H.csv", times, bad)
+
+    result = _merge_heir(tmp_path, bank_dir, incoming_dir)
+
+    assert result.result == "clock_misaligned"
+    assert (bank_dir / "1H.csv").read_bytes() == before
+
+
+def test_without_the_server_and_base_offset_of_the_export_there_is_no_inheritance(tmp_path):
+    _donor(tmp_path / "bank")
+    bank_dir, incoming_dir = _heir(tmp_path, _reference_fills(6))
+
+    result = _merge_heir(tmp_path, bank_dir, incoming_dir, server=None, base_utc_offset=None)
+
+    assert result.result == "clock_unverified"
+    assert "did not report its server and base offset" in result.error
+
+
+def test_ten_own_references_still_verify_by_references_even_with_a_donor(tmp_path):
+    _donor(tmp_path / "bank")
+    bank_dir, incoming_dir = _heir(tmp_path, _reference_fills(12))
+
+    result = _merge_heir(tmp_path, bank_dir, incoming_dir)
+
+    assert (result.result, result.verified_by) == (SYNC_RESULT_MERGED, "references")
+    assert result.verified_export["verified_by"] == "references"
+
+
+def test_find_clock_donor_takes_the_first_valid_symbol_in_alphabetical_order_and_never_itself(tmp_path):
+    bank_root = tmp_path / "bank"
+    _donor(bank_root, "XAUUSD")
+    _donor(bank_root, "BTCUSD")
+    _donor(bank_root, "AAA", verified_by="inherited:XAUUSD")  # primero en orden, pero heredado
+    _donor(bank_root, "US500")                                  # el propio símbolo
+    (bank_root / "BROKEN").mkdir()
+    (bank_root / "BROKEN" / STATUS_JSON_FILENAME).write_text("{not json")
+
+    assert find_clock_donor(str(bank_root), "US500", SERVER, 2, "none") == "BTCUSD"
+    assert find_clock_donor(str(bank_root), "US500", SERVER, 2.0, "none") == "BTCUSD"  # 2 == 2.0
+    assert find_clock_donor(str(bank_root / "missing"), "US500", SERVER, 2, "none") is None
+
+
+def test_write_sync_status_records_the_verified_export_and_keeps_it_when_a_later_export_does_not_merge(tmp_path):
+    export = _verified_export(run_id="r1")
+    write_sync_status(str(tmp_path), SyncResult("XAUUSD", SYNC_RESULT_MERGED, verified_by="overlap", run_id="r1",
+                                                verified_export=export))
+    assert read_bank_status(str(tmp_path))["verified_export"] == export
+
+    write_sync_status(str(tmp_path), SyncResult("XAUUSD", "clock_unverified", run_id="r2", error="x"))
+    write_sync_status(str(tmp_path), SyncResult("XAUUSD", "export_failed", run_id="r3", error="timeout"))
+    assert read_bank_status(str(tmp_path))["verified_export"] == export
+
+
+def _us500_legacy(tmp_path, fills):
+    _make_account_db(tmp_path / "us500.db", fills=_reference_fills(fills), asset="US500")
+    legacy_dir = tmp_path / "legacy" / "US500"
+    _write_reference_15m_csv(legacy_dir)
+    return import_legacy_with_status(
+        "US500", str(legacy_dir), str(tmp_path / "bank" / "US500"), str(tmp_path),
+        real_accounts={"001": "us500.db"}, symbol_map={"US500": "US500"},
+        export_moment=EXPORT_MOMENT, dst_rule="none")
+
+
+def test_the_legacy_import_never_inherits(tmp_path):
+    _donor(tmp_path / "bank")
+
+    result = _us500_legacy(tmp_path, 6)
+
+    assert result.aligned is None
+    assert read_bank_status(str(tmp_path / "bank" / "US500"))["clock"] == "clock_unverified"
+    assert not (tmp_path / "bank" / "US500" / "15M.csv").exists()
+
+
+def test_a_symbol_verified_only_by_the_legacy_import_is_not_a_donor(tmp_path):
+    _us500_legacy(tmp_path, 12)  # US500 verificado por referencias, pero sin servidor ni desfase
+    status = read_bank_status(str(tmp_path / "bank" / "US500"))
+    assert status["clock"] == "verified"
+    assert status["verified_export"] == {"run_id": LEGACY_IMPORT_RUN_ID, "verified_by": "references",
+                                         "server": None, "base_utc_offset": None, "dst_rule": "none"}
+
+    assert find_clock_donor(str(tmp_path / "bank"), "USTEC", SERVER, 2, "none") is None

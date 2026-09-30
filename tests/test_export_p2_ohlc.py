@@ -616,3 +616,32 @@ def test_fetch_rates_a_chunk_rejected_by_mt5_raises(monkeypatch):
 def test_fetch_rates_without_any_candle_returns_an_empty_frame(monkeypatch):
     monkeypatch.setattr(exporter_module.mt5, "copy_rates_range", lambda *a, **k: [])
     assert fetch_rates("XAUUSD", "1M", datetime(2026, 9, 1), datetime(2026, 9, 2)).empty
+
+
+# --- N43: el exportador informa el servidor y el desfase base (T22b) -------------
+
+def _stdout_lines(capsys):
+    return capsys.readouterr().out.splitlines()
+
+
+def test_main_prints_the_server_and_the_base_offset_for_the_clock_inheritance(mt5_ready, monkeypatch, tmp_path, capsys):
+    from types import SimpleNamespace
+    monkeypatch.setattr(exporter_module.mt5, "copy_rates_range", lambda *a, **k: _fake_rates(["2026-01-15 10:00"]))
+    monkeypatch.setattr(exporter_module.mt5, "account_info", lambda: SimpleNamespace(server="ICMarketsSC-Demo"))
+
+    assert main(_main_args(tmp_path, "--per-run-dir", "--dst-rule", "none")) == 0
+
+    lines = _stdout_lines(capsys)
+    assert "SERVER: ICMarketsSC-Demo" in lines
+    assert "BASE_UTC_OFFSET: 2" in lines  # --server-utc-offset 2 con la regla none: el base es el mismo
+
+
+def test_main_without_an_account_session_prints_no_server_line(mt5_ready, monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(exporter_module.mt5, "copy_rates_range", lambda *a, **k: _fake_rates(["2026-01-15 10:00"]))
+    monkeypatch.setattr(exporter_module.mt5, "account_info", lambda: None)
+
+    assert main(_main_args(tmp_path, "--per-run-dir", "--dst-rule", "none")) == 0
+
+    lines = _stdout_lines(capsys)
+    assert not any(line.startswith("SERVER:") for line in lines)
+    assert "BASE_UTC_OFFSET: 2" in lines
