@@ -533,6 +533,15 @@
       + export nuevo bien etiquetado: con el filtro la superposición verifica). Los tests con fechas de junio ahora
       fijan `export_moment` y `dst_rule` para no depender del día en que se corran. Mutación: sin el filtro se rompen 3.
 
+- [ ] T22b. *(Tarea agregada el 2026-09-30 por la decisión N43 del usuario; no altera la numeración.)* Herencia del
+      reloj verificado entre símbolos del mismo servidor: el exportador imprime `SERVER:` y `BASE_UTC_OFFSET:`,
+      `candle_sync` los pasa a la fusión, `status.json` guarda `verified_export`, y `merge_incoming_run` prueba la
+      herencia cuando faltan referencias (plan.md §3.8, paso 4b). (RF-2, RF-2e, N43)
+      Hecho cuando: los tests prueban una herencia exitosa y cada caso en que no se hereda: sin donante, donante que a
+      su vez heredó, otro servidor, otro desfase base, otra regla, menos de 5 referencias propias, una que no calza y
+      superposición desalineada. También, que el import legacy nunca hereda ni sirve de donante, y que un export que no
+      se fusiona conserva el `verified_export` anterior. SUITE en verde.
+
 ## Etapa 3 — Resolvedor, métricas y reporte (solo lectura)
 
 - [x] T23. `first_touch_detail()` en `core/p2_ground_truth.py`. (RF-4, RF-4b, RF-4f)
@@ -745,6 +754,11 @@
       misma tarea) se rehízo desde cero. Cobertura: XAU 1M 139 326 velas desde 2026-05-10, 5M desde 2026-05-05; BTC 1M
       137 793 desde 2026-06-24 (el símbolo de BTC solo tiene ~3 meses de 1M en el servidor). El 5M de XAU del
       *import legacy* está excluido (`LEGACY_IMPORT_EXCLUSIONS`); el 5M que hay en el banco vino del export nuevo.
+- [ ] T59b. 🖐 *(Agregada el 2026-09-30, N43.)* Alimentar US500 y USTEC por herencia. Con MT5 abierto, exportar
+      XAUUSD (para que su `status.json` guarde el servidor y el desfase base) y después US500 y USTEC. Escribe en
+      `.data/candle_bank/`, aprobado por el usuario junto con T59. (RF-2e, N43)
+      Hecho cuando: `candles status` muestra US500 y USTEC `verified` por `inherited:...`, o el motivo exacto por el
+      que no heredaron.
 - [ ] T60. Correr `resolution-report` sobre las DBs reales, en solo lectura. (RF-6, RF-17, RF-21)
       Hecho cuando: el `.md` generado se muestra, y el S1 direccional de XAU se compara con el 61% de
       `analisis-overlap-2d.md`, explicando cualquier diferencia (1M/5M, ancla).
@@ -787,6 +801,7 @@
 | RF-2, RF-2b | T10, T14 |
 | RF-2c | T16, T21, T59 |
 | RF-2d | T13 |
+| RF-2e | T22b, T59b |
 | RF-3 | T31, T39 |
 | RF-3b | T31, T32 |
 | RF-4 | T23, T25, T26, T27 |

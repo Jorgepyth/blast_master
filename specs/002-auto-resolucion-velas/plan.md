@@ -103,8 +103,15 @@ test lo verifica (RF-18).
 ```json
 {"symbol": "XAUUSD", "clock": "verified", "verified_by": "overlap", "dst_rule": "unverified",
  "last_export": {"run_id": "20261005T142011", "result": "merged", "bars_added": {"1M": 412, "15M": 28}},
- "last_error": null}
+ "last_error": null,
+ "verified_export": {"run_id": "20261005T142011", "verified_by": "overlap", "server": "ICMarketsSC-Demo",
+                     "base_utc_offset": 2, "dst_rule": "us"}}
 ```
+
+- `verified_export` (N43) describe el último export que se fusionó: cómo se verificó, y con qué servidor, desfase
+  base (el de invierno) y regla de horario se convirtió. Un export que no se fusiona no lo cambia. Es lo que compara
+  la herencia (§3.8, paso 4b). El import legacy lo deja con `server` y `base_utc_offset` en `null`, así que un
+  símbolo importado de legacy no sirve de donante hasta su primer export nuevo.
 
 - **Candado:** `${CANDLE_BANK_DIR}/{MT5_SYMBOL}/.lock`, con el PID y la hora. Se considera abandonado después de
   2 h, igual que `tools/backup.py:134`.
@@ -115,6 +122,9 @@ test lo verifica (RF-18).
   `/mnt/c/Users/jcifu/MT5Exports/_incoming/`. Cada corrida escribe en un directorio **nuevo**, así que nunca
   sobrescribe nada.
 - Se conservan las últimas 5 corridas por símbolo, para poder auditarlas.
+- Además de `RUN_ID:` y `RUN_DIR:`, el exportador imprime `SERVER:` (el servidor de la cuenta, de
+  `mt5.account_info()`, que es de solo lectura) y `BASE_UTC_OFFSET:` (el desfase de invierno del servidor).
+  `tools/candle_sync.py` los pasa a la fusión, para la herencia del reloj (N43).
 - Los CSV actuales `MT5Exports/{SYMBOL}/{TF}.csv` **no se tocan** (INV-6). El cuaderno y `tools/edge_evaluation.py`
   los siguen leyendo.
 
@@ -253,7 +263,15 @@ Se usa R = |precio de partida − SI|.
    `REAL_ACCOUNTS` que mapean al símbolo, en solo lectura. Son los fills (`entry_time`, `entry_price`) y los Mark
    Price no retroactivos (`mark_price_time` si existe, si no `created_at`).
    - Si al menos 10 caen dentro del rango exportado **y** `evaluate_clock_entries()` da `aligned=True` → verificado.
-   - Si no → `clock_unverified`.
+   - Si `evaluate_clock_entries()` da el reloj corrido → `clock_misaligned`. Si faltan referencias → paso 4b.
+4b. **Herencia (RF-2e, N43):** se busca un donante entre los otros símbolos del banco. Sirve el que tiene
+   `clock = "verified"` y un `verified_export` verificado por superposición o por referencias (no heredado), con el
+   mismo `server`, `base_utc_offset` y `dst_rule` que este export. Si hay varios, el primero en orden alfabético.
+   - Con donante, se toman las referencias propias que caen en una vela del export, en la TF de
+     `CLOCK_TIMEFRAME_PREFERENCE` (igual que el paso 4). Si son al menos `INHERIT_MIN_OWN_REFERENCES` y **todas**
+     calzan sin desplazamiento → verificado, con `verified_by = "inherited:<donante>"`.
+   - Si no → `clock_unverified`, con el motivo: sin donante, pocas referencias propias, o cuántas no calzan.
+   - Si el exportador no informó `SERVER:` o `BASE_UTC_OFFSET:`, no hay herencia posible.
 5. **Estación de horario (RF-15c, N39):** mientras `BROKER_DST_RULE` no esté verificado, en 1H y en las TF menores
    solo se fusionan las velas de la misma estación que el momento del export. 4H, 12H, 1D y 1W se fusionan
    completas, porque el desfase de 1 h es despreciable para EMA y ADX, y los modelos de `P2_LOG_MODELS` (hoy D)
@@ -352,6 +370,7 @@ cambio se inserta en `backfill_history`.
 | T21 | El P2 sistemático se registra en un JSONL aparte, al que solo se le agregan líneas | Una columna en `unified_department` | D3 pide explícitamente que no vaya a la DB, y así el registro no se mezcla con los datos del operador ni con el edge |
 | T22 | El registro ocurre al guardar, si hay velas, y además en un catch-up después de cada fusión del banco | Solo al guardar | Como el export es manual o va en segundo plano, al guardar casi nunca hay velas del momento. Sin catch-up, casi ningún análisis quedaría registrado |
 | T23 | Los modelos registrados salen de `P2_LOG_MODELS` (nombre → fecha de alta), con una línea por análisis y modelo, la receta completa y su huella en cada línea (N42, decidido por el usuario el 2026-09-28) | Dejar `MODEL_D` fijo en `tools/p2_model_feedback.py` | Cambiar o sumar un modelo (por ejemplo H) sería editar código y spec. Con la lista, D y H se registran en paralelo sobre los mismos análisis; la fecha de alta evita evaluar H sobre los datos con los que se diseñó, y la huella impide mezclar dos recetas con el mismo nombre |
+| T24 | La herencia (N43) compara el servidor, el desfase base y la regla de horario del export con el `verified_export` del donante, y exige 5 referencias propias que calcen todas | (a) Heredar sin referencias propias. (b) Exigir que el donante se haya exportado en la misma tanda | (a) No detectaría un símbolo mal mapeado ni un reloj corrido propio. (b) El desfase base y la regla ya fijan la conversión de cada vela; la hora del export no agrega nada |
 
 **Dependencias nuevas:** ninguna (constitución, principio 1). Se usan pandas, SQLAlchemy, Rich, InquirerPy, Click y la
 biblioteca estándar, que ya están en `requirements.txt` o en el entorno.
@@ -455,7 +474,7 @@ biblioteca estándar, que ya están en `requirements.txt` o en el entorno.
 | INV-7 | `flow_new_analysis` registra horas sin prompts nuevos (§1, `cli/main.py`) |
 | INV-8 | Ningún módulo propone campos de juicio |
 | RF-1, 1b, 1c, 1d | `tools/candle_bank.py`, §3.8, T2, T9 |
-| RF-2, 2b, 2c, 2d | `tools/candle_bank.py` y `evaluate_clock_entries`, §3.8, T4, T7, T20 |
+| RF-2, 2b, 2c, 2d, 2e | `tools/candle_bank.py` y `evaluate_clock_entries`, §3.8 (paso 4b para RF-2e), §2.3, §2.4, T4, T7, T20, T24 |
 | RF-3, 3b | `core/candle_resolution.py` §3.7; `cli/main.py`; `tools/resolution_report.py` |
 | RF-4, 4b, 4c, 4d, 4e, 4f, 4g, 4h | `core/candle_resolution.py` §3.1, §3.2, §3.4; `tools/auto_resolution.py`; T4, T6 |
 | RF-5, 5b | §3.3; `core/outcome_metrics.py`; wizard |

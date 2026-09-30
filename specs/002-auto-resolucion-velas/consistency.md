@@ -26,6 +26,21 @@ verdict: APPROVED
   Se volvieron a correr C1, C2, C4 y la contradicción interna: los 70 RF y los 8 INV aparecen en `plan.md` y en
   `tasks.md` (script que expande grupos). RF-12e depende de T8 (la constante) y de T55 (los chequeos), en ese orden.
   N38 y N40 siguen valiendo: N42 los amplía de "modelo D" a "cada modelo de la lista". Veredicto: sigue `APPROVED`.
+- **Cuarta pasada (2026-09-30), por un cambio aprobado por el usuario ("ejecutemos N43"):** decisión **N43**. Un
+  símbolo sin superposición y con menos de 10 referencias puede heredar el reloj verificado de otro símbolo del
+  mismo servidor, con el mismo desfase base y la misma regla, si tiene al menos 5 referencias propias y calzan
+  todas. Cambios:
+  - **spec:** RF-2 pasa de dos caminos a tres; RF-2e nuevo (71 RF); E2b, los casos límite de US500 y US100, y la
+    clave `INHERIT_MIN_OWN_REFERENCES`;
+  - **plan:** §2.3 (`verified_export` en `status.json`), §2.4 (líneas `SERVER:` y `BASE_UTC_OFFSET:`), §3.8 paso 4b,
+    decisión T24 y cobertura;
+  - **tareas:** T22b (código) y T59b (🖐, banco real), agregadas sin renumerar; tabla de cobertura.
+
+  Antes de editar se revisó el cambio contra la spec (regla anti-deriva de F9): N29 ("solo si al menos 10") queda
+  ampliada por N43, sin contradicción. RF-4e no cambia, porque "verificado" incluye el heredado. RF-2c queda fuera de
+  la herencia a propósito. La herencia nunca pasa por encima de un `clock_misaligned`. Se volvieron a correr C1, C2 y
+  la contradicción interna: RF-2e aparece en `plan.md` y en `tasks.md`. Sin dependencias nuevas (constitución,
+  principio 1): `mt5.account_info()` es de solo lectura, como el resto del exportador. Veredicto: sigue `APPROVED`.
 
 ## Resultado de la segunda pasada
 

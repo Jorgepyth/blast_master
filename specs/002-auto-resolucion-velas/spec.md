@@ -90,6 +90,7 @@ El sistema propone y el operador confirma (D4). Nada del modelo de trading cambi
 | N40 | El catch-up del P2 del modelo D (RF-12b) registra **solo análisis nuevos**: los que tienen `analysis_start_time` y no son retroactivos ni clones [2]. Los 118 históricos no entran al registro prospectivo (F6 K2, opción a) | RF-12b |
 | N41 | La migración aditiva de las DBs reales (columnas nuevas y `backfill_history`) pasa por las 3 puertas de R9 **antes** de correr cualquier comando del CLI nuevo en el checkout principal, porque `init_db` migra al abrir cada DB (F6 K1) | NFR-1 |
 | N42 | **Los modelos registrados salen de la configuración, no del código.** Amplía N38. `P2_LOG_MODELS` dice qué modelos del registro de `tools/p2_backtest.py` se registran y desde qué fecha cada uno. Hoy es solo D. Un modelo nuevo (por ejemplo H) se agrega a la lista con la fecha del día en que entra, y convive con D: los dos se registran sobre los mismos análisis, en líneas separadas. Cada modelo se registra **solo** en los análisis con `analysis_start_time` igual o posterior a su fecha de alta, para que un modelo diseñado mirando los datos no se evalúe sobre esos mismos datos (sesgo de selección, como F frente a D en la spec 001). La receta de un modelo de la lista no se modifica: un cambio es un modelo nuevo, con otro nombre. Cada línea guarda la receta completa y su huella, así que dos recetas distintas nunca se mezclan (decisión del usuario, 2026-09-28) | RF-12 a RF-12e |
+| N43 | **Un símbolo puede heredar el reloj verificado de otro del mismo servidor** (decidido por el usuario el 2026-09-30). Amplía N29. Un export nuevo sin superposición con el banco y con menos de 10 referencias igual queda verificado si se cumplen tres condiciones: (a) otro símbolo tiene su último export verificado **directamente**, por superposición o por referencias, con el **mismo servidor, el mismo desfase base y la misma regla de horario** que este export; (b) este símbolo tiene al menos `INHERIT_MIN_OWN_REFERENCES` (5) referencias propias que caen en una vela exportada; y (c) **todas** calzan sin desplazamiento: si una sola no calza, no hereda. Motivo: los símbolos de un servidor de MT5 comparten el reloj, y el exportador convierte todas las velas con la misma regla, así que el reloj ya lo probó el otro símbolo. Las referencias propias cuidan lo que es del símbolo, por ejemplo un mapeo equivocado. No se hereda de un símbolo que a su vez heredó (sin cadenas), ni en el import legacy (RF-2c): cada CSV legacy se exportó por separado, con su propio desfase | RF-2, RF-2e |
 | N30 | Todo lo que el sistema muestra o guarda va en inglés, incluidos los códigos de motivo y las claves de configuración. Las specs, la documentación, los cuadernos y la conversación van en español (F3 [4][1]) | Todos |
 
 Definición usada en N13–N15:
@@ -177,11 +178,12 @@ análisis exploratorio en solo lectura, sobre velas 15M/1H de XAU y BTC.
   y dejará el banco intacto (candado por símbolo; F3 [3][6]).
 - **RF-2:** CUANDO termine un export, EL SISTEMA correrá `calibrate_clock_offset` sobre las velas nuevas y reportará
   el resultado del símbolo.
-  - Solo fusiona si el reloj queda verificado por uno de dos caminos:
+  - Solo fusiona si el reloj queda verificado por uno de tres caminos:
     - **por superposición** (RF-2d), si el export repite velas que ya están en el banco (N32);
     - si no hay superposición, con `aligned=True` **y** al menos 10 precios de referencia dentro de las fechas
-      exportadas (N29; F3 [3][1]).
-  - Si no se verifica por ninguno de los dos, informa `clock_unverified` y no fusiona.
+      exportadas (N29; F3 [3][1]);
+    - si no llega a 10 referencias, **por herencia** del reloj de otro símbolo del mismo servidor (RF-2e, N43).
+  - Si no se verifica por ninguno de los tres, informa `clock_unverified` y no fusiona.
   - Con `aligned=False` informa `clock_misaligned`.
   - Con `aligned=None` informa `clock_unverified` y la cantidad de precios de referencia que faltan para llegar
     a 10 (N10).
@@ -197,6 +199,16 @@ análisis exploratorio en solo lectura, sobre velas 15M/1H de XAU y BTC.
   `calibrate_clock_offset` da `aligned=True` sobre ellos.
   - **El `5M.csv` actual de XAU no se importa:** es anterior a la corrección del reloj (baseline H11). Se informa
     como excluido y no se borra.
+- **RF-2e:** SI un export nuevo no se verifica por superposición y tiene menos de 10 referencias, ENTONCES EL SISTEMA lo
+  dará por verificado **por herencia** si se cumplen las tres condiciones de N43, y guardará en `status.json`
+  `verified_by = "inherited:<SÍMBOLO>"` (N43).
+  - Para poder comparar, cada export que se fusiona guarda en `status.json` con qué servidor, desfase base y regla de
+    horario se convirtió (`verified_export`). El exportador informa los dos primeros en las líneas `SERVER:` y
+    `BASE_UTC_OFFSET:`.
+  - Si no hay de quién heredar, faltan referencias propias o alguna no calza, informa `clock_unverified` con el
+    motivo y no fusiona.
+  - La herencia nunca pasa por encima de un reloj corrido: con `clock_misaligned`, por superposición o por
+    referencias, no se hereda.
 
 ### Resolvedor (solo lectura)
 
@@ -438,7 +450,7 @@ Ninguna bloquea el guardado. Todas dejan el motivo visible.
 |---|---|---|
 | E1 | El export falla o MT5 está cerrado | `export_failed` (banco intacto) |
 | E2 | El reloj da `aligned=False` | `clock_misaligned` (no se fusiona ni se resuelve) |
-| E2b | Menos de 10 precios de referencia dentro de las fechas exportadas | `clock_unverified` (no se fusiona ni se resuelve) |
+| E2b | Menos de 10 precios de referencia dentro de las fechas exportadas, y sin herencia posible (N43) | `clock_unverified` (no se fusiona ni se resuelve) |
 | E3 | El banco todavía no llega al tramo necesario | `pending_candles` (temporal) |
 | E3b | El tramo es anterior a la vela más vieja del banco | `no_history` |
 | E4 | Faltan niveles, o los dos caen del mismo lado | `no_levels` |
@@ -450,9 +462,11 @@ Ninguna bloquea el guardado. Todas dejan el motivo visible.
 
 ## Casos límite
 
-- **US500** no tiene velas ni reloj verificado (4 referencias), así que queda `clock_unverified` o `pending_candles`
-  hasta que haya export y calibración. Su símbolo MT5, `US500`, no está verificado: se confirma en el primer export.
-- **US100/USTEC** tiene 9 referencias, así que queda `clock_unverified` hasta tener 10.
+- **US500** no tiene velas ni reloj verificado. Su primer export (2026-09-29) dio `clock_unverified`, con 6
+  referencias en el rango. Queda así hasta tener 10, o hasta heredar el reloj de XAUUSD o BTCUSD si sus referencias
+  propias calzan todas (N43). Ese export confirmó que el símbolo MT5 es `US500`.
+- **US100/USTEC** tenía 9 referencias en su primer export (2026-09-29): `clock_unverified` hasta tener 10, o hasta
+  heredar el reloj (N43).
 - **Frecuencia de export:** el banco crece solo con cada export manual, no con cada análisis. Si se exporta seguido,
   `pending_candles` casi no aparece.
 - **Análisis recientes** cuyo horizonte todavía no terminó y que no tocaron nada: `pending_candles`, no `Open`.
@@ -475,6 +489,7 @@ Ninguna bloquea el guardado. Todas dejan el motivo visible.
 | `AUTO_EXPORT` | Activado solo si el spike funciona (N31) |
 | `AUTO_EXPORT_WAIT_S` / `EXPORT_TIMEOUT_S` | Se fijan con la duración que mida el spike. Valores iniciales: 30 s / 180 s |
 | `OVERLAP_MIN_BARS` | 10 velas coincidentes por TF (N32) |
+| `INHERIT_MIN_OWN_REFERENCES` | 5 referencias propias, todas calzando, para heredar el reloj de otro símbolo del mismo servidor (N43) |
 | `BROKER_DST_RULE` | Calendario de horario de verano del servidor del broker. Lo determina el spike; el candidato son las fechas de EE.UU. `[NO VERIFICADO]` (N34) |
 | `REAL_ACCOUNTS` | 000 `flight_account_001_xauusd.db`, 001 `flight_account_000_us500.db`, 002 `flight_account_002_btcusdtp.db`, 003 `flight_account_003_us100.db` (N24) |
 | `P2_LOG_MODELS` | `{"D": "2026-09-27"}`: nombre del modelo en el registro de `tools/p2_backtest.py` → fecha de alta. Para sumar un modelo nuevo se agrega una entrada con la fecha del día; nunca se cambia la fecha ni la receta de uno existente (N42) |
