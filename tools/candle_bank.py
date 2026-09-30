@@ -518,6 +518,39 @@ def filter_by_export_season(
 
 
 # --------------------------------------------------------------------------
+# Velas duplicadas por el import legacy (T16c, N44)
+# --------------------------------------------------------------------------
+
+# TF en las que dos velas reales nunca están a 1 h: ahí, un par a 1 h con los mismos precios es la misma vela
+# con dos etiquetas. En 1H y menores, dos velas seguidas SÍ pueden estar a 1 h (o menos) con los mismos precios.
+RELABEL_DEDUP_TIMEFRAMES: Tuple[str, ...] = ("1W", "1D", "12H", "4H")
+_RELABEL_GAP = pd.Timedelta(hours=1)
+
+
+def find_relabeled_duplicates(df: pd.DataFrame, timeframe: str) -> List[Tuple[pd.Timestamp, pd.Timestamp]]:
+    """
+    N44: pares `(copia_a_quitar, copia_que_queda)` de velas con el mismo open/high/low/close (tolerancia
+    `OVERLAP_PRICE_TOLERANCE`) a exactamente 1 h. La copia a quitar es la de 1 h antes: la de un CSV legacy, que
+    etiquetaba todo el año con +3 h, mientras el export nuevo pone +2 h en invierno (N34). Solo para
+    `RELABEL_DEDUP_TIMEFRAMES`: con otra TF levanta `ValueError`. También si encuentra tres copias seguidas, que
+    este defecto no produce y hay que mirar a mano. No importa el orden de las filas. Solo lectura.
+    """
+    if timeframe not in RELABEL_DEDUP_TIMEFRAMES:
+        raise ValueError(f"relabeled duplicates only exist in {RELABEL_DEDUP_TIMEFRAMES}, not in {timeframe}")
+    if df.empty:
+        return []
+    ordered = df.sort_values("time").reset_index(drop=True)
+    following = ordered.shift(-1)
+    same = (following["time"] - ordered["time"]) == _RELABEL_GAP
+    for col in _OVERLAP_COMPARE_COLUMNS:
+        same &= (following[col] - ordered[col]).abs() <= OVERLAP_PRICE_TOLERANCE * ordered[col].abs()
+    pairs = list(zip(ordered.loc[same, "time"], following.loc[same, "time"]))
+    if {drop for drop, _ in pairs} & {keep for _, keep in pairs}:
+        raise ValueError(f"three or more copies of the same {timeframe} candle one hour apart; inspect by hand")
+    return pairs
+
+
+# --------------------------------------------------------------------------
 # status.json (T15, plan.md §2.3)
 # --------------------------------------------------------------------------
 
@@ -820,14 +853,16 @@ def import_legacy(
     cualquier `(symbol, TF)` en `exclusions` (por defecto, solo XAU/5M) se
     excluye igual.
 
-    Estación de horario (plan.md decisión T17, RF-15c): los CSV legacy los
+    Estación de horario (plan.md decisión T17, RF-15c, N44): los CSV legacy los
     escribió el exportador viejo, con UN solo offset para toda la corrida, así que
-    en 1H y más finas las velas de la estación opuesta a la del export tienen 1 h
-    de error. Por eso, igual que en un export nuevo, se pasan por
-    `filter_by_export_season(export_moment, dst_rule)` y solo entran las de la
-    misma estación. `export_moment` y `dst_rule` son obligatorios a propósito: en
-    T16 se omitió este filtro y en la primera corrida real dejó 18 velas de 1H de
-    marzo con 1 h de corrimiento en el banco de XAUUSD (2026-09-29).
+    en **todas** las TF las velas de la estación opuesta a la del export tienen 1 h
+    de error. Por eso se pasan por `filter_by_export_season(export_moment,
+    dst_rule)` en todas las TF, no solo en 1H y más finas como en un export nuevo,
+    y solo entran las de la misma estación. `export_moment` y `dst_rule` son
+    obligatorios a propósito: en T16 se omitió este filtro y en la primera corrida
+    real dejó 18 velas de 1H de marzo con 1 h de corrimiento en el banco de XAUUSD
+    (2026-09-29). T16b lo aplicó solo a 1H y menores, y las de 4H o más quedaron
+    duplicadas junto a las del export nuevo: 3.824 pares (N44, T16c).
     """
     real_accounts = REAL_ACCOUNTS if real_accounts is None else real_accounts
     symbol_map = MT5_SYMBOL_MAP if symbol_map is None else symbol_map
@@ -857,7 +892,8 @@ def import_legacy(
             excluded[tf] = LEGACY_EXCLUSION_REASON
             continue
         incoming_df = read_candle_csv(bank_csv_path(legacy_dir, tf))
-        incoming_df = filter_by_export_season(incoming_df, tf, export_moment, dst_rule)
+        incoming_df = filter_by_export_season(incoming_df, tf, export_moment, dst_rule,
+                                              season_timeframes=ALL_BANK_TIMEFRAMES)
         imported[tf] = merge_timeframe_into_bank_checked(bank_dir, tf, incoming_df)
 
     return LegacyImportResult(symbol=symbol, aligned=True, imported=imported, excluded=excluded)

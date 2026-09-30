@@ -533,7 +533,7 @@
       + export nuevo bien etiquetado: con el filtro la superposición verifica). Los tests con fechas de junio ahora
       fijan `export_moment` y `dst_rule` para no depender del día en que se corran. Mutación: sin el filtro se rompen 3.
 
-- [ ] T16c. *(Tarea agregada el 2026-09-30 por la decisión N44 del usuario; corrección de T16 y T16b.)* El import
+- [x] T16c. *(Tarea agregada el 2026-09-30 por la decisión N44 del usuario; corrección de T16 y T16b.)* El import
       legacy filtra por estación en todas las TF, no solo en 1H y menores. Nueva `find_relabeled_duplicates()` en
       `tools/candle_bank.py` y nueva herramienta `tools/dedup_candle_bank.py`: por defecto solo informa; con `--apply`
       respalda, limpia y verifica (plan.md §3.8, "Limpieza única"). (RF-1, RF-2c, RF-15c, N39, N44)
@@ -541,6 +541,24 @@
       no quedan pares en 1D); los tests de la herramienta prueban que el modo por defecto no escribe nada, que `--apply`
       respalda los bytes originales, quita solo la copia de 1 h antes de cada par, no toca 1H ni un par con precios
       distintos, y que una segunda corrida no encuentra nada. SUITE en verde.
+      **Hecho 2026-09-30:**
+      - `import_legacy` pasa `season_timeframes=ALL_BANK_TIMEFRAMES` al filtro de estación.
+      - `find_relabeled_duplicates(df, tf)` devuelve pares `(copia a quitar, copia que queda)`. Solo acepta 4H, 12H,
+        1D y 1W: en 1H y menores, dos velas reales pueden estar a 1 h. Frena si encuentra tres copias seguidas.
+      - `tools/dedup_candle_bank.py`: sin `--apply` solo informa. Con `--apply` toma el candado de cada símbolo,
+        respalda en `.data/archives/candle_bank_pre_dedup_<fecha>/`, reescribe de forma atómica y verifica; si la
+        verificación falla, restaura el original desde el respaldo.
+      - El test de T16b que exigía la vela de enero en 1D se invirtió, porque N44 cambia esa regla a propósito.
+      - Tests: +11 en `tests/test_candle_bank.py` (incluido el caso real: CSV legacy a +3 h y export nuevo a +2 h ya
+        no dejan pares) y 7 en `tests/test_dedup_candle_bank.py`.
+      - Mutación: sin el filtro en 4H o más, sin comparar precios, quitando la copia correcta, sin verificación, sin
+        restaurar o sin candado: en cada caso fallan entre 1 y 4 tests.
+      - Auditoría de solo lectura del banco real antes de limpiar: en los 3.824 pares, la copia de 1 h antes es
+        siempre la que no abre en el borde del servidor. Aparte hay 38 velas fuera del borde sin gemela, que **no**
+        son duplicados y no se tocan: 35 de XAU 1W de 1998 a 2006 (semanas en que EE.UU. cambiaba de hora en otras
+        fechas antes de 2007, y el exportador usa el calendario actual) y 3 de BTC 4H en la hora del cambio de horario
+        (`DST_TRANSITION_HOUR`, sin verificar, ver `spike.md`).
+      SUITE: `712 passed, 3 skipped, 97 warnings in 22.47s`; sin `.data/`.
 - [x] T22b. *(Tarea agregada el 2026-09-30 por la decisión N43 del usuario; no altera la numeración.)* Herencia del
       reloj verificado entre símbolos del mismo servidor: el exportador imprime `SERVER:` y `BASE_UTC_OFFSET:`,
       `candle_sync` los pasa a la fusión, `status.json` guarda `verified_export`, y `merge_incoming_run` prueba la

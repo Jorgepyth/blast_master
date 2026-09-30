@@ -32,8 +32,10 @@ from tools.candle_bank import (
     INHERITED_PREFIX,
     build_status_payload,
     collect_bank_status,
+    RELABEL_DEDUP_TIMEFRAMES,
     filter_by_export_season,
     find_clock_donor,
+    find_relabeled_duplicates,
     gather_reference_entries,
     import_legacy,
     import_legacy_with_status,
@@ -1161,7 +1163,8 @@ def _legacy_with_two_seasons(tmp_path):
     return legacy_dir, bank_dir, january, july
 
 
-def test_import_legacy_drops_opposite_season_candles_on_fast_timeframes_only(tmp_path):
+def test_import_legacy_drops_opposite_season_candles_on_every_timeframe(tmp_path):
+    # N44: antes (T16b) la vela de enero entraba en 1D, y quedaba duplicada, corrida 1 h, junto a la del export nuevo.
     legacy_dir, bank_dir, january, july = _legacy_with_two_seasons(tmp_path)
 
     result = import_legacy(
@@ -1172,8 +1175,8 @@ def test_import_legacy_drops_opposite_season_candles_on_fast_timeframes_only(tmp
 
     assert result.aligned is True
     assert list(read_candle_csv(bank_csv_path(str(bank_dir), "1H"))["time"]) == [july]  # enero (invierno) no entra
-    assert set(read_candle_csv(bank_csv_path(str(bank_dir), "1D"))["time"]) == {january, july}  # TF lenta: completa
-    assert result.imported["1H"] == 1 and result.imported["1D"] == 2
+    assert list(read_candle_csv(bank_csv_path(str(bank_dir), "1D"))["time"]) == [july]  # tampoco en una TF lenta
+    assert result.imported["1H"] == 1 and result.imported["1D"] == 1
 
 
 def test_import_legacy_with_rule_none_imports_everything(tmp_path):
@@ -1424,3 +1427,80 @@ def test_a_symbol_verified_only_by_the_legacy_import_is_not_a_donor(tmp_path):
                                          "server": None, "base_utc_offset": None, "dst_rule": "none"}
 
     assert find_clock_donor(str(tmp_path / "bank"), "USTEC", SERVER, 2, "none") is None
+
+
+# --- velas de 4H o más duplicadas por el import legacy (T16c, N44) -----------------
+
+def _daily(rows):
+    """1D con (hora GT, precio base) por fila: open=base, high=base+1, low=base-1, close=base+0.5."""
+    return pd.DataFrame({"time": [t for t, _ in rows], "open": [b for _, b in rows],
+                         "high": [b + 1 for _, b in rows], "low": [b - 1 for _, b in rows],
+                         "close": [b + 0.5 for _, b in rows]})
+
+
+def test_find_relabeled_duplicates_returns_the_earlier_copy_of_each_identical_pair_one_hour_apart():
+    df = _daily([
+        (datetime(2021, 12, 26, 15), 1800.0), (datetime(2021, 12, 26, 16), 1800.0),  # el caso real de XAU 1D
+        (datetime(2021, 12, 27, 16), 1810.0),                                          # sola: no se toca
+        (datetime(2022, 7, 4, 15), 1820.0),                                            # verano: sola
+    ])
+    assert find_relabeled_duplicates(df, "1D") == [(pd.Timestamp(2021, 12, 26, 15), pd.Timestamp(2021, 12, 26, 16))]
+
+
+def test_find_relabeled_duplicates_ignores_a_pair_one_hour_apart_with_different_prices():
+    df = _daily([(datetime(2021, 12, 26, 15), 1800.0), (datetime(2021, 12, 26, 16), 1800.5)])
+    assert find_relabeled_duplicates(df, "4H") == []
+
+
+def test_find_relabeled_duplicates_does_not_depend_on_row_order():
+    df = _daily([(datetime(2021, 12, 26, 16), 1800.0), (datetime(2021, 12, 26, 15), 1800.0)])
+    assert find_relabeled_duplicates(df, "1W") == [(pd.Timestamp(2021, 12, 26, 15), pd.Timestamp(2021, 12, 26, 16))]
+
+
+@pytest.mark.parametrize("timeframe", ["1H", "30M", "15M", "5M", "1M"])
+def test_find_relabeled_duplicates_refuses_timeframes_where_real_candles_are_one_hour_apart(timeframe):
+    # En 1H y menores, dos velas reales seguidas SÍ pueden estar a 1 h con los mismos precios.
+    with pytest.raises(ValueError):
+        find_relabeled_duplicates(_daily([]), timeframe)
+
+
+def test_find_relabeled_duplicates_refuses_three_copies_in_a_row():
+    df = _daily([(datetime(2021, 12, 26, 15), 1800.0), (datetime(2021, 12, 26, 16), 1800.0),
+                 (datetime(2021, 12, 26, 17), 1800.0)])
+    with pytest.raises(ValueError, match="three or more"):
+        find_relabeled_duplicates(df, "1D")
+
+
+def test_find_relabeled_duplicates_empty_frame_is_empty():
+    assert find_relabeled_duplicates(_daily([]), "12H") == []
+    assert RELABEL_DEDUP_TIMEFRAMES == ("1W", "1D", "12H", "4H")
+
+
+def test_legacy_import_then_fresh_export_leaves_no_duplicated_winter_bars_in_slow_timeframes(tmp_path):
+    """El caso real (N44): el CSV legacy etiqueta todo con +3 h, así que sus velas diarias de invierno quedan a las
+    15:00 GT; el export nuevo las etiqueta a las 16:00 (+2 h). Antes quedaban las dos."""
+    legacy_dir, bank_dir = _legacy_env(tmp_path, 12)
+    winter = [datetime(2026, 1, d) for d in (12, 13, 14)]
+    summer = [datetime(2026, 7, d) for d in (13, 14, 15)]
+    _daily([(d + timedelta(hours=15), 3000.0 + i) for i, d in enumerate(winter + summer)]).to_csv(
+        legacy_dir / "1D.csv", index=False)
+    import_legacy(
+        "XAUUSD", str(legacy_dir), str(bank_dir), str(tmp_path),
+        real_accounts={"000": "xau.db"}, symbol_map={"XAUUSDT.P": "XAUUSD"},
+        export_moment=datetime(2026, 9, 15, 12), dst_rule="us")
+
+    incoming = tmp_path / "incoming"
+    _write_reference_15m_csv(incoming)  # las mismas velas de 15M del legacy: el reloj verifica por superposición
+    fresh = [(d + timedelta(hours=16), 3000.0 + i) for i, d in enumerate(winter)]
+    fresh += [(d + timedelta(hours=15), 3003.0 + i) for i, d in enumerate(summer)]
+    _daily(fresh).to_csv(incoming / "1D.csv", index=False)
+    result = merge_incoming_run(
+        str(bank_dir), str(incoming), "XAUUSD", "r1", str(tmp_path),
+        export_moment=datetime(2026, 9, 15, 12), dst_rule="us",
+        real_accounts={"000": "xau.db"}, symbol_map={"XAUUSDT.P": "XAUUSD"})
+
+    assert (result.result, result.verified_by) == (SYNC_RESULT_MERGED, "overlap")
+    daily = read_candle_csv(bank_csv_path(str(bank_dir), "1D"))
+    assert find_relabeled_duplicates(daily, "1D") == []
+    assert len(daily) == 6
+    assert sorted(daily["time"]) == sorted(t for t, _ in fresh)
