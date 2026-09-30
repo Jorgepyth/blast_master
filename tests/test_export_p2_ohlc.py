@@ -29,6 +29,7 @@ if "MetaTrader5" not in sys.modules:
     _fake_mt5.TIMEFRAME_D1 = 2
     _fake_mt5.TIMEFRAME_H12 = 3
     _fake_mt5.TIMEFRAME_H4 = 4
+    _fake_mt5.TIMEFRAME_H2 = 10
     _fake_mt5.TIMEFRAME_H1 = 5
     _fake_mt5.TIMEFRAME_M30 = 6
     _fake_mt5.TIMEFRAME_M15 = 7
@@ -40,6 +41,7 @@ from windows_export.export_p2_ohlc import (  # noqa: E402
     ALL_EXPORT_TIMEFRAMES,
     GT_OFFSET_HOURS,
     MIN_BARS_PER_TF,
+    ON_DEMAND_TIMEFRAMES,
     BACKWARD_BUFFER_DAYS,
     BACKWARD_MARGIN,
     TIMEFRAME_MAP,
@@ -120,6 +122,7 @@ def test_exclude_forming_bar_empty_input_stays_empty():
 @pytest.mark.parametrize("timeframe,expected_unit_seconds", [
     ("1H", 3600),
     ("4H", 4 * 3600),
+    ("2H", 2 * 3600),  # P2 banco v2, solo bajo pedido
     ("12H", 12 * 3600),
     ("1D", 24 * 3600),
     ("1W", 7 * 24 * 3600),
@@ -142,7 +145,7 @@ def test_compute_backward_start_applies_min_bars_with_backward_margin(timeframe,
 
 def test_compute_backward_start_unknown_timeframe_raises_keyerror():
     with pytest.raises(KeyError):
-        compute_backward_start(datetime(2026, 1, 1), "2H")
+        compute_backward_start(datetime(2026, 1, 1), "3H")
 
 
 def test_gt_offset_is_six_hours_no_dst():
@@ -234,7 +237,9 @@ def test_timeframe_minutes_durations_for_5m_and_1m():
 def test_all_export_timeframes_has_the_nine_in_order_ending_with_5m_1m():
     assert ALL_EXPORT_TIMEFRAMES == ("1W", "1D", "12H", "4H", "1H", "30M", "15M", "5M", "1M")
     # Todo lo que aparece en el mapa de TF tiene que estar en la lista por defecto, y viceversa.
-    assert set(ALL_EXPORT_TIMEFRAMES) == set(TIMEFRAME_MAP)
+    # TIMEFRAME_MAP = las 9 del export por defecto + las que solo salen bajo pedido (2H).
+    assert set(TIMEFRAME_MAP) == set(ALL_EXPORT_TIMEFRAMES) | set(ON_DEMAND_TIMEFRAMES)
+    assert not set(ALL_EXPORT_TIMEFRAMES) & set(ON_DEMAND_TIMEFRAMES)
 
 
 def test_parse_timeframes_arg_default_returns_all_nine():
@@ -255,9 +260,60 @@ def test_parse_timeframes_arg_accepts_5m_and_1m():
 
 
 def test_parse_timeframes_arg_rejects_unknown_timeframe_with_the_list_of_valid_ones():
-    with pytest.raises(ValueError, match="2H") as exc_info:
-        parse_timeframes_arg("1H,2H")
+    with pytest.raises(ValueError, match="3H") as exc_info:
+        parse_timeframes_arg("1H,3H")
     assert "1M" in str(exc_info.value)  # el mensaje lista las válidas
+    assert "2H" in str(exc_info.value)  # también las que solo salen bajo pedido
+
+
+# --- P2 banco v2 (jupyter/p2_banco_v2/): 2H solo bajo pedido ---
+
+def test_2h_maps_to_mt5_h2_and_lasts_120_minutes():
+    assert TIMEFRAME_MAP["2H"] is exporter_module.mt5.TIMEFRAME_H2
+    assert TIMEFRAME_MINUTES["2H"] == 120
+
+
+def test_2h_is_exported_only_when_asked_for_by_name():
+    assert "2H" in ON_DEMAND_TIMEFRAMES
+    assert "2H" not in ALL_EXPORT_TIMEFRAMES
+    assert "2H" not in parse_timeframes_arg(None)  # el export por defecto (el del banco) no cambia
+    assert parse_timeframes_arg("2H") == ("2H",)
+    assert parse_timeframes_arg("1H, 2H") == ("1H", "2H")
+
+
+def test_export_timeframe_2h_writes_2h_csv_and_drops_the_forming_bar(monkeypatch, tmp_path):
+    now = datetime.now(UTC)
+    # Reloj del servidor = UTC+3 fijo (dst_rule none). La vela que está abierta ahora
+    # empieza en la hora par del servidor anterior a `now`.
+    server_now = pd.Timestamp(now.replace(tzinfo=None)) + pd.Timedelta(hours=3)
+    forming = server_now.floor("2h")
+    labels = [str(forming - pd.Timedelta(hours=4)), str(forming - pd.Timedelta(hours=2)), str(forming)]
+    monkeypatch.setattr(exporter_module.mt5, "copy_rates_range", lambda *a, **k: _fake_rates(labels))
+
+    result = export_timeframe("XAUUSD", "2H", now, now, tmp_path, 3, "none")
+
+    assert result.rows == 2  # la vela en formación queda fuera
+    written = pd.read_csv(tmp_path / "2H.csv", parse_dates=["time"])
+    assert list(written.columns) == ["time", "open", "high", "low", "close"]
+    closes_gt = written["time"] + pd.Timedelta(hours=2)
+    assert (closes_gt <= pd.Timestamp(now.replace(tzinfo=None)) - pd.Timedelta(hours=6)).all()
+
+
+def test_main_with_timeframes_2h_asks_mt5_for_h2_and_writes_only_2h_csv(mt5_ready, monkeypatch, tmp_path, capsys):
+    asked = []
+
+    def fake_copy_rates_range(symbol, timeframe, date_from, date_to):
+        asked.append(timeframe)
+        return _fake_rates(["2026-07-15 10:00", "2026-07-15 12:00"])
+
+    monkeypatch.setattr(exporter_module.mt5, "copy_rates_range", fake_copy_rates_range)
+    args = ["--symbol", "XAUUSD", "--out-dir", str(tmp_path), "--min-anchor", "2026-05-18 06:40:00",
+            "--max-anchor", "2026-09-16 11:12:00", "--server-utc-offset", "3", "--timeframes", "2H"]
+
+    assert main(args) == 0
+
+    assert asked and set(asked) == {exporter_module.mt5.TIMEFRAME_H2}
+    assert os.listdir(tmp_path) == ["2H.csv"]
 
 
 # --- T18 (spec 002, RF-15b, N34): conversión vela por vela según --dst-rule ---

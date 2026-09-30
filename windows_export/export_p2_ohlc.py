@@ -98,12 +98,14 @@ DEFAULT_SYMBOL = "XAUUSD"  # confirmado exacto (sin sufijo) contra Market Watch.
 # (mql5.com/en/docs/python_metatrader5/mt5copyratesfrom_py) -- TIMEFRAME_H12
 # existe, no es una suposición. TIMEFRAME_M5/TIMEFRAME_M1: banco de velas
 # nuevo de la spec 002 (RF-15) -- mismas dos temporalidades que
-# tools/p2_backtest.py:TIMEFRAME_MINUTES ganó en T9.
+# tools/p2_backtest.py:TIMEFRAME_MINUTES ganó en T9. TIMEFRAME_H2: P2 banco v2
+# (jupyter/p2_banco_v2/), solo bajo pedido -- ver ON_DEMAND_TIMEFRAMES.
 TIMEFRAME_MAP: Dict[str, int] = {
     "1W": mt5.TIMEFRAME_W1,
     "1D": mt5.TIMEFRAME_D1,
     "12H": mt5.TIMEFRAME_H12,
     "4H": mt5.TIMEFRAME_H4,
+    "2H": mt5.TIMEFRAME_H2,
     "1H": mt5.TIMEFRAME_H1,
     "30M": mt5.TIMEFRAME_M30,
     "15M": mt5.TIMEFRAME_M15,
@@ -112,8 +114,13 @@ TIMEFRAME_MAP: Dict[str, int] = {
 }
 
 # Las 9 temporalidades, de más lenta a más rápida -- el orden en que se
-# exportan por defecto y el universo válido para --timeframes.
+# exportan por defecto (lo que recibe el banco de velas de la spec 002).
 ALL_EXPORT_TIMEFRAMES: Tuple[str, ...] = ("1W", "1D", "12H", "4H", "1H", "30M", "15M", "5M", "1M")
+
+# Temporalidades que se exportan SOLO si se piden con --timeframes: el export por
+# defecto no las trae y el banco de velas no las conoce (tools/candle_bank.py:
+# ALL_BANK_TIMEFRAMES). 2H: P2 banco v2, que lee el CSV desde la carpeta del export.
+ON_DEMAND_TIMEFRAMES: Tuple[str, ...] = ("2H",)
 
 # Duración de cada vela en minutos -- usado por exclude_forming_bar() para
 # el candado anti-repainting (mismo principio que el pipeline Linux).
@@ -122,6 +129,7 @@ TIMEFRAME_MINUTES: Dict[str, int] = {
     "1D": 24 * 60,
     "12H": 12 * 60,
     "4H": 4 * 60,
+    "2H": 2 * 60,
     "1H": 60,
     "30M": 30,
     "15M": 15,
@@ -365,6 +373,7 @@ def compute_backward_start(min_anchor_gt: datetime, timeframe: str, min_bars: in
         "1D": timedelta(days=min_bars),
         "12H": timedelta(hours=min_bars * 12),
         "4H": timedelta(hours=min_bars * 4),
+        "2H": timedelta(hours=min_bars * 2),
         "1H": timedelta(hours=min_bars),
         "30M": timedelta(minutes=min_bars * 30),
         "15M": timedelta(minutes=min_bars * 15),
@@ -541,7 +550,8 @@ def export_timeframe(symbol: str, timeframe: str, date_from_utc: datetime, date_
 def parse_timeframes_arg(raw: Optional[str]) -> Tuple[str, ...]:
     """
     Parsea `--timeframes` ("1H,30M,15M" -> ("1H", "30M", "15M")). Sin valor
-    (`None` o cadena vacía), las `ALL_EXPORT_TIMEFRAMES` de siempre (las 9).
+    (`None` o cadena vacía), las `ALL_EXPORT_TIMEFRAMES` de siempre (las 9):
+    las de `ON_DEMAND_TIMEFRAMES` (2H) solo salen si se piden por nombre.
     Levanta `ValueError`, con la lista de las que no existen, si alguna
     temporalidad pedida no está en `TIMEFRAME_MAP` -- función pura para poder
     probarla sin tocar MT5 (mismo criterio que `compute_backward_start`).
@@ -551,7 +561,8 @@ def parse_timeframes_arg(raw: Optional[str]) -> Tuple[str, ...]:
     requested = tuple(tf.strip() for tf in raw.split(",") if tf.strip())
     unknown = [tf for tf in requested if tf not in TIMEFRAME_MAP]
     if unknown:
-        raise ValueError(f"--timeframes desconocidas: {unknown}. Válidas: {list(ALL_EXPORT_TIMEFRAMES)}.")
+        valid = list(ALL_EXPORT_TIMEFRAMES) + list(ON_DEMAND_TIMEFRAMES)
+        raise ValueError(f"--timeframes desconocidas: {unknown}. Válidas: {valid}.")
     return requested
 
 
@@ -597,7 +608,8 @@ def main(argv: Optional[list] = None) -> int:
         help="Temporalidades a exportar, separadas por coma (p.ej. '1H,30M,15M'), en vez de las "
              f"{len(ALL_EXPORT_TIMEFRAMES)} de siempre ({','.join(ALL_EXPORT_TIMEFRAMES)}). Uso: T20 "
              "(candle_sync.py) puede pedir solo un subconjunto en un catch-up, o el spike de "
-             "interoperabilidad (T22) puede probar con una sola TF sin esperar las 9.",
+             "interoperabilidad (T22) puede probar con una sola TF sin esperar las 9. "
+             f"Solo bajo pedido: {','.join(ON_DEMAND_TIMEFRAMES)} (P2 banco v2; no va al banco de velas).",
     )
     args = parser.parse_args(argv)
 
