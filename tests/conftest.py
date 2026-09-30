@@ -10,10 +10,13 @@ Dos capas independientes:
    puede quitar, por diseño de `sys.addaudithook`). Cubre lo que la capa 1 no cubre:
    código que corre antes de que un test tenga oportunidad de `chdir` (imports a
    nivel de módulo, por ejemplo) o que use una ruta absoluta. Audita los eventos
-   `open` y `sqlite3.connect` y hace fallar la operación (con la excepción
+   `open`, `sqlite3.connect`, `os.mkdir`, `os.rename` (también `os.replace`),
+   `os.remove` y `os.rmdir`, y hace fallar la operación (con la excepción
    propagándose hasta el test) si la ruta resuelta cae bajo el `.data/` real de
    este repo o bajo `/mnt/c/` (baseline H19; nunca tocar el filesystem de Windows
-   ni las DBs reales desde un test).
+   ni las DBs reales desde un test). Los de directorios se sumaron el 2026-09-30:
+   un test con la configuración sin parchear creó `.data/candle_bank/BTCUSD` con
+   `os.makedirs`, que no pasa por `open`.
 
 Ver specs/002-auto-resolucion-velas/spec.md, RF-16/RF-16b, y plan.md decisión T10.
 """
@@ -53,14 +56,27 @@ def _resolve_path_argument(raw_path):
         return None
 
 
-def _guard_forbidden_paths(event: str, args: tuple) -> None:
-    if event == "open":
-        raw_path = args[0]
-    elif event == "sqlite3.connect":
-        raw_path = args[0]
-    else:
-        return
+# Evento de auditoría -> posiciones de sus argumentos que son rutas.
+_GUARDED_EVENTS = {
+    "open": (0,),
+    "sqlite3.connect": (0,),
+    "os.mkdir": (0,),
+    "os.rename": (0, 1),  # os.rename y os.replace: origen y destino
+    "os.remove": (0,),    # os.remove y os.unlink
+    "os.rmdir": (0,),
+}
 
+
+def _guard_forbidden_paths(event: str, args: tuple) -> None:
+    positions = _GUARDED_EVENTS.get(event)
+    if positions is None:
+        return
+    for position in positions:
+        if position < len(args):
+            _check_forbidden_path(event, args[position])
+
+
+def _check_forbidden_path(event: str, raw_path) -> None:
     resolved = _resolve_path_argument(raw_path)
     if resolved is None:
         return

@@ -9,11 +9,28 @@ import datetime
 import importlib
 import os
 import sys
+from contextlib import contextmanager
 
 import dotenv
 import pytest
 
 import config.auto_resolution as auto_resolution_config
+
+
+@contextmanager
+def _fresh_config_module():
+    """Deja importar `config.auto_resolution` de cero (con el cwd y el entorno que fije el test) y, al salir, deja
+    todo como estaba: el módulo en `sys.modules` **y** el atributo `auto_resolution` del paquete `config`. Sin lo
+    segundo, un `import config.auto_resolution as cfg` posterior (como el de `cli/main.py`) recibía el módulo nuevo,
+    sin los monkeypatch de los tests siguientes, y el CLI apuntaba al banco por defecto del repo. Se vio el
+    2026-09-30 al correr este archivo antes que `tests/test_cli_candles.py`."""
+    import config
+    sys.modules.pop("config.auto_resolution", None)
+    try:
+        yield
+    finally:
+        sys.modules["config.auto_resolution"] = auto_resolution_config
+        config.auto_resolution = auto_resolution_config
 
 
 def test_business_rule_constants():
@@ -105,13 +122,10 @@ def test_windows_paths_have_no_default(monkeypatch):
     for var in ("WINDOWS_PYTHON", "EXPORTER_WIN_PATH"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: False)
-    sys.modules.pop("config.auto_resolution", None)
-    try:
+    with _fresh_config_module():
         reloaded = importlib.import_module("config.auto_resolution")
         assert reloaded.WINDOWS_PYTHON is None
         assert reloaded.EXPORTER_WIN_PATH is None
-    finally:
-        sys.modules["config.auto_resolution"] = auto_resolution_config
 
 
 def test_paths_are_absolute_even_when_first_imported_from_tmp_path(tmp_path, monkeypatch):
@@ -124,8 +138,9 @@ def test_paths_are_absolute_even_when_first_imported_from_tmp_path(tmp_path, mon
     for var in ("ACCOUNTS_DATA_DIR", "CANDLE_BANK_DIR", "MT5_INCOMING_DIR", "LEGACY_EXPORTS_DIR"):
         monkeypatch.delenv(var, raising=False)
 
-    sys.modules.pop("config.auto_resolution", None)
-    try:
+    # El helper restaura el módulo ya importado a nivel de archivo (sin el cwd/env temporales de este test) en vez
+    # de reimportarlo de nuevo: monkeypatch recién revierte cwd/env DESPUÉS de salir del `with`.
+    with _fresh_config_module():
         reloaded = importlib.import_module("config.auto_resolution")
         for value in (reloaded.ROOT_DIR, reloaded.ACCOUNTS_DATA_DIR,
                       reloaded.CANDLE_BANK_DIR, reloaded.MT5_INCOMING_DIR, reloaded.LEGACY_EXPORTS_DIR):
@@ -133,28 +148,27 @@ def test_paths_are_absolute_even_when_first_imported_from_tmp_path(tmp_path, mon
         # No se coló la ruta de tmp_path: siguen ancladas al repo real, no al cwd.
         assert not reloaded.CANDLE_BANK_DIR.startswith(str(tmp_path))
         assert reloaded.CANDLE_BANK_DIR == os.path.join(reloaded.ACCOUNTS_DATA_DIR, "candle_bank")
-    finally:
-        # Restaura el módulo ya importado a nivel de archivo (import normal,
-        # sin el cwd/env temporales de este test) en vez de reimportarlo de
-        # nuevo -- monkeypatch recién revierte cwd/env DESPUÉS de este finally.
-        sys.modules["config.auto_resolution"] = auto_resolution_config
 
 
 def test_broker_dst_rule_env_override(monkeypatch):
     monkeypatch.setenv("BROKER_DST_RULE", "eu")
-    sys.modules.pop("config.auto_resolution", None)
-    try:
+    with _fresh_config_module():
         reloaded = importlib.import_module("config.auto_resolution")
         assert reloaded.BROKER_DST_RULE == "eu"
-    finally:
-        sys.modules["config.auto_resolution"] = auto_resolution_config
 
 
 def test_broker_dst_rule_invalid_env_value_raises(monkeypatch):
     monkeypatch.setenv("BROKER_DST_RULE", "not-a-real-rule")
-    sys.modules.pop("config.auto_resolution", None)
-    try:
+    with _fresh_config_module():
         with pytest.raises(ValueError):
             importlib.import_module("config.auto_resolution")
-    finally:
-        sys.modules["config.auto_resolution"] = auto_resolution_config
+
+
+def test_after_a_fresh_import_every_later_import_gets_the_original_module_back():
+    # Regresión del 2026-09-30: `import a.b as c` toma el atributo del paquete, no `sys.modules`.
+    with _fresh_config_module():
+        fresh = importlib.import_module("config.auto_resolution")
+        assert fresh is not auto_resolution_config
+    import config.auto_resolution as later
+    assert later is auto_resolution_config
+    assert sys.modules["config.auto_resolution"] is auto_resolution_config
