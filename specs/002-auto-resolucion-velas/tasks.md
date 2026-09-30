@@ -812,17 +812,36 @@
       misma tarea) se rehízo desde cero. Cobertura: XAU 1M 139 326 velas desde 2026-05-10, 5M desde 2026-05-05; BTC 1M
       137 793 desde 2026-06-24 (el símbolo de BTC solo tiene ~3 meses de 1M en el servidor). El 5M de XAU del
       *import legacy* está excluido (`LEGACY_IMPORT_EXCLUSIONS`); el 5M que hay en el banco vino del export nuevo.
-- [ ] T59b. 🖐 *(Agregada el 2026-09-30, N43.)* Alimentar US500 y USTEC por herencia. Con MT5 abierto, exportar
+- [x] T59b. 🖐 *(Agregada el 2026-09-30, N43.)* Alimentar US500 y USTEC por herencia. Con MT5 abierto, exportar
       XAUUSD (para que su `status.json` guarde el servidor y el desfase base) y después US500 y USTEC. Escribe en
       `.data/candle_bank/`, aprobado por el usuario junto con T59. (RF-2e, N43)
       Hecho cuando: `candles status` muestra US500 y USTEC `verified` por `inherited:...`, o el motivo exacto por el
       que no heredaron.
-- [ ] T59c. 🖐 *(Agregada el 2026-09-30, N44.)* Limpiar el banco real con `tools/dedup_candle_bank.py`: primero
+      **Hecho 2026-09-30 (con MT5 abierto; código del worktree, banco y DBs reales; exportador del worktree):**
+      - XAUUSD se fusionó, verificado por superposición, en 11 s. Su `status.json` ahora guarda `server:
+        ICMarketsSC-Demo`, `base_utc_offset: 2.0` y `dst_rule: us`. Trajo solo velas nuevas (1D +1, 4H +7), así que
+        no volvió ningún duplicado.
+      - **US500 y USTEC no heredaron:** a cada uno le falla 1 testigo propio y la regla exige que calcen todos.
+        - US500: 1 de 7. El Mark Price del 2026-09-28 07:00, 7713.07, queda 0.03 puntos por debajo de su vela de 15M
+          (7713.1–7719.6).
+        - USTEC: 1 de 9. El Mark Price del 2026-09-03 18:42, 29490.6, queda 7.7 puntos por encima (29469.8–29482.9).
+        - Los otros 6 y 8 calzan exacto, y los dos que fallan calzan en la vela siguiente, así que no es un reloj
+          corrido. Con la tolerancia que la spec ya usa para el Mark Price (0.1%, N16) calzarían los dos.
+      - Ajustar N43 a esa tolerancia queda como decisión pendiente del usuario.
+- [x] T59c. 🖐 *(Agregada el 2026-09-30, N44.)* Limpiar el banco real con `tools/dedup_candle_bank.py`: primero
       sin `--apply`, y después con `--apply`. Escribe en `.data/candle_bank/`, aprobado por el usuario el 2026-09-30.
       (RF-1, N44)
       Hecho cuando: se quitaron exactamente los 3.824 pares medidos (XAU 1W 509, 1D 407, 12H 362, 4H 528; BTC 1W 272,
       1D 505, 12H 504, 4H 737), la copia de respaldo existe, una segunda corrida sin `--apply` da 0, y 1H y las TF
       menores quedaron byte a byte iguales.
+      **Hecho 2026-09-30, aprobado por el usuario:**
+      - Sin `--apply`, informó exactamente los 3.824 pares medidos, en 8 archivos. Con `--apply` los quitó.
+      - Respaldo: `.data/archives/candle_bank_pre_dedup_20260930_130245/`, con los 8 originales (hash verificado).
+      - Verificación externa a la herramienta: de los 22 archivos del banco cambiaron solo esos 8; los otros 14
+        (1H y menores, `status.json`) quedaron byte a byte iguales. Una segunda corrida no encuentra nada.
+      - Filas antes → después: XAU 1W 1993 → 1484, 1D 1635 → 1228, 12H 1691 → 1329, 4H 2258 → 1730; BTC 1W 1081 → 809,
+        1D 2200 → 1695, 12H 2295 → 1791, 4H 2911 → 2174. Los de XAU coinciden con lo que trajo el primer export nuevo
+        (1W +1484, 1D +1228, 12H +1329, 4H +1730).
 - [ ] T60. Correr `resolution-report` sobre las DBs reales, en solo lectura. (RF-6, RF-17, RF-21)
       Hecho cuando: el `.md` generado se muestra, y el S1 direccional de XAU se compara con el 61% de
       `analisis-overlap-2d.md`, explicando cualquier diferencia (1M/5M, ancla).
