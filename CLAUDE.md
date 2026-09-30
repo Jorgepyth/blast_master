@@ -180,6 +180,52 @@ Checklist para auditar un análisis:
 6. **¿Usa S1/S4 y trata Overlap como etiqueta?** Si usa otro criterio, tiene que decirlo y
    justificarlo.
 
+### Evaluación "P2 banco v2" (temporalidades cortas), hecha 2026-09-29/30
+
+Se evaluó si un P2 sistemático con temporalidades más cortas (1D, 2H, 1H, 30M, 5M) debería
+reemplazar al modelo **D** como feedback impreso. Prompt: "v1.2 — P2 banco v2". Rama
+`claude/p2-banco-v2-eval-f63a69` (worktree del mismo nombre), sin push ni merge.
+- **Qué se evaluó:** cinco variantes de pesos fijos, **2A** a **2E**. Una sexta, **2F**, con pesos
+  elegidos por walk-forward sobre una grilla. Todas contra **D**, contra el P2 manual del usuario
+  (P2-DISC) y contra otros controles, en una familia de 13 modelos.
+- **Pre-registro:** `jupyter/p2_banco_v2/preregistro.md`, versión 1.0 en `e99e69d` y 1.1 en `c43f2b7`.
+  Cada versión se comiteó sola, antes de calcular cualquier predicción. El protocolo, con citas a la
+  evaluación v1 y 13 discrepancias entre el prompt y el código, está en
+  `jupyter/p2_banco_v2/00_protocolo.md`.
+- **Qué commit trae qué:**
+  - `eff7b85`: agrega el 2H al exportador, solo cuando se pide (`ON_DEMAND_TIMEFRAMES`). No se
+    exporta por defecto ni entra al banco.
+  - `8f09b2c`: agrega `tools/p2_bank_v2.py` (funciones puras), `tests/test_p2_bank_v2.py` y
+    `jupyter/p2_banco_v2.ipynb`.
+  - `0816ed9`: agrega el HTML y `resultados.csv`. Van en un commit propio porque tienen datos del
+    journal y el repo tiene remoto en GitHub; se puede descartar.
+- **Datos:**
+  - Son 90 análisis (68 de XAU y 22 de BTC), con ancla en `created_at` − 20 min y resueltos por S1
+    con velas de 1M.
+  - El 2H nativo lo exportó el usuario y se lee directo de la carpeta del export. Coincide 100% con
+    el 2H armado desde las velas de 1H.
+- **Resultado:** ningún 2X reemplaza a D.
+  - D acierta 25/38 = 66% (neto +12, p = 0.073). El mejor 2X, **2D**, acierta 23/36 = 64%. El P2
+    manual del usuario acierta 26/47 = 55%.
+  - Donde un 2X y D opinan los dos, **nunca apuntan para lados distintos**.
+  - Corregido por la familia de 13 modelos, el mejor es D (p = 0.132).
+  - La acción que fija la regla pre-registrada es **mantener D como feedback**, por un margen mínimo:
+    solo pasa 2F fuera de muestra, con p = 0.047. Corregido por tres pruebas, sería 0.141.
+- **Para no repetir:**
+  - **No volver a buscar pesos sobre estos mismos 90 análisis.** Ya se usaron para elegir D y 2F.
+  - La evidencia nueva sale solo de análisis creados después de `c43f2b7`: se vuelve a correr el
+    notebook con los pesos de 2F congelados (2H 0.50, 30M 0.25, 5M 0.25).
+  - El 66% de D es compatible con un acierto real de entre 50% y 79%. Si ese 66% fuera real,
+    confirmarlo pediría unos 75 casos en los que D opine, o sea unos 175 análisis.
+- **Hallazgos aparte:**
+  - (a) Las velas 4H, 12H, 1D y 1W del banco guardan cada vela de invierno dos veces, 1 h aparte y con
+    el mismo OHLC. Acá se quitan al leer. **Arreglarlo en el banco es trabajo de la spec 002, y está
+    pendiente.**
+  - (b) El walk-forward de 2F usa, en 9 de los 45 análisis de prueba, resultados que todavía no se
+    conocían. Repetido sin esos resultados da lo mismo.
+  - (c) La 1D sola acierta 1 de 10, y un peso alto en 1D empeora cualquier combinación.
+- **Pendiente de decisión del usuario:** el merge o push de la rama, y si se conserva `0816ed9`.
+
 ## Estándar de este repo para research/arquitectura
 
 Este proyecto ha tenido descripciones de arquitectura contradictorias entre sesiones (ver ARCHITECTURE.md, encabezado). El estándar establecido: **ningún claim arquitectónico se acepta sin comando verificado**, citado con archivo:línea. No repitas narrativa de sesiones anteriores (incluida la de este mismo archivo) sin volver a verificarla si ha pasado tiempo o el código pudo haber cambiado — trata este documento como snapshot verificado en su fecha de generación, no como fuente perpetua de verdad.
