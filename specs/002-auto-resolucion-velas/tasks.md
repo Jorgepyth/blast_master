@@ -714,10 +714,26 @@
         corrida 1 h: son las de invierno del CSV viejo, las mismas que N44 quitó del banco;
       - en 1H, 0.
       SUITE: `846 passed, 3 skipped, 97 warnings in 25.97s`; sin `.data/`.
-- [ ] T29. `core/outcome_metrics.py`: etiqueta Overlap (N11, N22), S1, S4, exclusión de retroactivos con conteo, y
+- [x] T29. `core/outcome_metrics.py`: etiqueta Overlap (N11, N22), S1, S4, exclusión de retroactivos con conteo, y
       corte direccional. (RF-5, RF-17, RF-21)
       Hecho cuando: los tests prueban que Overlap nunca excluye, S1 y S4 con "fuera", los retroactivos contados, y que
       los 21 candidatos de `analisis-overlap-2d.md` se reproducen sobre un fixture equivalente. SUITE en verde.
+      **Hecho 2026-10-02:** `core/outcome_metrics.py` nuevo y puro, con:
+      - `analysis_anchor()` (N4, N5);
+      - `AnalysisOutcome`, que es lo que las métricas necesitan de cada análisis. `overlap_limit` lo arma T30: el
+        primer toque, la vela ambigua o el fin del banco;
+      - `s1()` y `s4()`, que devuelven `WinRate(wins, n, outside, excluded_backdated)`;
+      - `overlap_labels()`, que devuelve `OverlapLabel(analysis_id, b_id, b_anchor, hours_a_to_b)`.
+      Reglas: copiadas del script de referencia `analisis/overlap_2d.py`.
+      - B es el primer análisis de la misma cuenta, retroactivos incluidos, que cumple `ancla(A) < ancla(B) <
+        límite(A)`.
+      - S4 cuenta los toques a 48 h o menos.
+      - Los ambiguos, abiertos y pendientes no cuentan.
+      - `excluded_backdated` cuenta los retroactivos **con toque**: los que habrían entrado en la cifra.
+      Tests: 15 en `tests/test_outcome_metrics.py`. Incluyen los 21 candidatos reconstruidos desde la tabla, cada uno
+      con su B y sus horas, y los conteos de la tabla en 48 h: 6 VALIDATION, 6 INVALIDATION y 9 sin toque. Mutación:
+      9 cambios, todos detectados.
+      SUITE: `861 passed, 3 skipped, 97 warnings in 31.14s`; sin `.data/`.
 - [ ] T30. `tools/auto_resolution.py`: lectura con columnas explícitas (`mode=ro` o engine), mapa
       `asset → símbolo` (`no_mt5_symbol`), estado del reloj (`clock_unverified`/`clock_misaligned`) y armado de la
       propuesta. (RF-4e, RF-4h, RF-6b)
