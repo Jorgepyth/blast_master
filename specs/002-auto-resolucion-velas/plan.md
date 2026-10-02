@@ -186,6 +186,17 @@ test lo verifica (RF-18).
 6. **Fin del recorrido:** el primer toque, o el fin del horizonte: la apertura de la vela 1H número 2160 contada
    desde el ancla (`MAX_HORIZON`).
 
+**Aclaraciones de T25** (`forward_path`, sin cambiar la intención de los pasos):
+- **Paso 3:** entre la TF base (la más fina que cubre `t`) y las más finas que todavía no lo cubren, se toma la
+  vela que abre primero en `t` o después; en un empate, la más fina. Así, una TF más fina que empieza antes de la
+  próxima vela de la base se usa desde su inicio, sin dejar ese tramo sin mirar.
+- **Paso 5:** como G es la TF más fina que cubre `e`, ninguna más fina puede rellenar `[e, techo_G(e))`. En la
+  práctica se baja solo si `e` cae en el borde de una vela de G; si no, el camino se corta en `e`, y el resultado es
+  `pending_candles` hasta que un export traiga la TF que faltaba.
+- **Límite conocido:** un hueco de datos dentro del tramo de una TF (velas que faltan en el banco aunque hubo
+  mercado) no se distingue de un mercado cerrado, y el camino lo cruza. Puede pasar si no hubo ningún export en los
+  días previos a un cambio de horario: el filtro de estación ya no deja entrar esas velas de 1H y menores.
+
 **Casos límite:**
 - el ancla es anterior a la vela más vieja del banco en todas las TF → `no_history`;
 - el banco termina antes del toque y del fin del horizonte → `pending_candles`;

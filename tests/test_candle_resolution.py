@@ -14,6 +14,7 @@ from core.candle_resolution import (
     TimeframeCoverage,
     anchor_missing_reason,
     bank_coverage,
+    forward_path,
     untouched_missing_reason,
 )
 from core.p2_ground_truth import OhlcBar, first_touch_detail
@@ -142,3 +143,133 @@ def test_a_bank_that_ends_before_the_touch_is_pending_candles():
 @pytest.mark.parametrize("timeframe", LADDER)
 def test_every_ladder_timeframe_has_a_duration(timeframe):
     assert LADDER_MINUTES[timeframe] > 0
+
+
+# --- camino hacia adelante de varias TF (T25, RF-4, N17, N18; plan.md §3.1) -----------------------------
+
+def _path(anchor, bank):
+    return list(forward_path(anchor, bank))
+
+
+def _assert_contiguous(path):
+    """Sin huecos ni velas repetidas: cada vela abre justo donde cerró la anterior."""
+    for prev, nxt in zip(path, path[1:]):
+        assert nxt.time == prev.end, (prev, nxt)
+
+
+def test_the_path_goes_1m_then_5m_then_1h_without_gaps_or_repeated_candles():
+    anchor = T0 + timedelta(hours=10, seconds=30)                    # 10:00:30
+    bank = {
+        "1M": list(reversed(_bars("1M", T0 + timedelta(hours=9), 70))),  # 09:00 a 10:09, cierra 10:10 (desordenadas a propósito)
+        "5M": _bars("5M", T0 + timedelta(hours=9), 24),                 # 09:00 a 10:55, cierra 11:00
+        "1H": _bars("1H", T0 + timedelta(hours=8), 7),                  # 08:00 a 14:00, cierra 15:00
+    }
+
+    path = _path(anchor, bank)
+
+    assert [b.timeframe for b in path] == ["1M"] * 9 + ["5M"] * 10 + ["1H"] * 4
+    assert path[0].time == T0 + timedelta(hours=10, minutes=1)
+    assert path[-1].end == T0 + timedelta(hours=15)
+    _assert_contiguous(path)
+    assert len({b.time for b in path}) == len(path)
+
+
+def test_the_1m_candle_that_contains_the_anchor_is_left_out():
+    bank = {"1M": _bars("1M", T0, 120)}
+    assert _path(T0 + timedelta(minutes=10, seconds=30), bank)[0].time == T0 + timedelta(minutes=11)
+    # Una vela que abre justo en el ancla sí entra (N17: "que abre en el ancla o después").
+    assert _path(T0 + timedelta(minutes=10), bank)[0].time == T0 + timedelta(minutes=10)
+
+
+def test_without_1m_on_the_anchor_date_it_starts_with_the_next_finest_and_moves_up_on_a_coarse_boundary():
+    # N17 y N18: el 1M empieza el día 2 a las 00:07. El día 1 se recorre con 15M, y se sube a 1M recién en el borde de
+    # la vela de 15M siguiente (00:15). El 1M termina justo en un borde de 15M (01:15) y se vuelve a 15M.
+    bank = {"15M": _bars("15M", T0, 4 * 48), "1M": _bars("1M", T0 + timedelta(days=1, minutes=7), 68)}
+
+    path = _path(T0 + timedelta(hours=23, minutes=20), bank)
+
+    assert (path[0].timeframe, path[0].time) == ("15M", T0 + timedelta(hours=23, minutes=30))
+    first_1m = next(i for i, b in enumerate(path) if b.timeframe == "1M")
+    assert path[first_1m].time == T0 + timedelta(days=1, minutes=15)
+    assert [b.timeframe for b in path[first_1m:first_1m + 61]] == ["1M"] * 60 + ["15M"]
+    assert path[-1].end == T0 + timedelta(days=2)
+    _assert_contiguous(path)
+
+
+def test_moving_up_to_a_finer_timeframe_waits_for_the_boundary_of_the_coarse_candle():
+    # N18: el 1M empieza a las 09:07, a mitad de la vela de 15M de las 09:00. Se usa esa vela entera y el 1M desde las 09:15.
+    bank = {"15M": _bars("15M", T0 + timedelta(hours=8), 12), "1M": _bars("1M", T0 + timedelta(hours=9, minutes=7), 50)}
+
+    path = _path(T0 + timedelta(hours=8, minutes=50), bank)
+
+    assert [(b.timeframe, f"{b.time:%H:%M}") for b in path[:3]] == [("15M", "09:00"), ("1M", "09:15"), ("1M", "09:16")]
+    _assert_contiguous(path)
+
+
+def test_moving_down_to_a_coarser_timeframe_off_its_boundary_cuts_the_path():
+    # Plan §3.1, paso 5: el 1M termina a las 10:07 y la vela de 5M de las 10:05 ya empezó. Usarla repetiría 10:05-10:07
+    # y saltarla dejaría 10:07-10:10 sin mirar: el camino se corta (el resultado será pending_candles).
+    bank = {"1M": _bars("1M", T0 + timedelta(hours=10), 7), "5M": _bars("5M", T0 + timedelta(hours=10), 12)}
+
+    path = _path(T0 + timedelta(hours=10), bank)
+
+    assert [b.timeframe for b in path] == ["1M"] * 7
+    assert path[-1].end == T0 + timedelta(hours=10, minutes=7)
+
+
+def test_a_finer_timeframe_that_starts_before_the_next_coarse_candle_is_used_from_its_start():
+    # La vela de 1H que contiene el ancla queda fuera. El 15M arranca a las 08:30, antes del 1H de las 09:00:
+    # se usa desde ahí, para no dejar 08:30-09:00 sin mirar.
+    bank = {"1H": _bars("1H", T0, 24), "15M": _bars("15M", T0 + timedelta(hours=8, minutes=30), 20)}
+
+    path = _path(T0 + timedelta(hours=8, minutes=20), bank)
+
+    assert (path[0].timeframe, path[0].time) == ("15M", T0 + timedelta(hours=8, minutes=30))
+    _assert_contiguous(path)
+
+
+def test_on_a_tie_the_finer_timeframe_wins():
+    # El 1M empieza justo a las 09:00, cuando abre la vela de 15M siguiente al ancla: las dos abren a la vez y se usa la
+    # más fina (por ejemplo, al reabrir el mercado después de un fin de semana).
+    bank = {"15M": _bars("15M", T0, 48), "1M": _bars("1M", T0 + timedelta(hours=9), 30)}
+
+    path = _path(T0 + timedelta(hours=8, minutes=50), bank)
+
+    assert (path[0].timeframe, path[0].time) == ("1M", T0 + timedelta(hours=9))
+    _assert_contiguous(path)
+
+
+def test_a_market_closed_gap_is_crossed_without_changing_timeframe():
+    # Fin de semana: ninguna TF tiene velas. El camino sigue cuando el mercado reabre, sin superponer nada.
+    friday = _bars("1M", T0, 60)
+    sunday = _bars("1M", T0 + timedelta(days=2), 60)
+
+    path = _path(T0, {"1M": friday + sunday})
+
+    assert len(path) == 120 and {b.timeframe for b in path} == {"1M"}
+    assert path[60].time == T0 + timedelta(days=2)
+    assert all(nxt.time >= prev.end for prev, nxt in zip(path, path[1:]))
+
+
+def test_an_anchor_outside_the_bank_gives_an_empty_path():
+    bank = {"1H": _bars("1H", T0, 24)}
+    assert _path(T0 - timedelta(hours=1), bank) == []    # anterior al banco: no_history (T24)
+    assert _path(T0 + timedelta(days=1), bank) == []     # el banco todavía no llega: pending_candles (T24)
+    assert _path(T0, {}) == []
+
+
+def test_path_candles_feed_first_touch_detail_and_keep_their_timeframe():
+    # El primer toque se busca directo sobre el camino (T26): la hora del toque es la apertura de esa vela (N19).
+    bars = _bars("1M", T0, 30)
+    bars[12] = OhlcBar(time=bars[12].time, high=111.0, low=100.0)
+
+    path = _path(T0 + timedelta(seconds=30), {"1M": bars})
+    detail = first_touch_detail("long", path, 100.0, 110.0, 90.0)
+
+    assert (path[detail.bar_index].timeframe, path[detail.bar_index].time) == ("1M", T0 + timedelta(minutes=12))
+
+
+def test_the_path_is_produced_lazily():
+    # El resolvedor corta en el primer toque; no hace falta armar los ~130 mil minutos de un horizonte entero.
+    import types
+    assert isinstance(forward_path(T0, {"1M": _bars("1M", T0, 5)}), types.GeneratorType)

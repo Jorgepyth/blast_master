@@ -8,17 +8,18 @@ devuelven propuestas o un código de motivo de `config.auto_resolution`. Leer el
 Se construye por partes (tasks.md, Etapa 3):
   - parte 1 (T24): cobertura del banco por TF de la escalera, y los códigos `no_history` y
     `pending_candles` (RF-4c, RF-4g, N28; plan.md §3.1, casos límite);
-  - partes 2 a 5 (T25 a T28): el camino de varias TF, el primer toque, MAE/MFE, R y las reglas de
-    Structural Resolution.
+  - parte 2 (T25): el camino hacia adelante de varias TF, `forward_path` (RF-4, N17, N18; plan.md §3.1);
+  - partes 3 a 5 (T26 a T28): el primer toque, MAE/MFE, R y las reglas de Structural Resolution.
 
 Convenciones: `time` es la hora de APERTURA de la vela en GT naive, igual que los CSV del banco; una vela
 de la TF `tf` abarca `[time, time + LADDER_MINUTES[tf])`.
 """
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Dict, List, Mapping, Optional, Sequence
+from typing import Dict, Iterator, List, Mapping, NamedTuple, Optional, Sequence
 
 from config.auto_resolution import REASON_NO_HISTORY, REASON_PENDING_CANDLES
 from core.p2_ground_truth import OhlcBar
@@ -114,3 +115,70 @@ def untouched_missing_reason(path_end: datetime, horizon_end: Optional[datetime]
     if horizon_end is None or path_end < horizon_end:
         return REASON_PENDING_CANDLES
     return None
+
+
+class PathBar(NamedTuple):
+    """Una vela del camino hacia adelante. `timeframe` da la precisión de la hora de un toque en ella (N19)."""
+    timeframe: str
+    time: datetime  # apertura
+    end: datetime   # cierre: apertura + duración de la TF
+    high: float
+    low: float
+
+
+def forward_path(anchor: datetime, bars_by_timeframe: Mapping[str, Sequence[OhlcBar]]) -> Iterator[PathBar]:
+    """
+    Las velas del banco desde `anchor` hacia adelante, en orden, sin huecos ni superposición (RF-4, N17, N18;
+    plan.md §3.1). Es un generador: quien busca el primer toque corta ahí, sin armar el horizonte entero. El camino
+    llega hasta el cierre de su última vela; si no hay ninguna (el ancla es anterior al banco o el banco todavía no
+    llega), está vacío, y el motivo lo da `anchor_missing_reason`.
+
+    En cada instante `t` (el ancla, y después el cierre de la vela anterior):
+      1. La TF base es la más fina cuyo tramo cubre `t`. Si ninguna lo cubre, el camino termina.
+      2. La siguiente vela es la que abre primero en `t` o después, entre la TF base y las más finas que ella. Si dos
+         abren a la vez, gana la más fina. Por eso:
+         - el camino arranca en la primera vela de 1M que abre en el ancla o después, y la que contiene el ancla queda
+           fuera (N17). Sin 1M en esa fecha, arranca con la siguiente más fina;
+         - se sube a una TF más fina en el borde de la vela de la más gruesa (N18), porque `t` es ese borde;
+         - una TF más fina que todavía no cubre `t` pero abre antes que la próxima vela de la base se usa desde ahí,
+           para no dejar ese tramo sin mirar (aclaración de T25 al paso 3 del plan).
+      3. Se baja a una TF más gruesa (porque la actual se terminó en `t`) solo si `t` cae en el borde de su vela. Si su
+         vela ya había empezado, usarla repetiría un tramo y saltarla dejaría un hueco: el camino se corta en `t`
+         (plan.md §3.1, paso 5; el resultado será `pending_candles`).
+
+    Un tramo en el que ninguna TF tiene velas (mercado cerrado) se cruza sin cambiar nada. Límite conocido: un hueco
+    de datos dentro del tramo de una TF (velas que faltan en el banco aunque hubo mercado) se ve igual que un mercado
+    cerrado, y también se cruza.
+    """
+    series = {tf: sorted(bars_by_timeframe[tf], key=lambda bar: bar.time)
+              for tf in LADDER if bars_by_timeframe.get(tf)}
+    opens = {tf: [bar.time for bar in bars] for tf, bars in series.items()}
+    coverage = bank_coverage(series)
+
+    def duration(tf: str) -> timedelta:
+        return timedelta(minutes=LADDER_MINUTES[tf])
+
+    t, current = anchor, None
+    while True:
+        covering = coverage.covering(t)
+        if not covering:
+            return
+        base = covering[0]
+        if current is not None and LADDER.index(base) > LADDER.index(current):
+            j = bisect_right(opens[base], t) - 1
+            if j >= 0 and opens[base][j] < t < opens[base][j] + duration(base):
+                return
+        best = None
+        for tf in LADDER[: LADDER.index(base) + 1]:  # de la más fina a la base: en un empate gana la más fina
+            if tf not in opens:
+                continue
+            i = bisect_left(opens[tf], t)
+            if i < len(opens[tf]) and (best is None or opens[tf][i] < best[0]):
+                best = (opens[tf][i], tf, i)
+        if best is None:
+            return
+        _, tf, i = best
+        bar = series[tf][i]
+        end = bar.time + duration(tf)
+        yield PathBar(tf, bar.time, end, bar.high, bar.low)
+        t, current = end, tf

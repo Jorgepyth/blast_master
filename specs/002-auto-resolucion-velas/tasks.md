@@ -619,10 +619,25 @@
       escritos en plan.md §3.1. Tests: 18 en `tests/test_candle_resolution.py`, incluido el del banco que termina
       antes del toque. Mutación: 6 bordes, y cada uno rompe 1 o 2 tests.
       SUITE: `694 passed, 3 skipped, 97 warnings in 26.75s`; sin `.data/`.
-- [ ] T25. `candle_resolution`, parte 2: camino multi-TF con escalera y empalme en el borde de la TF gruesa, sin
+- [x] T25. `candle_resolution`, parte 2: camino multi-TF con escalera y empalme en el borde de la TF gruesa, sin
       huecos, empezando en la primera vela de 1M en el ancla o después. (RF-4, N17, N18)
       Hecho cuando: los tests prueban la secuencia 1M → 5M → 1H en un fixture, que no hay huecos ni velas repetidas,
       y que una vela de 1M que contiene el ancla queda fuera. SUITE en verde.
+      **Hecho 2026-10-02:** `forward_path(anchor, bars_by_timeframe)` en `core/candle_resolution.py`. Es un generador
+      de `PathBar(timeframe, time, end, high, low)`, para que T26 corte en el primer toque sin armar el horizonte
+      entero: 130 mil velas de 1M se recorren en 0,6 s. `PathBar` sirve directo para `first_touch_detail`.
+      - Arranca en la primera vela de 1M que abre en el ancla o después (N17).
+      - Sube a una TF más fina en el borde de la vela gruesa (N18).
+      - Baja a una TF más gruesa solo en el borde de su vela; si no, corta (paso 5).
+      - Cruza los tramos de mercado cerrado.
+      - Las dos aclaraciones a los pasos 3 y 5, y el límite conocido (un hueco de datos se cruza como un mercado
+        cerrado), quedaron escritas en plan.md §3.1.
+      Tests: 11 más en `tests/test_candle_resolution.py`, incluida la secuencia 1M → 5M → 1H sin huecos ni velas
+      repetidas, y la vela de 1M que contiene el ancla. Mutación: sin el corte al bajar, con el empate a favor de la
+      gruesa, solo con la TF base, excluyendo la vela que abre en `t`, o con la base en la TF más gruesa: en cada caso
+      falla al menos un test. La del empate no la detectaba nadie, así que se agregó un test para ese caso.
+      SUITE: `794 passed, 3 skipped, 97 warnings`, sin `.data/`. Tardó 146 s en frío y 60 s en la segunda corrida (antes,
+      unos 22 s). Ningún test lento es de T25: el más lento es el de P2 banco v2, de otra sesión, con 4,4 s.
 - [ ] T26. `candle_resolution`, parte 3: primer toque con refinamiento, `ambiguous`, hora de apertura y TF usada,
       horizonte y `open`. (RF-4, RF-4b, RF-5, RF-5b, N19)
       Hecho cuando: los tests cubren Confirmed, Invalidated, una vela doble en 15M resuelta por 1M, una doble en la
