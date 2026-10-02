@@ -734,11 +734,39 @@
       con su B y sus horas, y los conteos de la tabla en 48 h: 6 VALIDATION, 6 INVALIDATION y 9 sin toque. Mutación:
       9 cambios, todos detectados.
       SUITE: `861 passed, 3 skipped, 97 warnings in 31.14s`; sin `.data/`.
-- [ ] T30. `tools/auto_resolution.py`: lectura con columnas explícitas (`mode=ro` o engine), mapa
+- [x] T30. `tools/auto_resolution.py`: lectura con columnas explícitas (`mode=ro` o engine), mapa
       `asset → símbolo` (`no_mt5_symbol`), estado del reloj (`clock_unverified`/`clock_misaligned`) y armado de la
       propuesta. (RF-4e, RF-4h, RF-6b)
       Hecho cuando: los tests, con una DB de fixture sin columnas nuevas (como US100) y un banco en `tmp_path`,
       prueban la propuesta completa y cada motivo. SUITE en verde.
+      **Hecho 2026-10-02:** `tools/auto_resolution.py` tiene estas piezas:
+      - `read_analysis_rows()` lee en `mode=ro` (`open_readonly_session`) y con columnas explícitas. Una columna que
+        no existe llega como `None`.
+      - `bank_clock_reason()` devuelve `None` si el reloj está verificado. Si no, devuelve `clock_unverified` o
+        `clock_misaligned`; un banco sin `status.json` da `clock_unverified`.
+      - `load_bank_candles()` carga la escalera como `Candle`.
+      - `AccountResolver(db, bank_root, account).propose(id)` / `.propose_all()` devuelven `AutoProposal` con:
+        - el motivo (`no_mt5_symbol`, reloj, `no_levels`, `no_history`, `pending_candles`, `ambiguous`, `open`);
+        - el resultado del resolvedor, la propuesta de Structural y la etiqueta Overlap;
+        - los valores **ya traducidos al wizard**: "Confirmed (A equal to B)", "Overlap Invalidation (New Bias
+          before resolution)", etc.;
+        - la hora del toque y el MAE/MFE.
+      - Con Overlap: tipo "Overlap Invalidation", Structural N/A, Failure "Overlap", y la hora del primer toque igual
+        (N37). Si todavía no tocó, además da `pending_candles`.
+      Tests: 12 en `tests/test_auto_resolution.py`. La DB se lee sin cambiar un byte, y se prueba el ancla con
+      `analysis_start_time` cuando la columna existe. Mutación: 8 cambios. Se detectan 7; el octavo no cambia el
+      comportamiento, porque sin toque la hora ya es `None`.
+      **Prueba de humo en solo lectura con los datos reales:**
+
+      | Cuenta | Análisis | Tiempo | Resultado |
+      |---|---|---|---|
+      | XAU | 81 | 9.3 s | 38 Confirmed, 23 Invalidated, 14 Overlap, 6 `no_levels` |
+      | BTC | 24 | 3.4 s | 7, 7, 8 Overlap, 2 `no_levels` |
+      | US100 | 8 | — | los 8 `clock_unverified` |
+
+      Las DBs quedaron byte a byte iguales. Los 14 Overlap de XAU son los mismos 14 de `analisis-overlap-2d.md`; en
+      BTC hay uno más que el 2026-09-27 (análisis posteriores).
+      SUITE: `873 passed, 3 skipped, 97 warnings in 31.94s`; sin `.data/`.
 - [ ] T31. Chequeo del Mark Price: escalera 1M → 5M → 15M con ±0.1% y versión por período. (RF-3, RF-3b)
       Hecho cuando: los tests prueban que coincide en 1M, que coincide recién en 15M, y que queda fuera (advertencia),
       más la versión por período para filas sin `mark_price_time`. SUITE en verde.
