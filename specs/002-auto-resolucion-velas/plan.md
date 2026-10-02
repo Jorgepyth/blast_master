@@ -38,7 +38,7 @@ Los módulos nuevos de cálculo viven en `core/`: son funciones puras, sin DB y 
 | `core/candle_resolution.py` (nuevo, puro) | Camino de varias TF desde el ancla, primer toque con refinamiento, MAE/MFE, R, revertido, expansión y sweep, MAE/MFE táctico, `could_hit_tp`, chequeo del Mark Price y códigos de motivo | RF-3, RF-3b, RF-4 a RF-4h, RF-5, RF-5b, RF-8 a RF-8d, RF-9 a RF-9d, RF-10 a RF-10d |
 | `core/outcome_metrics.py` (nuevo, puro) | **El módulo de criterios de acierto:** S1, S4, la etiqueta Overlap y la exclusión de retroactivos. Lo usan el reporte y los cuadernos | RF-21, RF-17, RF-5 |
 | `tools/auto_resolution.py` (nuevo) | Servicio: lee de una DB, con columnas explícitas, lo que necesita el resolvedor (el análisis y las anclas de su cuenta), abre el banco del símbolo, llama a `core/candle_resolution.py` y devuelve la propuesta | RF-4, RF-4e, RF-6b, RF-7, RF-9, RF-10 |
-| `tools/resolution_report.py` (nuevo) | Reporte de comparación: Markdown en inglés y resumen en consola, siempre en solo lectura | RF-6, RF-6b, RF-3b, RF-17, RF-21 |
+| `tools/resolution_report.py` (nuevo) | Reporte de comparación: los datos y el Markdown en inglés, siempre en solo lectura. El resumen en consola vive en el subcomando de `cli/main.py` (O2) | RF-6, RF-6b, RF-3b, RF-17, RF-21 |
 | `tools/auto_backfill.py` (nuevo) | Arma el plan de cambios, detecta conflictos, ensaya sobre copias, chequea el backup, aplica en una transacción y escribe `backfill_history` | RF-11 a RF-11e, RF-18 |
 | `cli/backfill_view.py` (nuevo) | Dibuja la vista estilo `git log --decorate --oneline --graph` con Rich y ofrece aceptar conflictos | RF-19, RF-11e |
 | `tools/candle_sync.py` (nuevo, proceso aparte) | Lanza el exportador de Windows vía `powershell.exe`, espera con timeout, y después fusiona y verifica llamando a `tools/candle_bank.py`. Escribe el estado | RF-20 a RF-20f |
@@ -397,7 +397,7 @@ cambio se inserta en `backfill_history`.
 
 | Entrada | Salida | Código de salida o error |
 |---|---|---|
-| `python cli/main.py resolution-report [--output-dir DIR] [--account ID ...]` | `resolution_report_<YYYYmmdd_HHMM>.md` (inglés) y resumen en consola. Nunca escribe en la DB | 0 si termina bien. 1 si falta una DB de `REAL_ACCOUNTS` o el banco |
+| `python cli/main.py resolution-report [--output-dir DIR] [--account ID ...]` | `resolution_report_<YYYYmmdd_HHMM>.md` (inglés) y resumen en consola. Nunca escribe en la DB. Sin `--output-dir`, el archivo va a `reports/` dentro de `ACCOUNTS_DATA_DIR` (`.data/reports/`): tiene datos del journal y `.data/` está fuera de git (O3). `--account` se repite para varias cuentas; sin él, todas las de `REAL_ACCOUNTS` | 0 si termina bien. 1 si una cuenta no existe, si falta una DB de `REAL_ACCOUNTS` o el banco: en ese caso no escribe el reporte |
 | `python cli/main.py backfill [--account ID ...]` | Vista previa estilo git-graph (dry-run). No escribe nada | 0 |
 | `python cli/main.py backfill --apply [--account ID ...]` | 1) ensayo sobre copias temporales; 2) chequeo de backup; 3) aceptación de conflictos uno por uno; 4) confirmación escribiendo `APPLY`; 5) escritura con historial | 0 si aplica. 3 si falla el ensayo (E6). 4 si no hay backup de las últimas 24 h. 5 si el usuario cancela |
 | `python cli/main.py candles import-legacy` | Import inicial del banco (RF-2c) | 0. 2 con `clock_unverified` o `clock_misaligned` por símbolo, informado |

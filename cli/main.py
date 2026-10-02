@@ -1313,6 +1313,63 @@ def report(output_dir, html_only, llm_only):
     generate_reports(output_dir=output_dir, html_only=html_only, llm_only=llm_only)
 
 
+# --- Reporte de comparación (spec 002, T33) -------------------------------------
+# Solo presentación (O2): los datos y el Markdown los arma tools/resolution_report.py.
+# Por defecto el .md va a `reports/` dentro de ACCOUNTS_DATA_DIR (`.data/reports/`):
+# tiene datos del journal y `.data/` está fuera de git (O3, plan.md §4). Código de
+# salida 1 si una cuenta no existe o le falta la DB, o si falta el banco de velas.
+RESOLUTION_REPORT_EXIT_MISSING = 1
+
+
+@cli.command("resolution-report")
+@click.option("--output-dir", default=None,
+              help="Folder for the Markdown report (default: reports/ inside ACCOUNTS_DATA_DIR).")
+@click.option("--account", "accounts", multiple=True,
+              help="Account id from REAL_ACCOUNTS, e.g. 000. Repeat it for several (default: all).")
+@click.pass_context
+def resolution_report_command(ctx, output_dir, accounts):
+    """Compare the candle resolution with the manual Efficiency Audit. Never writes to a database.
+
+    Exit code: 0 written, 1 unknown account, missing account database or missing candle bank.
+    """
+    import config.auto_resolution as auto_cfg
+    from tools.resolution_report import build_report, render_markdown
+
+    unknown = [account for account in accounts if account not in auto_cfg.REAL_ACCOUNTS]
+    if unknown:
+        console.print(f"Unknown account: {', '.join(unknown)} (known: {', '.join(auto_cfg.REAL_ACCOUNTS)})",
+                      style="red", markup=False)
+        ctx.exit(RESOLUTION_REPORT_EXIT_MISSING)
+    selected = {account: auto_cfg.REAL_ACCOUNTS[account] for account in (accounts or auto_cfg.REAL_ACCOUNTS)}
+    missing = [db_name for db_name in selected.values()
+               if not os.path.exists(os.path.join(auto_cfg.ACCOUNTS_DATA_DIR, db_name))]
+    if missing:
+        console.print(f"Missing account database: {', '.join(missing)} in {auto_cfg.ACCOUNTS_DATA_DIR}. "
+                      "Use --account to leave it out.", style="red", markup=False)
+        ctx.exit(RESOLUTION_REPORT_EXIT_MISSING)
+    if not os.path.isdir(auto_cfg.CANDLE_BANK_DIR):
+        console.print(f"Missing candle bank: {auto_cfg.CANDLE_BANK_DIR}", style="red", markup=False)
+        ctx.exit(RESOLUTION_REPORT_EXIT_MISSING)
+
+    reports = build_report(auto_cfg.ACCOUNTS_DATA_DIR, auto_cfg.CANDLE_BANK_DIR, real_accounts=selected)
+    now = datetime.datetime.now()
+    output_dir = output_dir or os.path.join(auto_cfg.ACCOUNTS_DATA_DIR, "reports")
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, f"resolution_report_{now:%Y%m%d_%H%M}.md")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(render_markdown(reports, generated_at=now))
+
+    for report in reports:
+        directional = report.s1_directional
+        console.print(
+            f"{report.account} {report.db_name}: {report.resolved}/{report.total} resolved, "
+            f"{len(report.differences)} with differences, S1 directional {directional.candles.wins}/"
+            f"{directional.candles.n} (manual {directional.manual_wins}/{directional.candles.n})",
+            markup=False, highlight=False, soft_wrap=True,
+        )
+    console.print(f"Report written to {path}", style="green", markup=False, soft_wrap=True)
+
+
 # --- Banco de velas (spec 002, T21) ---------------------------------------------
 # Solo presentación: la lógica vive en tools/candle_bank.py y tools/candle_sync.py
 # (constitución, principio 3). Todo lo que se muestra va en inglés (N30). Los códigos

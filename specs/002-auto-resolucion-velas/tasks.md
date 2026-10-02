@@ -815,9 +815,20 @@
         toque" (a veces terminan antes y a veces mucho después). El tipo difiere en 12 de 74: 11 son Overlap que la
         regla N11 marca y el manual no (14 contra 3); solo 1 es un desacuerdo real.
       SUITE: `896 passed, 3 skipped, 97 warnings in 26.94s`; sin `.data/`.
-- [ ] T33. Salida del reporte en Markdown (inglés) y subcomando `resolution-report`. (RF-6)
+- [x] T33. Salida del reporte en Markdown (inglés) y subcomando `resolution-report`. (RF-6)
       Hecho cuando: el test con `CliRunner` genera el `.md` en `tmp_path`, con los encabezados esperados y código 0, y
       no escribe en ninguna DB (lo cuida el audit hook y un test de `mtime`). SUITE en verde.
+      Evidencia (2026-10-02): `render_markdown` en `tools/resolution_report.py`; el subcomando y el resumen en consola,
+      en `cli/main.py` (O2). Carpeta por defecto `.data/reports/`, documentada en plan.md §4 (O3). Sigue el contrato
+      de §4: `--output-dir`, `--account` repetible y código 1 sin escribir el reporte si una cuenta no existe, falta
+      una DB o falta el banco. `tests/test_cli_resolution_report.py`: 12 tests. Mutación: 25 mutantes, todos muertos
+      (2 sobrevivieron al principio y se agregó un test). Humo con datos reales, en solo lectura y con el `.md` en el
+      scratchpad: 423 líneas, DBs con el mismo SHA-256 antes y después.
+      - **Punto a revisar con el usuario:** la demora del audit sale negativa en 7 análisis (4 de 74 en XAU, 3 de 22
+        en BTC): el `resolution_time` manual es anterior al primer toque de las velas. 6 de los 7 son Overlap (el audit
+        se cerró por un análisis nuevo antes de que el precio tocara un nivel). El otro, `70ea32f5`, está marcado
+        Confirmed a las 12:33 del 27-may y las velas tocan la validación recién a las 20:13.
+      SUITE: `908 passed, 3 skipped, 97 warnings in 31.68s`; sin `.data/`.
 - [ ] T34. `docs/criterios-de-acierto.md`: apuntar la implementación a `core/outcome_metrics.py` y agregar un ejemplo
       de uso desde un cuaderno. (RF-21)
       Hecho cuando: `grep -n "core/outcome_metrics.py" docs/criterios-de-acierto.md` da resultado y el ejemplo corre

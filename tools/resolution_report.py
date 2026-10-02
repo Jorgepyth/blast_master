@@ -13,14 +13,16 @@ operador cargó a mano en el Efficiency Audit:
   - los Mark Price que no caen en sus velas (RF-3, RF-3b);
   - en los retroactivos con `saved_at`, cuánto después se cargaron (N33, R11).
 
-Solo arma los datos; el Markdown y el comando los hace T33. Nunca escribe: las DBs se leen en `mode=ro`.
+`render_markdown` los pasa al Markdown del reporte, en inglés (N30). El subcomando `resolution-report` de cli/main.py
+escribe el archivo y el resumen en consola (O2). Nunca escribe en una DB: se leen en `mode=ro`.
 """
 from __future__ import annotations
 
 import os
+import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Dict, List, Mapping, Optional, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Tuple
 
 from sqlalchemy import text
 
@@ -236,3 +238,132 @@ def build_report(accounts_data_dir: str, bank_root: str,
         if os.path.exists(db_path):
             reports.append(build_account_report(account, db_path, bank_root))
     return reports
+
+
+# --- Markdown (T33) -----------------------------------------------------------------
+
+def _short_id(trade_id: str) -> str:
+    return trade_id[:8]
+
+
+def _price(value: Optional[float]) -> str:
+    return "-" if value is None else f"{value:.2f}"
+
+
+def _time(value: Optional[datetime]) -> str:
+    return "-" if value is None else value.strftime("%Y-%m-%d %H:%M")
+
+
+def _cell(value) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, float):
+        return _price(value)
+    return str(value).replace("|", "\\|")
+
+
+def _rate(wins: int, n: int) -> str:
+    return f"{wins}/{n} = {wins / n:.0%}" if n else f"{wins}/{n} = n/a"
+
+
+def _table(headers: Iterable[str], rows: Iterable[Iterable]) -> List[str]:
+    headers = list(headers)
+    lines = ["| " + " | ".join(headers) + " |", "|" + "---|" * len(headers)]
+    lines += ["| " + " | ".join(_cell(value) for value in row) + " |" for row in rows]
+    return lines
+
+
+def _account_markdown(report: AccountReport) -> List[str]:
+    lines = [f"## Account {report.account} ({report.db_name})", ""]
+    resolved_pct = f"{report.resolved / report.total:.0%}" if report.total else "n/a"
+    lines.append(f"- Analyses: {report.total}")
+    lines.append(f"- Resolved by candles: {report.resolved} of {report.total} ({resolved_pct})")
+    if report.missing_reasons:
+        reasons = ", ".join(f"{reason} {count}" for reason, count in sorted(report.missing_reasons.items()))
+        lines.append(f"- Missing: {report.total - report.resolved} ({report.missing_pct:.0%}): {reasons}")
+    else:
+        lines.append("- Missing: 0")
+    lines.append("")
+
+    lines += ["### Win rate", "",
+              "S1: first touch, no time limit. S4: first touch within 48 h. Manual: the analyses marked `Valid` in "
+              "`specific_bias_compliance`, over the same analyses. Backdated analyses are excluded and counted.", ""]
+    rows = []
+    for criterion, scope, pair in (("S1", "All", report.s1_all), ("S4", "All", report.s4_all),
+                                   ("S1", "Directional", report.s1_directional),
+                                   ("S4", "Directional", report.s4_directional)):
+        rows.append((criterion, scope, _rate(pair.candles.wins, pair.candles.n), _rate(pair.manual_wins, pair.candles.n),
+                     pair.candles.outside, pair.candles.excluded_backdated))
+    lines += _table(("Criterion", "Scope", "Candles", "Manual (Valid)", "Outside 48 h", "Backdated excluded"), rows)
+    lines.append("")
+
+    lines += ["### Agreement with the manual audit", "",
+              f"MAE and MFE agree within {PRICE_AGREEMENT_TOLERANCE:.1%} of the manual price. A field is not compared "
+              "when the candles or the manual audit leave it empty.", ""]
+    rows = []
+    for name in COMPARED_FIELDS:
+        values = [comparison.agreement[name] for comparison in report.comparisons]
+        rows.append((name, values.count(True), values.count(False), values.count(None)))
+    lines += _table(("Field", "Agree", "Differ", "Not compared"), rows)
+    lines.append("")
+
+    lines += ["### Differences", ""]
+    rows = [(_short_id(c.trade_id), name, getattr(c.proposal, name), getattr(c.manual, name), c.compliance)
+            for c in report.differences for name in COMPARED_FIELDS if c.agreement[name] is False]
+    if rows:
+        lines += ["`specific_bias_compliance` is shown for information only.", ""]
+        lines += _table(("Analysis", "Field", "Candles", "Manual", "Compliance"), rows)
+    else:
+        lines.append("No differences.")
+    lines.append("")
+
+    lines += ["### Audit delay", ""]
+    delays = [c.audit_delay_h for c in report.comparisons if c.audit_delay_h is not None]
+    if delays:
+        lines.append(f"- {len(delays)} analyses with audit and touch: median {statistics.median(delays):.1f} h, "
+                     f"min {min(delays):.1f} h, max {max(delays):.1f} h")
+        lines.append("- Registration time of the audit minus the first touch. Until `audit_registration_time` exists, "
+                     "the registration time is the manual `resolution_time`.")
+    else:
+        lines.append("No analysis has both a manual audit and a touch.")
+    lines.append("")
+
+    lines += ["### Overlaps", ""]
+    if report.overlaps:
+        lines += _table(("Analysis", "First level touched", "Touch time", "B", "B anchor"),
+                        [(_short_id(o.trade_id), o.level, _time(o.touch_time), _short_id(o.b_id), _time(o.b_anchor))
+                         for o in report.overlaps])
+    else:
+        lines.append("No overlaps.")
+    lines.append("")
+
+    lines += ["### Mark Prices outside their candles", ""]
+    if report.mark_price_misfits:
+        lines += _table(("Analysis", "Mark Price", "Timeframe", "Distance", "With mark_price_time"),
+                        [(_short_id(m.trade_id), m.mark_price, m.check.timeframe, m.check.distance,
+                          "yes" if m.with_mark_price_time else "no") for m in report.mark_price_misfits])
+    else:
+        lines.append("Every Mark Price that could be checked fits its candles.")
+    lines.append("")
+
+    lines += ["### Backdated loading delay", ""]
+    if report.backdated_delays:
+        lines += _table(("Analysis", "Hours after the typed time"),
+                        [(_short_id(trade_id), f"{hours:.1f}") for trade_id, hours in report.backdated_delays])
+    else:
+        lines.append("No backdated analysis has `saved_at` yet.")
+    lines.append("")
+    return lines
+
+
+def render_markdown(reports: List[AccountReport], generated_at: datetime) -> str:
+    """El reporte en Markdown, en inglés (N30): un bloque por cuenta."""
+    lines = ["# Resolution report", "",
+             f"Generated {_time(generated_at)}. The candle resolution compared with the manual Efficiency Audit. "
+             "Read-only: no database was written. Criteria in `docs/criterios-de-acierto.md`; Overlap is a label "
+             "and never excludes an analysis.", ""]
+    if not reports:
+        lines += ["No account database was found.", ""]
+    for report in reports:
+        lines += _account_markdown(report)
+    return "\n".join(lines)
