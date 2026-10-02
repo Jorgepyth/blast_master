@@ -832,7 +832,8 @@
         - USTEC: 1 de 9. El Mark Price del 2026-09-03 18:42, 29490.6, queda 7.7 puntos por encima (29469.8–29482.9).
         - Los otros 6 y 8 calzan exacto, y los dos que fallan calzan en la vela siguiente, así que no es un reloj
           corrido. Con la tolerancia que la spec ya usa para el Mark Price (0.1%, N16) calzarían los dos.
-      - Ajustar N43 a esa tolerancia queda como decisión pendiente del usuario.
+      - **Decisión del usuario (2026-10-02): N43 no se ajusta; se espera a que US500 y USTEC tengan 10 referencias**
+        (USTEC necesita 1 más; US500, 3 más). Con 10, la regla normal (N29) tolera un testigo que no calza.
 - [x] T59c. 🖐 *(Agregada el 2026-09-30, N44.)* Limpiar el banco real con `tools/dedup_candle_bank.py`: primero
       sin `--apply`, y después con `--apply`. Escribe en `.data/candle_bank/`, aprobado por el usuario el 2026-09-30.
       (RF-1, N44)
