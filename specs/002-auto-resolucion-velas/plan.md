@@ -303,6 +303,15 @@ Se usa R = |precio de partida − SI|.
 - **Sin `mark_price_time`** (solo en el reporte): se toma el rango de precios de `[created_at − 20 min, created_at]`
   en 1M, si no en 5M, si no en 15M. Si el Mark Price queda fuera por más de 0.1%, se lista.
 
+**Aclaraciones de T31** (`check_mark_price`, `check_mark_price_in_period`):
+- La tolerancia del 0.1% se aplica en la última TF que tiene vela a esa hora, normalmente la de 15M; en 1M y 5M el
+  chequeo es exacto.
+- Una hora justo en el cierre de una vela pertenece a la siguiente.
+- En la versión por período, la vela que abre justo en `created_at` no entra: sus precios son posteriores al guardado.
+- Si ninguna vela contiene esa hora, no se chequea. El motivo es `no_history` (antes del banco), `pending_candles`
+  (después) o `no_candle` (adentro, por ejemplo con el mercado cerrado).
+- El resultado guarda en qué TF coincidió y a qué distancia quedó del rango, para el reporte (T32).
+
 ### 3.8 Fusión y verificación del banco (RF-1, RF-1b, RF-2, RF-2d, RF-15c, N29, N32)
 
 1. Se toma el candado del símbolo. Si ya está tomado → se cancela con un mensaje y el banco no se toca.

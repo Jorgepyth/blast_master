@@ -767,9 +767,22 @@
       Las DBs quedaron byte a byte iguales. Los 14 Overlap de XAU son los mismos 14 de `analisis-overlap-2d.md`; en
       BTC hay uno más que el 2026-09-27 (análisis posteriores).
       SUITE: `873 passed, 3 skipped, 97 warnings in 31.94s`; sin `.data/`.
-- [ ] T31. Chequeo del Mark Price: escalera 1M → 5M → 15M con ±0.1% y versión por período. (RF-3, RF-3b)
+- [x] T31. Chequeo del Mark Price: escalera 1M → 5M → 15M con ±0.1% y versión por período. (RF-3, RF-3b)
       Hecho cuando: los tests prueban que coincide en 1M, que coincide recién en 15M, y que queda fuera (advertencia),
       más la versión por período para filas sin `mark_price_time`. SUITE en verde.
+      **Hecho 2026-10-02:** en `core/candle_resolution.py`, `check_mark_price(mark_price, mark_price_time, candles)` y
+      `check_mark_price_in_period(mark_price, start, end, candles)` devuelven `MarkPriceCheck(fits, timeframe,
+      distance, reason)`. Las aclaraciones quedaron en plan.md §3.7: tolerancia en la última TF con vela, hora justo en
+      el cierre, vela de `created_at` fuera, y el motivo `no_candle`.
+      Tests: 13 más en `tests/test_candle_resolution.py`:
+      - coincide en 1M; coincide recién en 5M y en 15M; dentro y fuera del 0.1% por arriba y por abajo;
+      - sin 1M y sin 15M a esa hora;
+      - una hora justo en el cierre de una vela;
+      - las tres razones para no chequear;
+      - la versión por período, con 1M, con 15M, y con las dos a la vez.
+      Mutación: 6 cambios, todos detectados. Dos se agregaron porque al principio no se detectaban: la hora justo en el
+      cierre, y el período con 1M y 15M a la vez.
+      SUITE: `885 passed, 3 skipped, 97 warnings in 26.29s`; sin `.data/`.
 - [ ] T32. `tools/resolution_report.py`, datos: por cuenta, motivos, coincidencia manual contra automática,
       compliance informativo, demora del audit, lista de diferencias, S1/S4 para todos y direccionales con el manual
       al lado, Overlap con B, Mark Price fuera de sus velas, y demora de los retroactivos. (RF-6, RF-3b, RF-17, RF-21)

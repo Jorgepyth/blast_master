@@ -14,7 +14,8 @@ Se construye por partes (tasks.md, Etapa 3):
   - parte 4 (T27): precio de partida, dirección de la tesis, `no_levels`, R y MAE/MFE estructurales, todo junto en
     `resolve_analysis` (RF-4, RF-4d; plan.md §3.4);
   - parte 5 (T28): las reglas de Structural Resolution y Failure Reason, `propose_structural` (RF-8 a RF-8d;
-    plan.md §3.5).
+    plan.md §3.5);
+  - el chequeo del Mark Price (T31): `check_mark_price` y `check_mark_price_in_period` (RF-3, RF-3b; plan.md §3.7).
 
 Convenciones: `time` es la hora de APERTURA de la vela en GT naive, igual que los CSV del banco; una vela
 de la TF `tf` abarca `[time, time + LADDER_MINUTES[tf])`.
@@ -29,6 +30,7 @@ from typing import Dict, Iterator, List, Mapping, NamedTuple, Optional, Sequence
 from config.auto_resolution import (
     EXPANSION_H,
     EXPANSION_R,
+    MARK_PRICE_TOLERANCE,
     MAX_HORIZON,
     REASON_AMBIGUOUS,
     REASON_NO_HISTORY,
@@ -507,3 +509,85 @@ def _invalidated_proposal(
     if reached < window_end:
         return StructuralProposal(STRUCTURAL_NA, None, REASON_PENDING_CANDLES)
     return StructuralProposal(STRUCTURAL_NA)
+
+
+# --- Chequeo del Mark Price (T31, RF-3, RF-3b, N16, N33; plan.md §3.7) ---------------------------------------------
+
+# La escalera del chequeo: hasta 15M, que es la última y la única con tolerancia (N33).
+MARK_PRICE_LADDER = ("1M", "5M", "15M")
+# Motivo de un Mark Price que no se puede chequear porque ninguna vela contiene su hora (por ejemplo, con el mercado
+# cerrado), aunque esté dentro del banco.
+MARK_PRICE_NO_CANDLE = "no_candle"
+
+
+@dataclass(frozen=True)
+class MarkPriceCheck:
+    """
+    Resultado del chequeo del Mark Price. `fits` es `True` si cae en la vela (o el rango), `False` si queda afuera aun
+    con la tolerancia (se avisa, nunca se bloquea, RF-3) y `None` si no se pudo chequear (`reason`). `timeframe` es la
+    TF donde coincidió o la última que se miró; `distance`, cuánto queda afuera del rango sin tolerancia (0 si cae).
+    """
+    fits: Optional[bool]
+    timeframe: Optional[str]
+    distance: Optional[float]
+    reason: Optional[str] = None
+
+
+def _distance_outside(price: float, low: float, high: float) -> float:
+    return low - price if price < low else price - high if price > high else 0.0
+
+
+def _not_checkable(moment: datetime, candles_by_timeframe: Mapping[str, Sequence[Candle]]) -> MarkPriceCheck:
+    reason = anchor_missing_reason(moment, bank_coverage(candles_by_timeframe)) or MARK_PRICE_NO_CANDLE
+    return MarkPriceCheck(None, None, None, reason)
+
+
+def check_mark_price(
+    mark_price: float,
+    mark_price_time: datetime,
+    candles_by_timeframe: Mapping[str, Sequence[Candle]],
+    tolerance: float = MARK_PRICE_TOLERANCE,
+) -> MarkPriceCheck:
+    """
+    RF-3, N33: la vela que contiene `mark_price_time`, subiendo por 1M, 5M y 15M. Apenas `low <= mark_price <= high`,
+    coincide en esa TF. En la última TF que tiene vela en esa hora (normalmente la de 15M) se acepta además una
+    tolerancia de `tolerance` (0.1%) del precio (N16); si ni así cae, `fits=False`. Una TF sin vela en esa hora se
+    saltea.
+    """
+    last = None
+    for tf in MARK_PRICE_LADDER:
+        duration = timedelta(minutes=LADDER_MINUTES[tf])
+        candle = next((c for c in candles_by_timeframe.get(tf) or () if c.time <= mark_price_time < c.time + duration),
+                      None)
+        if candle is None:
+            continue
+        distance = _distance_outside(mark_price, candle.low, candle.high)
+        if distance == 0.0:
+            return MarkPriceCheck(True, tf, 0.0)
+        last = (tf, distance)
+    if last is None:
+        return _not_checkable(mark_price_time, candles_by_timeframe)
+    tf, distance = last
+    return MarkPriceCheck(distance <= tolerance * mark_price, tf, distance)
+
+
+def check_mark_price_in_period(
+    mark_price: float,
+    start: datetime,
+    end: datetime,
+    candles_by_timeframe: Mapping[str, Sequence[Candle]],
+    tolerance: float = MARK_PRICE_TOLERANCE,
+) -> MarkPriceCheck:
+    """
+    RF-3b, N33, para los análisis sin `mark_price_time` (el reporte): el rango de precios de las velas que se solapan
+    con `[start, end)`, en 1M si las hay, si no en 5M, si no en 15M. Una vela que abre justo en `end` no entra: sus
+    precios son posteriores. `fits=False` si el Mark Price queda afuera por más de `tolerance` del precio.
+    """
+    for tf in MARK_PRICE_LADDER:
+        duration = timedelta(minutes=LADDER_MINUTES[tf])
+        candles = [c for c in candles_by_timeframe.get(tf) or () if c.time < end and c.time + duration > start]
+        if not candles:
+            continue
+        distance = _distance_outside(mark_price, min(c.low for c in candles), max(c.high for c in candles))
+        return MarkPriceCheck(distance <= tolerance * mark_price, tf, distance)
+    return _not_checkable(start, candles_by_timeframe)

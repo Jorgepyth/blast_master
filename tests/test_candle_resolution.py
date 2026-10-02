@@ -27,15 +27,19 @@ from core.candle_resolution import (
     STRUCTURAL_MINIMAL,
     STRUCTURAL_NA,
     STRUCTURAL_REVERTED,
+    MARK_PRICE_NO_CANDLE,
     AnalysisResolution,
     BankCoverage,
     Candle,
     FirstTouch,
+    MarkPriceCheck,
     StartPrice,
     StructuralProposal,
     TimeframeCoverage,
     anchor_missing_reason,
     bank_coverage,
+    check_mark_price,
+    check_mark_price_in_period,
     forward_path,
     horizon_end,
     propose_structural,
@@ -675,3 +679,77 @@ def test_without_a_touch_nothing_is_proposed():
     for bank in (ambiguous, pending):
         assert _propose(bank)[1] == StructuralProposal()
     assert _propose(pending, evp=105.0, si=108.0)[1] == StructuralProposal()  # no_levels
+
+
+# --- chequeo del Mark Price (T31, RF-3, RF-3b, N16, N33; plan.md §3.7) ---------------------------------------------
+
+MP_TIME = T0 + timedelta(hours=10, minutes=7, seconds=30)
+MP_BANK = {
+    "1M": [Candle(T0 + timedelta(hours=10, minutes=7), 100.1, 100.2, 100.0, 100.1)],
+    "5M": [Candle(T0 + timedelta(hours=10, minutes=5), 100.0, 100.5, 99.8, 100.2)],
+    "15M": [Candle(T0 + timedelta(hours=10), 100.0, 101.0, 99.5, 100.5)],
+}
+
+
+@pytest.mark.parametrize("mark_price, expected", [
+    (100.1, MarkPriceCheck(True, "1M", 0.0)),               # cae en la vela de 1M de las 10:07
+    (100.4, MarkPriceCheck(True, "5M", 0.0)),               # recién en la de 5M
+    (100.25, MarkPriceCheck(True, "5M", 0.0)),              # en 1M solo con la tolerancia: la tolerancia es de la última
+    (100.8, MarkPriceCheck(True, "15M", 0.0)),              # recién en la de 15M
+    (101.05, MarkPriceCheck(True, "15M", pytest.approx(0.05))),   # afuera por 0.05, dentro del 0.1% (0.101)
+    (101.2, MarkPriceCheck(False, "15M", pytest.approx(0.2))),    # afuera por 0.2: advertencia
+    (99.3, MarkPriceCheck(False, "15M", pytest.approx(0.2))),     # también por abajo
+])
+def test_the_mark_price_is_looked_for_in_1m_then_5m_then_15m_with_01pct_only_in_15m(mark_price, expected):
+    assert check_mark_price(mark_price, MP_TIME, MP_BANK) == expected
+
+
+def test_without_1m_at_that_time_it_starts_in_5m():
+    bank = {"5M": MP_BANK["5M"], "15M": MP_BANK["15M"]}
+    assert check_mark_price(100.1, MP_TIME, bank) == MarkPriceCheck(True, "5M", 0.0)
+
+
+def test_without_15m_at_that_time_the_tolerance_applies_to_the_last_timeframe_with_a_candle():
+    bank = {"1M": MP_BANK["1M"], "5M": MP_BANK["5M"]}
+    assert check_mark_price(100.55, MP_TIME, bank) == MarkPriceCheck(True, "5M", pytest.approx(0.05))
+    assert check_mark_price(100.7, MP_TIME, bank) == MarkPriceCheck(False, "5M", pytest.approx(0.2))
+
+
+def test_a_time_exactly_on_a_candle_close_belongs_to_the_next_candle():
+    # A las 10:08 en punto la vela de 1M de las 10:07 ya cerró: no la contiene. En el banco no hay de 10:08, así que vale 5M.
+    assert check_mark_price(100.1, T0 + timedelta(hours=10, minutes=8), MP_BANK) == MarkPriceCheck(True, "5M", 0.0)
+
+
+def test_a_time_the_bank_does_not_cover_cannot_be_checked():
+    assert check_mark_price(100.1, MP_TIME - timedelta(days=1), MP_BANK) == MarkPriceCheck(
+        None, None, None, REASON_NO_HISTORY)
+    assert check_mark_price(100.1, MP_TIME + timedelta(days=1), MP_BANK) == MarkPriceCheck(
+        None, None, None, REASON_PENDING_CANDLES)
+    # Dentro del banco pero sin ninguna vela que contenga esa hora (por ejemplo, con el mercado cerrado).
+    gap = {"1M": _candles("1M", T0, 5) + _candles("1M", T0 + timedelta(hours=2), 5)}
+    assert check_mark_price(100.1, T0 + timedelta(hours=1), gap) == MarkPriceCheck(None, None, None,
+                                                                                  MARK_PRICE_NO_CANDLE)
+
+
+def test_without_mark_price_time_the_range_of_the_20_minutes_before_saving_is_used():
+    # RF-3b: el rango de precios de [created_at - 20 min, created_at] en la TF más fina que lo cubre.
+    one_minute = [Candle(T0 + timedelta(minutes=i), 100.0, 100.0 + i / 10, 100.0 - i / 10, 100.0) for i in range(40)]
+    created_at = T0 + timedelta(minutes=30)
+    # Velas de 00:10 a 00:29: el mínimo es 97.1 y el máximo 102.9. La de 00:30 abre justo en created_at y no entra:
+    # sus precios son posteriores al guardado.
+    assert check_mark_price_in_period(102.5, created_at - timedelta(minutes=20), created_at,
+                                      {"1M": one_minute}) == MarkPriceCheck(True, "1M", 0.0)
+    assert check_mark_price_in_period(104.0, created_at - timedelta(minutes=20), created_at,
+                                      {"1M": one_minute}) == MarkPriceCheck(False, "1M", pytest.approx(1.1))
+    # Sin 1M en ese período, se usa la de 15M.
+    fifteen = [Candle(T0, 100.0, 101.0, 99.0, 100.0), Candle(T0 + timedelta(minutes=15), 100.0, 102.0, 98.5, 100.0),
+               Candle(T0 + timedelta(minutes=30), 100.0, 100.5, 99.5, 100.0)]
+    assert check_mark_price_in_period(101.8, created_at - timedelta(minutes=20), created_at,
+                                      {"15M": fifteen}) == MarkPriceCheck(True, "15M", 0.0)
+    assert check_mark_price_in_period(100.0, T0 + timedelta(days=3), T0 + timedelta(days=3, minutes=20),
+                                      {"15M": fifteen}).reason == REASON_PENDING_CANDLES
+    # Con 1M y 15M a la vez, manda la 1M aunque la de 15M tenga un rango más ancho.
+    assert check_mark_price_in_period(103.5, created_at - timedelta(minutes=20), created_at,
+                                      {"1M": one_minute, "15M": [Candle(T0, 100.0, 104.0, 96.0, 100.0),
+                                                                 Candle(T0 + timedelta(minutes=15), 100.0, 104.0,
+                                                                        96.0, 100.0)]}).fits is False
