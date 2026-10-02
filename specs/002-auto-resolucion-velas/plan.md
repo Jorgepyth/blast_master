@@ -243,6 +243,16 @@ test lo verifica (RF-18).
   inclusive. En un Short es al revés.
 - El resultado son precios, con la precisión del CSV.
 
+**Aclaraciones de T27** (`resolve_analysis`, `start_price`):
+- **Precio de partida:** entre las TF de la escalera, la vela cerrada más reciente en el ancla; si dos cierran a la
+  vez, la de la TF más fina. Casi siempre es la de 1M; si el 1M todavía no empezó (o le faltan velas justo antes),
+  vale la TF que cerró más tarde. Si ninguna vela cerró todavía en el ancla, el resultado es `no_history`.
+- **MAE/MFE estructurales:** solo con toque (`confirmed` o `invalidated`). En `open`, `ambiguous` o `pending_candles`
+  no se proponen; el R sí se conoce siempre que haya tesis.
+- **Velas con cierre:** el precio de partida es un cierre, y `OhlcBar` (de `core/p2_ground_truth.py`) no lo tiene.
+  `Candle(time, open, high, low, close)` es el tipo nuevo, y sirve también para el camino y el toque. T30 arma las
+  `Candle` desde los CSV del banco.
+
 ### 3.5 Reglas de Structural Resolution y Failure Reason (RF-8 a RF-8d)
 
 Se usa R = |precio de partida − SI|.

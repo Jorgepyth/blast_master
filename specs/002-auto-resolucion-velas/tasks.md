@@ -659,10 +659,27 @@
       `pending`), `pending_candles`, `no_history` y el conteo del horizonte. Mutación: 9 cambios y todos rompen al
       menos un test; 2 los detectan los tests de borde agregados.
       SUITE: `807 passed, 3 skipped, 97 warnings in 56.96s`; sin `.data/`.
-- [ ] T27. `candle_resolution`, parte 4: precio de partida, dirección de la tesis, `no_levels`, R y MAE/MFE
+- [x] T27. `candle_resolution`, parte 4: precio de partida, dirección de la tesis, `no_levels`, R y MAE/MFE
       estructurales en precio. (RF-4, RF-4d)
       Hecho cuando: los tests cubren long y short, niveles del mismo lado (`no_levels`), y valores de MAE/MFE
       verificados a mano en el fixture. SUITE en verde.
+      **Hecho 2026-10-02:** en `core/candle_resolution.py`:
+      - `resolve_analysis(anchor, candles, evp, si, max_horizon)` devuelve `AnalysisResolution(outcome, start_price,
+        thesis_direction, r, first_touch, structural_mae, structural_mfe)`. El orden es: niveles vacíos →
+        `no_levels`; ancla fuera del banco → su motivo; precio de partida; tesis (mismo lado → `no_levels`); primer
+        toque; MAE/MFE solo si hubo toque.
+      - `start_price()` toma la vela cerrada más reciente en el ancla (más fina en un empate).
+      - `Candle` es el tipo nuevo con apertura y cierre.
+      - Las aclaraciones quedaron en plan.md §3.4.
+      Tests: 15 más en `tests/test_candle_resolution.py`:
+      - long y short confirmados, y un long invalidado, con MAE/MFE calculados a mano. Ejemplo: partida 100, mínimo
+        97.5, toque en 110.5; en el short, MAE 102.5 y MFE 89.5;
+      - `no_levels` en 5 variantes;
+      - el precio de partida en un empate, con 1M que todavía no empezó, después de un mercado cerrado y sin ninguna
+        vela cerrada.
+      Mutación: 8 cambios, todos detectados. "R medido contra el objetivo" solo lo detecta un test con niveles
+      asimétricos (objetivo 120, invalidación 90), porque con 110/90 los dos dan 10.
+      SUITE: `822 passed, 3 skipped, 97 warnings in 28.09s`; sin `.data/`.
 - [ ] T28. `candle_resolution`, parte 5: reglas de revertido, expansión, mínima y sweep, más los N/A de Invalidated y
       Overlap. (RF-8, RF-8b, RF-8c, RF-8d)
       Hecho cuando: los tests cubren los bordes (vuelta al Mark Price a las 23:59 y a las 24:01 h; 0.49R y 0.50R;

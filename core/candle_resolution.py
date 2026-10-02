@@ -11,8 +11,9 @@ Se construye por partes (tasks.md, Etapa 3):
   - parte 2 (T25): el camino hacia adelante de varias TF, `forward_path` (RF-4, N17, N18; plan.md §3.1);
   - parte 3 (T26): el primer toque sobre ese camino, `ambiguous`, el horizonte y `open`, `resolve_first_touch`
     (RF-4, RF-4b, RF-5, N19; plan.md §3.2);
-  - partes 4 y 5 (T27 y T28): precio de partida, tesis, `no_levels`, MAE/MFE, R y las reglas de Structural
-    Resolution.
+  - parte 4 (T27): precio de partida, dirección de la tesis, `no_levels`, R y MAE/MFE estructurales, todo junto en
+    `resolve_analysis` (RF-4, RF-4d; plan.md §3.4);
+  - parte 5 (T28): las reglas de Structural Resolution y Failure Reason.
 
 Convenciones: `time` es la hora de APERTURA de la vela en GT naive, igual que los CSV del banco; una vela
 de la TF `tf` abarca `[time, time + LADDER_MINUTES[tf])`.
@@ -22,10 +23,16 @@ from __future__ import annotations
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Dict, Iterator, List, Mapping, NamedTuple, Optional, Sequence
+from typing import Dict, Iterator, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 
-from config.auto_resolution import MAX_HORIZON, REASON_AMBIGUOUS, REASON_NO_HISTORY, REASON_PENDING_CANDLES
-from core.p2_ground_truth import LEVEL_VALIDATION, OhlcBar, first_touch_detail
+from config.auto_resolution import (
+    MAX_HORIZON,
+    REASON_AMBIGUOUS,
+    REASON_NO_HISTORY,
+    REASON_NO_LEVELS,
+    REASON_PENDING_CANDLES,
+)
+from core.p2_ground_truth import LEVEL_VALIDATION, OhlcBar, first_touch_detail, infer_thesis_direction
 
 # Escalera del camino hacia adelante, de la TF más fina a la más gruesa (plan.md §3.1, paso 1; N17, N18).
 # 4H y las más lentas no están: son para los modelos de P2, no para la hora del toque.
@@ -272,3 +279,110 @@ def resolve_first_touch(
         return FirstTouch(outcome, touch_time=bar.time, timeframe=bar.timeframe, direction=detail.direction,
                           level=detail.level, path_end=path_end, horizon_end=end)
     return FirstTouch(untouched_missing_reason(path_end, end) or OUTCOME_OPEN, path_end=path_end, horizon_end=end)
+
+
+class Candle(NamedTuple):
+    """
+    Una vela del banco con apertura y cierre. `resolve_analysis` la necesita porque el precio de partida es un cierre
+    (RF-4); el camino y el toque solo leen `time`, `high` y `low`, así que también sirven con ella.
+    """
+    time: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+
+
+class StartPrice(NamedTuple):
+    """El precio de partida (RF-4): el cierre de una vela, de qué TF es y a qué hora cerró."""
+    price: float
+    timeframe: str
+    close_time: datetime
+
+
+def start_price(anchor: datetime, candles_by_timeframe: Mapping[str, Sequence[Candle]]) -> Optional[StartPrice]:
+    """
+    RF-4: el cierre de la última vela ya cerrada en el ancla (`time + duración <= ancla`, R3). Entre las TF de la
+    escalera se toma la vela cerrada más reciente y, si dos cierran a la vez, la de la TF más fina: casi siempre es la
+    de 1M. Si una TF más gruesa cerró después (por ejemplo, porque el 1M todavía no empezó), vale esa (aclaración de
+    T27). `None` si en el ancla todavía no cerró ninguna vela.
+    """
+    best: Optional[StartPrice] = None
+    for tf in LADDER:  # de la más fina a la más gruesa: en un empate queda la más fina
+        duration = timedelta(minutes=LADDER_MINUTES[tf])
+        closed = [candle for candle in candles_by_timeframe.get(tf) or () if candle.time + duration <= anchor]
+        if not closed:
+            continue
+        last = max(closed, key=lambda candle: candle.time)
+        if best is None or last.time + duration > best.close_time:
+            best = StartPrice(last.close, tf, last.time + duration)
+    return best
+
+
+@dataclass(frozen=True)
+class AnalysisResolution:
+    """
+    Lo que el resolvedor sabe de un análisis (RF-4, RF-4d, RF-5). `outcome` es el de `first_touch`, o un código de
+    motivo cuando no se llegó a buscar el toque (`no_levels`, `no_history`, `pending_candles`). `r` es
+    |precio de partida − structural_invalidation|. `structural_mae` y `structural_mfe` son precios: el más adverso y
+    el más favorable a la tesis desde el ancla hasta la vela del toque inclusive (plan.md §3.4); solo existen si hubo
+    toque.
+    """
+    outcome: str
+    start_price: Optional[float] = None
+    thesis_direction: Optional[str] = None
+    r: Optional[float] = None
+    first_touch: Optional[FirstTouch] = None
+    structural_mae: Optional[float] = None
+    structural_mfe: Optional[float] = None
+
+
+def resolve_analysis(
+    anchor: datetime,
+    candles_by_timeframe: Mapping[str, Sequence[Candle]],
+    edge_validation_price: Optional[float],
+    structural_invalidation: Optional[float],
+    max_horizon: int = MAX_HORIZON,
+) -> AnalysisResolution:
+    """
+    Resuelve un análisis con las velas del banco (RF-4, RF-4d):
+      1. sin objetivo o sin invalidación → `no_levels`;
+      2. el ancla fuera del banco → `no_history` o `pending_candles`;
+      3. precio de partida (`start_price`); si ninguna vela cerró todavía en el ancla → `no_history`;
+      4. dirección de la tesis con `infer_thesis_direction`; si los dos niveles caen del mismo lado del precio de
+         partida (o uno justo en él) → `no_levels`;
+      5. primer toque (`resolve_first_touch`) y, si lo hubo, MAE y MFE estructurales: en un long, el `low` más bajo y
+         el `high` más alto del camino hasta la vela del toque; en un short, al revés.
+    """
+    if edge_validation_price is None or structural_invalidation is None:
+        return AnalysisResolution(REASON_NO_LEVELS)
+    missing = anchor_missing_reason(anchor, bank_coverage(candles_by_timeframe))
+    if missing:
+        return AnalysisResolution(missing)
+    start = start_price(anchor, candles_by_timeframe)
+    if start is None:
+        return AnalysisResolution(REASON_NO_HISTORY)
+    thesis = infer_thesis_direction(start.price, edge_validation_price, structural_invalidation)
+    if thesis is None:
+        return AnalysisResolution(REASON_NO_LEVELS, start_price=start.price)
+
+    touch = resolve_first_touch(anchor, candles_by_timeframe, thesis, edge_validation_price, structural_invalidation,
+                                max_horizon=max_horizon)
+    mae = mfe = None
+    if touch.outcome in (OUTCOME_CONFIRMED, OUTCOME_INVALIDATED):
+        low, high = _extremes_through_touch(anchor, candles_by_timeframe, touch)
+        mae, mfe = (low, high) if thesis == "long" else (high, low)
+    return AnalysisResolution(touch.outcome, start.price, thesis, abs(start.price - structural_invalidation), touch,
+                              mae, mfe)
+
+
+def _extremes_through_touch(
+    anchor: datetime, candles_by_timeframe: Mapping[str, Sequence[Candle]], touch: FirstTouch
+) -> Tuple[float, float]:
+    """El `low` más bajo y el `high` más alto del camino, desde el ancla hasta la vela del toque inclusive."""
+    low, high = float("inf"), float("-inf")
+    for bar in forward_path(anchor, candles_by_timeframe):
+        low, high = min(low, bar.low), max(high, bar.high)
+        if bar.time == touch.touch_time and bar.timeframe == touch.timeframe:
+            break
+    return low, high

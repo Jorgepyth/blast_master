@@ -10,6 +10,7 @@ from config.auto_resolution import (
     MAX_HORIZON,
     REASON_AMBIGUOUS,
     REASON_NO_HISTORY,
+    REASON_NO_LEVELS,
     REASON_PENDING_CANDLES,
     RESOLUTION_TIME_SOURCE_OPEN,
 )
@@ -19,14 +20,19 @@ from core.candle_resolution import (
     OUTCOME_CONFIRMED,
     OUTCOME_INVALIDATED,
     OUTCOME_OPEN,
+    AnalysisResolution,
     BankCoverage,
+    Candle,
     FirstTouch,
+    StartPrice,
     TimeframeCoverage,
     anchor_missing_reason,
     bank_coverage,
     forward_path,
     horizon_end,
+    resolve_analysis,
     resolve_first_touch,
+    start_price,
     untouched_missing_reason,
 )
 from core.p2_ground_truth import LEVEL_INVALIDATION, LEVEL_VALIDATION, OhlcBar, first_touch_detail
@@ -408,3 +414,108 @@ def test_a_missing_thesis_is_refused():
 def test_the_open_outcome_is_the_same_word_as_the_resolution_time_source():
     assert OUTCOME_OPEN == RESOLUTION_TIME_SOURCE_OPEN
     assert (OUTCOME_CONFIRMED, OUTCOME_INVALIDATED) == ("confirmed", "invalidated")
+
+
+# --- precio de partida, tesis, no_levels, R y MAE/MFE estructurales (T27, RF-4, RF-4d; plan.md §3.4) -----------
+
+def _candles(timeframe, start, n, special=None):
+    """Velas planas (open=close=100, high=101, low=99); `special` = {índice: (high, low, close)} para las que importan."""
+    step = timedelta(minutes=LADDER_MINUTES[timeframe])
+    special = special or {}
+    out = []
+    for i in range(n):
+        high, low, close = special.get(i, (101.0, 99.0, 100.0))
+        out.append(Candle(time=start + i * step, open=100.0, high=high, low=low, close=close))
+    return out
+
+
+ANCHOR = T0 + timedelta(minutes=10, seconds=30)  # 00:10:30: la última vela cerrada es la de 00:09, el camino arranca 00:11
+
+
+def test_long_confirmed_with_start_price_r_and_hand_checked_mae_and_mfe():
+    # Partida 100 (cierre de la vela de 00:09). Camino: 00:11 baja a 97.5, 00:13 sube a 104, 00:15 toca 110.5.
+    # Después del toque, 00:17 baja a 80: no cuenta, la resolución ya ocurrió.
+    bank = {"1M": _candles("1M", T0, 30, {11: (101.0, 97.5, 100.0), 13: (104.0, 99.0, 100.0),
+                                           15: (110.5, 99.0, 100.0), 17: (101.0, 80.0, 100.0)})}
+
+    result = resolve_analysis(ANCHOR, bank, 110.0, 90.0)
+
+    assert (result.outcome, result.start_price, result.thesis_direction, result.r) == (OUTCOME_CONFIRMED, 100.0, "long", 10.0)
+    assert (result.structural_mae, result.structural_mfe) == (97.5, 110.5)  # long: MAE = el mínimo, MFE = el máximo
+    assert result.first_touch.touch_time == T0 + timedelta(minutes=15)
+
+
+def test_short_confirmed_mae_is_the_highest_price_and_mfe_the_lowest():
+    # Validación abajo (90), invalidación arriba (110): tesis short. 00:11 sube a 102.5, 00:12 baja a 95, 00:14 toca 89.5.
+    bank = {"1M": _candles("1M", T0, 30, {11: (102.5, 99.0, 100.0), 12: (101.0, 95.0, 100.0),
+                                           14: (101.0, 89.5, 100.0)})}
+
+    result = resolve_analysis(ANCHOR, bank, 90.0, 110.0)
+
+    assert (result.outcome, result.thesis_direction, result.r) == (OUTCOME_CONFIRMED, "short", 10.0)
+    assert (result.structural_mae, result.structural_mfe) == (102.5, 89.5)
+
+
+def test_long_invalidated_mae_reaches_the_invalidation():
+    bank = {"1M": _candles("1M", T0, 30, {12: (103.0, 99.0, 100.0), 14: (101.0, 89.0, 100.0)})}
+
+    result = resolve_analysis(ANCHOR, bank, 120.0, 90.0)  # objetivo más lejos que la invalidación: R es |100 - 90|
+
+    assert (result.outcome, result.structural_mae, result.structural_mfe) == (OUTCOME_INVALIDATED, 89.0, 103.0)
+    assert result.r == 10.0
+
+
+@pytest.mark.parametrize("evp, si", [(105.0, 108.0), (92.0, 95.0), (100.0, 90.0), (None, 90.0), (110.0, None)])
+def test_missing_levels_or_both_on_the_same_side_of_the_start_price_is_no_levels(evp, si):
+    # RF-4d: los dos arriba, los dos abajo, uno justo en el precio de partida, o alguno vacío.
+    result = resolve_analysis(ANCHOR, {"1M": _candles("1M", T0, 30)}, evp, si)
+    assert (result.outcome, result.first_touch, result.structural_mae, result.r) == (REASON_NO_LEVELS, None, None, None)
+
+
+def test_without_a_touch_there_is_no_structural_mae_nor_mfe():
+    open_bank = {"1H": _candles("1H", T0, 40)}
+    result = resolve_analysis(T0 + timedelta(minutes=90), open_bank, 110.0, 90.0, max_horizon=24)
+    assert (result.outcome, result.structural_mae, result.structural_mfe) == (OUTCOME_OPEN, None, None)
+    assert result.r == 10.0  # el R sí se conoce
+
+    ambiguous_bank = {"1M": _candles("1M", T0, 30, {13: (111.0, 89.0, 100.0)})}
+    assert resolve_analysis(ANCHOR, ambiguous_bank, 110.0, 90.0).structural_mae is None
+
+
+def test_an_anchor_outside_the_bank_keeps_its_reason():
+    bank = {"1M": _candles("1M", T0, 30)}
+    assert resolve_analysis(T0 - timedelta(minutes=1), bank, 110.0, 90.0) == AnalysisResolution(REASON_NO_HISTORY)
+    assert resolve_analysis(T0 + timedelta(hours=1), bank, 110.0, 90.0) == AnalysisResolution(REASON_PENDING_CANDLES)
+
+
+def test_start_price_is_the_close_of_the_last_closed_candle_at_the_anchor():
+    bank = {"1M": _candles("1M", T0, 30, {9: (101.0, 99.0, 100.7)}), "5M": _candles("5M", T0, 6, {1: (101.0, 99.0, 99.3)})}
+    # A las 00:10:30 la de 1M de 00:10 todavía no cerró: vale la de 00:09 (cierra 00:10), más reciente que la de 5M de 00:05.
+    assert start_price(ANCHOR, bank) == StartPrice(100.7, "1M", T0 + timedelta(minutes=10))
+    # Justo a las 00:10, la de 00:09 de 1M y la de 00:05 de 5M cierran a la vez: gana la más fina.
+    assert start_price(T0 + timedelta(minutes=10), bank) == StartPrice(100.7, "1M", T0 + timedelta(minutes=10))
+
+
+def test_start_price_uses_a_coarser_candle_when_it_closed_more_recently():
+    # El 1M empieza a las 00:10: a las 00:10:30 no tiene ninguna vela cerrada. La de 5M de 00:05 sí (cierra 00:10).
+    bank = {"1M": _candles("1M", T0 + timedelta(minutes=10), 20), "5M": _candles("5M", T0, 6, {1: (101.0, 99.0, 99.3)})}
+    assert start_price(ANCHOR, bank) == StartPrice(99.3, "5M", T0 + timedelta(minutes=10))
+
+
+def test_start_price_after_a_closed_market_is_the_last_close_before_it():
+    friday = _candles("1M", T0, 60, {59: (101.0, 99.0, 100.4)})
+    sunday = _candles("1M", T0 + timedelta(days=2), 60)
+    assert start_price(T0 + timedelta(days=1), {"1M": friday + sunday}) == StartPrice(100.4, "1M", T0 + timedelta(hours=1))
+
+
+def test_without_any_closed_candle_at_the_anchor_there_is_no_start_price():
+    bank = {"1M": _candles("1M", T0, 30)}
+    assert start_price(T0 + timedelta(seconds=30), bank) is None
+    assert resolve_analysis(T0 + timedelta(seconds=30), bank, 110.0, 90.0) == AnalysisResolution(REASON_NO_HISTORY)
+
+
+def test_candles_feed_the_path_and_the_first_touch_like_any_ohlc_bar():
+    bank = {"1M": _candles("1M", T0, 30, {15: (110.5, 99.0, 100.0)})}
+    path = _path(ANCHOR, bank)
+    assert path[0].time == T0 + timedelta(minutes=11)
+    assert resolve_first_touch(ANCHOR, bank, "long", 110.0, 90.0).touch_time == T0 + timedelta(minutes=15)
