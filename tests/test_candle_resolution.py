@@ -6,18 +6,30 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from config.auto_resolution import REASON_NO_HISTORY, REASON_PENDING_CANDLES
+from config.auto_resolution import (
+    MAX_HORIZON,
+    REASON_AMBIGUOUS,
+    REASON_NO_HISTORY,
+    REASON_PENDING_CANDLES,
+    RESOLUTION_TIME_SOURCE_OPEN,
+)
 from core.candle_resolution import (
     LADDER,
     LADDER_MINUTES,
+    OUTCOME_CONFIRMED,
+    OUTCOME_INVALIDATED,
+    OUTCOME_OPEN,
     BankCoverage,
+    FirstTouch,
     TimeframeCoverage,
     anchor_missing_reason,
     bank_coverage,
     forward_path,
+    horizon_end,
+    resolve_first_touch,
     untouched_missing_reason,
 )
-from core.p2_ground_truth import OhlcBar, first_touch_detail
+from core.p2_ground_truth import LEVEL_INVALIDATION, LEVEL_VALIDATION, OhlcBar, first_touch_detail
 
 T0 = datetime(2026, 6, 1, 0, 0)
 
@@ -273,3 +285,126 @@ def test_the_path_is_produced_lazily():
     # El resolvedor corta en el primer toque; no hace falta armar los ~130 mil minutos de un horizonte entero.
     import types
     assert isinstance(forward_path(T0, {"1M": _bars("1M", T0, 5)}), types.GeneratorType)
+
+
+# --- primer toque, ambiguous, horizonte y open (T26, RF-4, RF-4b, RF-5, RF-5b, N19; plan.md §3.1 y §3.2) -------
+
+EVP, SI = 110.0, 90.0   # tesis long: validación arriba, invalidación abajo
+
+
+def _touching(bars, index, high=None, low=None):
+    """Copia de `bars` con la vela `index` estirada hasta `high` y/o `low`."""
+    bars = list(bars)
+    bar = bars[index]
+    bars[index] = OhlcBar(time=bar.time, high=high if high is not None else bar.high,
+                          low=low if low is not None else bar.low)
+    return bars
+
+
+def _resolve(bank, anchor=T0 + timedelta(seconds=30), max_horizon=MAX_HORIZON, thesis="long"):
+    return resolve_first_touch(anchor, bank, thesis, EVP, SI, max_horizon=max_horizon)
+
+
+def test_confirmed_when_validation_is_touched_first_with_the_open_of_that_candle_and_its_timeframe():
+    bank = {"1M": _touching(_bars("1M", T0, 60), 12, high=110.5)}
+
+    result = _resolve(bank)
+
+    assert result == FirstTouch(OUTCOME_CONFIRMED, touch_time=T0 + timedelta(minutes=12), timeframe="1M",
+                                direction="long", level=LEVEL_VALIDATION, path_end=T0 + timedelta(minutes=13),
+                                horizon_end=None)
+
+
+def test_invalidated_when_the_structural_invalidation_is_touched_first():
+    bars = _touching(_touching(_bars("1M", T0, 60), 7, low=89.0), 20, high=111.0)  # invalida a las 00:07, valida después
+
+    result = _resolve({"1M": bars})
+
+    assert (result.outcome, result.touch_time, result.direction, result.level) == (
+        OUTCOME_INVALIDATED, T0 + timedelta(minutes=7), "short", LEVEL_INVALIDATION)
+
+
+def test_a_15m_candle_that_touches_both_levels_is_resolved_by_the_1m_of_that_stretch():
+    # El 15M solo diría "las dos en la vela de las 10:30", pero hay 1M desde las 10:30: el camino ya va en 1M ahí
+    # (T25) y el 1M dice cuál fue primero.
+    fifteen = _touching(_bars("15M", T0, 96), 42, high=111.0, low=89.0)                # 10:30, doble
+    one = _touching(_touching(_bars("1M", T0 + timedelta(hours=10, minutes=30), 120), 3, high=110.2), 11, low=89.5)
+
+    result = _resolve({"15M": fifteen, "1M": one}, anchor=T0 + timedelta(hours=10, minutes=5))
+
+    assert (result.outcome, result.touch_time, result.timeframe) == (
+        OUTCOME_CONFIRMED, T0 + timedelta(hours=10, minutes=33), "1M")
+    # Sin ese 1M, la vela doble de 15M es lo más fino que hay: no se adivina el orden.
+    assert _resolve({"15M": fifteen}, anchor=T0 + timedelta(hours=10, minutes=5)).outcome == REASON_AMBIGUOUS
+
+
+def test_a_1m_candle_that_touches_both_levels_is_ambiguous_with_no_time_proposed():
+    bank = {"1M": _touching(_bars("1M", T0, 60), 15, high=111.0, low=89.0)}
+
+    result = _resolve(bank)
+
+    assert (result.outcome, result.touch_time, result.timeframe, result.level) == (REASON_AMBIGUOUS, None, None, None)
+    assert result.path_end == T0 + timedelta(minutes=16)
+
+
+def test_no_touch_within_the_horizon_is_open_and_a_later_touch_does_not_count():
+    # Horizonte de 24 velas de 1H para el test. El ancla (00:00:30) está dentro de la vela de las 00:00, que no cuenta:
+    # la 1.ª es la de la 01:00 y la 24.ª la de las 24:00, que cierra a la 01:00 del día siguiente.
+    bars = _touching(_bars("1H", T0, 40), 25, high=111.0)  # toca en la vela que abre justo cuando termina el horizonte
+
+    result = _resolve({"1H": bars}, max_horizon=24)
+
+    assert result == FirstTouch(OUTCOME_OPEN, path_end=T0 + timedelta(hours=25), horizon_end=T0 + timedelta(hours=25))
+
+
+def test_a_market_close_right_before_the_end_of_the_horizon_still_reaches_it():
+    # El horizonte (2 velas de 1H) termina a las 03:00, pero el mercado cerró a las 02:30 y reabre a las 05:00: el
+    # camino de 1M llega hasta las 02:30 y la vela siguiente ya está pasado el horizonte. Es `open`, no `pending`.
+    one_hour = _bars("1H", T0, 3) + _bars("1H", T0 + timedelta(hours=5), 5)
+    one_minute = _bars("1M", T0, 150) + _bars("1M", T0 + timedelta(hours=5), 60)
+
+    result = _resolve({"1H": one_hour, "1M": one_minute}, max_horizon=2)
+
+    assert result == FirstTouch(OUTCOME_OPEN, path_end=T0 + timedelta(hours=3), horizon_end=T0 + timedelta(hours=3))
+
+
+def test_a_touch_in_the_last_candle_of_the_horizon_still_counts():
+    bars = _touching(_bars("1H", T0, 40), 24, high=111.0)  # la 24.ª vela desde el ancla
+
+    assert _resolve({"1H": bars}, max_horizon=24).outcome == OUTCOME_CONFIRMED
+
+
+def test_without_a_touch_a_bank_that_ends_before_the_horizon_is_pending():
+    result = _resolve({"1H": _bars("1H", T0, 10)}, max_horizon=24)
+
+    assert result == FirstTouch(REASON_PENDING_CANDLES, path_end=T0 + timedelta(hours=10), horizon_end=None)
+
+
+def test_an_anchor_before_the_bank_is_no_history_and_after_it_pending():
+    bank = {"1M": _bars("1M", T0, 60)}
+    assert _resolve(bank, anchor=T0 - timedelta(minutes=5)) == FirstTouch(REASON_NO_HISTORY)
+    assert _resolve(bank, anchor=T0 + timedelta(hours=2)) == FirstTouch(REASON_PENDING_CANDLES)
+
+
+def test_horizon_end_is_the_close_of_the_nth_1h_candle_opening_at_or_after_the_anchor():
+    bars = _bars("1H", T0, 30)
+    assert horizon_end(T0 + timedelta(minutes=20), bars, 24) == T0 + timedelta(hours=25)  # la de las 00:00 no cuenta
+    assert horizon_end(T0, bars, 24) == T0 + timedelta(hours=24)                           # abre en el ancla: cuenta
+    assert horizon_end(T0 + timedelta(hours=7), bars, 24) is None                          # todavía no hay 24
+    assert horizon_end(T0, list(reversed(bars)), 24) == T0 + timedelta(hours=24)
+
+
+def test_the_default_horizon_is_the_backtest_one():
+    from tools.p2_backtest import FORWARD_PATH_MAX_BARS
+    assert MAX_HORIZON == FORWARD_PATH_MAX_BARS == 2160
+
+
+def test_a_missing_thesis_is_refused():
+    # Niveles del mismo lado (no_levels) lo decide T27 antes de llamar.
+    with pytest.raises(ValueError):
+        _resolve({"1M": _bars("1M", T0, 5)}, thesis=None)
+
+
+def test_the_open_outcome_is_the_same_word_as_the_resolution_time_source():
+    assert OUTCOME_OPEN == RESOLUTION_TIME_SOURCE_OPEN
+    assert (OUTCOME_CONFIRMED, OUTCOME_INVALIDATED) == ("confirmed", "invalidated")

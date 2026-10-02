@@ -215,6 +215,18 @@ test lo verifica (RF-18).
 4. La hora del toque es la apertura de la vela que tocó (N19). Se guarda también la TF usada, que da la precisión.
 5. `first_touch_detail()` devuelve `(dirección, incompleto, índice, nivel, ambiguo)`.
 
+**Aclaraciones de T26** (`resolve_first_touch`):
+- **Pasos 2 y 3:** el camino de T25 ya va, en cada tramo, en la TF más fina que tiene el banco. Una vela del camino
+  que toca los dos niveles ya está en la TF más fina disponible para ese tramo, así que es `ambiguous` directamente.
+  "Una vela doble en 15M resuelta por 1M" se da sola: donde hay 1M, el camino ya va en 1M. Si el 1M empezara en
+  medio de esa vela de 15M, tampoco sirve para mirar adentro: el pedazo sin 1M podría tener un toque anterior.
+- **Paso 6 de §3.1 (horizonte):** se miran `MAX_HORIZON` velas de 1H desde el ancla, igual que el backtest
+  (`FORWARD_PATH_MAX_BARS`). El horizonte termina en el **cierre** de la vela 1H número 2160 que abre en el ancla o
+  después. La vela de 1H que contiene el ancla no cuenta, igual que en el camino. Si el mercado cierra justo antes del
+  fin del horizonte y reabre después, el horizonte cuenta como cumplido.
+- **Resultado:** códigos neutros (`confirmed`, `invalidated`, `open`, o el código de motivo). Pasarlos a los valores
+  de `ResolutionType` del wizard (por ejemplo "Confirmed (A equal to B)") les toca a T30 y T40.
+
 ### 3.3 Etiqueta Overlap (RF-5, N11, N22, N36)
 
 1. Con columnas explícitas se leen `created_at`, `is_backdated` y `analysis_start_time` de **toda** la cuenta.

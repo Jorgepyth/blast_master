@@ -638,10 +638,27 @@
       falla al menos un test. La del empate no la detectaba nadie, así que se agregó un test para ese caso.
       SUITE: `794 passed, 3 skipped, 97 warnings`, sin `.data/`. Tardó 146 s en frío y 60 s en la segunda corrida (antes,
       unos 22 s). Ningún test lento es de T25: el más lento es el de P2 banco v2, de otra sesión, con 4,4 s.
-- [ ] T26. `candle_resolution`, parte 3: primer toque con refinamiento, `ambiguous`, hora de apertura y TF usada,
+- [x] T26. `candle_resolution`, parte 3: primer toque con refinamiento, `ambiguous`, hora de apertura y TF usada,
       horizonte y `open`. (RF-4, RF-4b, RF-5, RF-5b, N19)
       Hecho cuando: los tests cubren Confirmed, Invalidated, una vela doble en 15M resuelta por 1M, una doble en la
       TF más fina (`ambiguous`), y ningún toque en `MAX_HORIZON` (`open`). SUITE en verde.
+      **Hecho 2026-10-02:** en `core/candle_resolution.py`:
+      - `resolve_first_touch(anchor, bank, thesis, evp, si, max_horizon)` recorre `forward_path` vela por vela con la
+        regla de `first_touch_detail` y devuelve `FirstTouch(outcome, touch_time, timeframe, direction, level,
+        path_end, horizon_end)`. La hora del toque es la apertura de esa vela y la TF da la precisión (N19).
+      - `horizon_end()` da el cierre de la vela 1H número `MAX_HORIZON` desde el ancla, igual que el backtest.
+      - Los resultados son códigos neutros `confirmed`, `invalidated` y `open`; los valores del wizard les tocan a
+        T30 y T40.
+      - La tesis es obligatoria, porque `no_levels` lo decide T27 antes de llamar.
+      - No hizo falta código de refinamiento: el camino de T25 ya va en la TF más fina de cada tramo. Una vela doble
+        es `ambiguous` y el caso "doble en 15M resuelta por 1M" se da solo. Queda escrito en plan.md §3.2, junto con
+        cómo se cuenta el horizonte.
+      Tests: 13 más en `tests/test_candle_resolution.py`. Cubren Confirmed, Invalidated, la vela doble de 15M que
+      resuelve el 1M (y sin ese 1M es `ambiguous`), la doble en 1M, `open` con un toque justo después del horizonte,
+      el toque en la última vela del horizonte, el mercado que cierra justo antes del fin del horizonte (es `open`, no
+      `pending`), `pending_candles`, `no_history` y el conteo del horizonte. Mutación: 9 cambios y todos rompen al
+      menos un test; 2 los detectan los tests de borde agregados.
+      SUITE: `807 passed, 3 skipped, 97 warnings in 56.96s`; sin `.data/`.
 - [ ] T27. `candle_resolution`, parte 4: precio de partida, dirección de la tesis, `no_levels`, R y MAE/MFE
       estructurales en precio. (RF-4, RF-4d)
       Hecho cuando: los tests cubren long y short, niveles del mismo lado (`no_levels`), y valores de MAE/MFE

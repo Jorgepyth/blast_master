@@ -9,7 +9,10 @@ Se construye por partes (tasks.md, Etapa 3):
   - parte 1 (T24): cobertura del banco por TF de la escalera, y los códigos `no_history` y
     `pending_candles` (RF-4c, RF-4g, N28; plan.md §3.1, casos límite);
   - parte 2 (T25): el camino hacia adelante de varias TF, `forward_path` (RF-4, N17, N18; plan.md §3.1);
-  - partes 3 a 5 (T26 a T28): el primer toque, MAE/MFE, R y las reglas de Structural Resolution.
+  - parte 3 (T26): el primer toque sobre ese camino, `ambiguous`, el horizonte y `open`, `resolve_first_touch`
+    (RF-4, RF-4b, RF-5, N19; plan.md §3.2);
+  - partes 4 y 5 (T27 y T28): precio de partida, tesis, `no_levels`, MAE/MFE, R y las reglas de Structural
+    Resolution.
 
 Convenciones: `time` es la hora de APERTURA de la vela en GT naive, igual que los CSV del banco; una vela
 de la TF `tf` abarca `[time, time + LADDER_MINUTES[tf])`.
@@ -21,8 +24,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Dict, Iterator, List, Mapping, NamedTuple, Optional, Sequence
 
-from config.auto_resolution import REASON_NO_HISTORY, REASON_PENDING_CANDLES
-from core.p2_ground_truth import OhlcBar
+from config.auto_resolution import MAX_HORIZON, REASON_AMBIGUOUS, REASON_NO_HISTORY, REASON_PENDING_CANDLES
+from core.p2_ground_truth import LEVEL_VALIDATION, OhlcBar, first_touch_detail
 
 # Escalera del camino hacia adelante, de la TF más fina a la más gruesa (plan.md §3.1, paso 1; N17, N18).
 # 4H y las más lentas no están: son para los modelos de P2, no para la hora del toque.
@@ -182,3 +185,90 @@ def forward_path(anchor: datetime, bars_by_timeframe: Mapping[str, Sequence[Ohlc
         end = bar.time + duration(tf)
         yield PathBar(tf, bar.time, end, bar.high, bar.low)
         t, current = end, tf
+
+
+# Resultado del primer toque (RF-5). Son códigos neutros: pasarlos a los valores de `ResolutionType` del wizard
+# ("Confirmed (A equal to B)", etc.) les toca a `tools/auto_resolution.py` y al pre-llenado (T30, T40).
+OUTCOME_CONFIRMED = "confirmed"      # RF-5, punto 2: el primer nivel tocado es edge_validation_price
+OUTCOME_INVALIDATED = "invalidated"  # RF-5, punto 3: el primer nivel tocado es structural_invalidation
+OUTCOME_OPEN = "open"                # RF-5, punto 4: ningún toque en el horizonte, con el banco cubriéndolo entero
+
+
+@dataclass(frozen=True)
+class FirstTouch:
+    """
+    Resultado de `resolve_first_touch` (RF-4, RF-4b, RF-5, N19). `outcome` es `OUTCOME_CONFIRMED`,
+    `OUTCOME_INVALIDATED`, `OUTCOME_OPEN`, o un código de motivo: `ambiguous`, `pending_candles` o `no_history`.
+    Solo un toque tiene hora: `touch_time` es la apertura de la vela que tocó y `timeframe` su TF, que da la precisión
+    (N19: ±1 min con 1M). `direction` y `level` son los de `first_touch_detail`. `path_end` dice hasta dónde se miró, y
+    `horizon_end` dónde termina el horizonte (`None` si el banco todavía no llega).
+    """
+    outcome: str
+    touch_time: Optional[datetime] = None
+    timeframe: Optional[str] = None
+    direction: Optional[str] = None
+    level: Optional[str] = None
+    path_end: Optional[datetime] = None
+    horizon_end: Optional[datetime] = None
+
+
+def horizon_end(anchor: datetime, one_hour_bars: Sequence[OhlcBar], max_horizon: int = MAX_HORIZON) -> Optional[datetime]:
+    """
+    Fin del horizonte (plan.md §3.1, paso 6, aclarado en T26): el cierre de la vela 1H número `max_horizon` que abre
+    en el ancla o después. Así se miran `max_horizon` velas de 1H, igual que el backtest
+    (`tools/p2_backtest.py:FORWARD_PATH_MAX_BARS`), y la vela de 1H que contiene el ancla no cuenta, igual que en el
+    camino (N17). `None` si el banco todavía no tiene tantas.
+    """
+    opens = sorted(bar.time for bar in one_hour_bars if bar.time >= anchor)
+    if len(opens) < max_horizon:
+        return None
+    return opens[max_horizon - 1] + timedelta(minutes=LADDER_MINUTES["1H"])
+
+
+def resolve_first_touch(
+    anchor: datetime,
+    bars_by_timeframe: Mapping[str, Sequence[OhlcBar]],
+    thesis_direction: str,
+    edge_validation_price: float,
+    structural_invalidation: float,
+    max_horizon: int = MAX_HORIZON,
+) -> FirstTouch:
+    """
+    Qué nivel toca primero el precio desde el ancla (RF-4, RF-4b, RF-5; plan.md §3.2), recorriendo `forward_path` vela
+    por vela con la regla de toque de `first_touch_detail`, hasta el primer toque o hasta el fin del horizonte:
+
+    - el ancla fuera del banco → `no_history` o `pending_candles` (`anchor_missing_reason`);
+    - una vela que toca un solo nivel → `confirmed` o `invalidated`, con la apertura de esa vela como hora del toque
+      y su TF como precisión (N19);
+    - una vela que toca los dos → `ambiguous`, sin hora (RF-4b). El camino ya va en la TF más fina que tiene el banco
+      para ese tramo (T25), así que no queda una TF más fina con la que mirar adentro: donde hay 1M, el camino ya va en
+      1M (aclaración de T26 a los pasos 2 y 3 del plan);
+    - ningún toque: `open` si el camino llegó al fin del horizonte, o `pending_candles` si el banco todavía no llega
+      (`untouched_missing_reason`).
+
+    `thesis_direction` es obligatoria: si los niveles caen del mismo lado del precio de partida, el análisis es
+    `no_levels` y eso se decide antes de llamar (T27).
+    """
+    if thesis_direction is None:
+        raise ValueError("thesis_direction is required: same-side levels are no_levels, decided before (T27)")
+    missing = anchor_missing_reason(anchor, bank_coverage(bars_by_timeframe))
+    if missing:
+        return FirstTouch(missing)
+
+    end = horizon_end(anchor, bars_by_timeframe.get("1H") or (), max_horizon)
+    path_end = anchor
+    for bar in forward_path(anchor, bars_by_timeframe):
+        if end is not None and bar.time >= end:
+            path_end = end
+            break
+        path_end = bar.end
+        # first_touch_detail no usa el precio de entrada (su tercer argumento): se pasa 0.0.
+        detail = first_touch_detail(thesis_direction, (bar,), 0.0, edge_validation_price, structural_invalidation)
+        if detail.bar_index is None:
+            continue
+        if detail.ambiguous:
+            return FirstTouch(REASON_AMBIGUOUS, path_end=path_end, horizon_end=end)
+        outcome = OUTCOME_CONFIRMED if detail.level == LEVEL_VALIDATION else OUTCOME_INVALIDATED
+        return FirstTouch(outcome, touch_time=bar.time, timeframe=bar.timeframe, direction=detail.direction,
+                          level=detail.level, path_end=path_end, horizon_end=end)
+    return FirstTouch(untouched_missing_reason(path_end, end) or OUTCOME_OPEN, path_end=path_end, horizon_end=end)
