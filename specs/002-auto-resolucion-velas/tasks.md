@@ -680,10 +680,40 @@
       Mutación: 8 cambios, todos detectados. "R medido contra el objetivo" solo lo detecta un test con niveles
       asimétricos (objetivo 120, invalidación 90), porque con 110/90 los dos dan 10.
       SUITE: `822 passed, 3 skipped, 97 warnings in 28.09s`; sin `.data/`.
-- [ ] T28. `candle_resolution`, parte 5: reglas de revertido, expansión, mínima y sweep, más los N/A de Invalidated y
+- [x] T28. `candle_resolution`, parte 5: reglas de revertido, expansión, mínima y sweep, más los N/A de Invalidated y
       Overlap. (RF-8, RF-8b, RF-8c, RF-8d)
       Hecho cuando: los tests cubren los bordes (vuelta al Mark Price a las 23:59 y a las 24:01 h; 0.49R y 0.50R;
       exceso de 1.0R y 1.01R; objetivo a las 47 y a las 49 h) y el caso sin Mark Price. SUITE en verde.
+      **Hecho 2026-10-02:** `propose_structural(resolution, candles, evp, si, mark_price, overlap)` en
+      `core/candle_resolution.py` devuelve `StructuralProposal(structural_resolution, failure_reason,
+      missing_reason)`:
+      - Overlap da `n/a` + `overlap`.
+      - Confirmed da `reverted`, `expansion` o `minimal`, por prioridad, con `n/a`.
+      - Invalidated da `n/a` + `liquidity_sweep` o nada.
+      - Sin toque, no se propone nada.
+      - Si el banco no cubre la ventana que decide, el resultado es `pending_candles`.
+      - Las aclaraciones (ventanas medio abiertas, qué velas cuentan en cada regla, duraciones separadas) quedaron en
+        plan.md §3.5.
+      Tests: 24 más en `tests/test_candle_resolution.py`:
+      - los cuatro pares de bordes del "Hecho cuando", el caso sin Mark Price, y la prioridad de revertido sobre
+        expansión;
+      - el cierre de la expansión en el toque de la invalidación, y la vela del toque que no prueba una vuelta;
+      - la vela del objetivo dentro del exceso del sweep, y `pending_candles` en Confirmed y en Invalidated;
+      - Overlap, sin toque, y el mismo resultado en un short espejado.
+      Mutación: 13 cambios, todos detectados. Dos tests se agregaron porque al principio no se detectaban: la vela
+      del objetivo en el exceso, y la expansión sin tope propio. La segunda era un defecto real: el recorrido se
+      cortaba en la ventana del revertido, así que una ventana de expansión más larga nunca se habría mirado entera.
+      Ahora se recorre la más larga, con un test que cambia `EXPANSION_H`.
+      **Verificación del banco pedida por el usuario el mismo día** (otro chat decía que había velas repetidas en 1H y
+      4H). En solo lectura:
+      - el banco real no tiene ninguna repetida en ninguna TF de XAUUSD ni de BTCUSD: ni la misma hora dos veces, ni
+        la misma vela corrida 1 h, ni el mismo OHLC a cualquier distancia;
+      - los CSV viejos de `MT5Exports\` y las 8 corridas de `_incoming\` tampoco tienen repetidas dentro de cada
+        archivo;
+      - al cruzar el CSV viejo con el banco, en 4H aparecen exactamente 528 velas de XAU y 737 de BTC con la hora
+        corrida 1 h: son las de invierno del CSV viejo, las mismas que N44 quitó del banco;
+      - en 1H, 0.
+      SUITE: `846 passed, 3 skipped, 97 warnings in 25.97s`; sin `.data/`.
 - [ ] T29. `core/outcome_metrics.py`: etiqueta Overlap (N11, N22), S1, S4, exclusión de retroactivos con conteo, y
       corte direccional. (RF-5, RF-17, RF-21)
       Hecho cuando: los tests prueban que Overlap nunca excluye, S1 y S4 con "fuera", los retroactivos contados, y que

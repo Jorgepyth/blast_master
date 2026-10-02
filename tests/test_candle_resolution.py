@@ -20,16 +20,25 @@ from core.candle_resolution import (
     OUTCOME_CONFIRMED,
     OUTCOME_INVALIDATED,
     OUTCOME_OPEN,
+    FAILURE_LIQUIDITY_SWEEP,
+    FAILURE_NA,
+    FAILURE_OVERLAP,
+    STRUCTURAL_EXPANSION,
+    STRUCTURAL_MINIMAL,
+    STRUCTURAL_NA,
+    STRUCTURAL_REVERTED,
     AnalysisResolution,
     BankCoverage,
     Candle,
     FirstTouch,
     StartPrice,
+    StructuralProposal,
     TimeframeCoverage,
     anchor_missing_reason,
     bank_coverage,
     forward_path,
     horizon_end,
+    propose_structural,
     resolve_analysis,
     resolve_first_touch,
     start_price,
@@ -519,3 +528,150 @@ def test_candles_feed_the_path_and_the_first_touch_like_any_ohlc_bar():
     path = _path(ANCHOR, bank)
     assert path[0].time == T0 + timedelta(minutes=11)
     assert resolve_first_touch(ANCHOR, bank, "long", 110.0, 90.0).touch_time == T0 + timedelta(minutes=15)
+
+
+# --- Structural Resolution y Failure Reason (T28, RF-8 a RF-8d; plan.md §3.5) -----------------------------------
+# Escenario long: partida 100 (cierre de 00:09), objetivo 110, invalidación 90, R = 10, Mark Price 101. El toque es la
+# vela de 1M de las 00:15. `specials` cambia las velas de después del toque: {minutos desde el toque: (high, low)}.
+
+def _scenario(kind, specials=None, minutes_after=1500):
+    specials = specials or {}
+    rows = []
+    for i in range(16 + minutes_after):
+        offset = i - 15
+        if offset < 0:
+            high, low = 101.0, 99.0
+        elif offset == 0:
+            high, low = (110.5, 99.0) if kind == "confirmed" else (101.0, 89.5)
+        else:
+            base = 105.0 if kind == "confirmed" else 95.0
+            high, low = specials.get(offset, (base + 0.5, base - 0.5))
+        mid = (high + low) / 2
+        rows.append(Candle(T0 + timedelta(minutes=i), mid, high, low, mid))
+    return {"1M": rows}
+
+
+def _propose(bank, mark_price=101.0, evp=110.0, si=90.0, overlap=False):
+    resolution = resolve_analysis(ANCHOR, bank, evp, si)
+    return resolution, propose_structural(resolution, bank, evp, si, mark_price, overlap=overlap)
+
+
+def _mirror(bank):
+    """El mismo escenario visto como short: cada precio p pasa a 200 - p (el máximo y el mínimo se intercambian)."""
+    return {tf: [Candle(c.time, 200 - c.open, 200 - c.low, 200 - c.high, 200 - c.close) for c in candles]
+            for tf, candles in bank.items()}
+
+
+@pytest.mark.parametrize("offset, expected", [(23 * 60 + 59, STRUCTURAL_REVERTED), (24 * 60 + 1, STRUCTURAL_MINIMAL)])
+def test_confirmed_is_reverted_only_if_price_returns_to_the_mark_price_within_24h(offset, expected):
+    bank = _scenario("confirmed", {offset: (105.5, 100.9)})  # baja a 100.9, por debajo del Mark Price (101)
+    assert _propose(bank)[1] == StructuralProposal(expected, FAILURE_NA)
+
+
+@pytest.mark.parametrize("offset, high, expected", [
+    (600, 115.0, STRUCTURAL_EXPANSION),   # 0.50R más allá del objetivo
+    (600, 114.9, STRUCTURAL_MINIMAL),     # 0.49R
+    (1445, 120.0, STRUCTURAL_MINIMAL),    # mucho más, pero pasadas las 24 h
+])
+def test_confirmed_expansion_needs_half_r_beyond_the_target_within_24h(offset, high, expected):
+    bank = _scenario("confirmed", {offset: (high, 104.5)})
+    assert _propose(bank)[1] == StructuralProposal(expected, FAILURE_NA)
+
+
+def test_the_expansion_window_and_the_revert_window_have_their_own_lengths(monkeypatch):
+    # REVERT_H y EXPANSION_H son reglas distintas (N13, N14), aunque hoy valgan las dos 24 h.
+    import core.candle_resolution as resolution_module
+    monkeypatch.setattr(resolution_module, "EXPANSION_H", 12)
+    assert _propose(_scenario("confirmed", {13 * 60: (120.0, 104.5)}))[1].structural_resolution == STRUCTURAL_MINIMAL
+    monkeypatch.setattr(resolution_module, "EXPANSION_H", 30)
+    later = _scenario("confirmed", {26 * 60: (120.0, 104.5)}, minutes_after=1900)
+    assert _propose(later)[1].structural_resolution == STRUCTURAL_EXPANSION
+    # Con la ventana de expansión más larga, la vuelta al Mark Price sigue mirándose solo en sus 24 h.
+    late_revert = _scenario("confirmed", {25 * 60: (105.5, 100.9)}, minutes_after=1900)
+    assert _propose(late_revert)[1].structural_resolution == STRUCTURAL_MINIMAL
+
+
+def test_reverted_wins_over_expansion():
+    bank = _scenario("confirmed", {60: (120.0, 104.5), 300: (105.5, 100.9)})  # se expande y después vuelve
+    assert _propose(bank)[1].structural_resolution == STRUCTURAL_REVERTED
+
+
+def test_the_expansion_window_closes_at_the_invalidation_touch():
+    # N20: se mide hasta lo primero que ocurra, 24 h o el toque de la invalidación. El Mark Price va por debajo de la
+    # invalidación (artificial) para que ese toque no cuente como "revertido".
+    bank = _scenario("confirmed", {60: (105.5, 89.0), 120: (120.0, 104.5)})
+    assert _propose(bank, mark_price=85.0)[1].structural_resolution == STRUCTURAL_MINIMAL
+    assert _propose(_scenario("confirmed", {120: (120.0, 104.5)}), mark_price=85.0)[1].structural_resolution == (
+        STRUCTURAL_EXPANSION)
+
+
+def test_without_mark_price_the_revert_is_measured_against_the_start_price():
+    bank = _scenario("confirmed", {300: (105.5, 100.5)})  # llega al Mark Price (101) pero no a la partida (100)
+    assert _propose(bank, mark_price=101.0)[1].structural_resolution == STRUCTURAL_REVERTED
+    assert _propose(bank, mark_price=None)[1].structural_resolution == STRUCTURAL_MINIMAL
+
+
+def test_the_touch_candle_itself_does_not_count_as_a_revert():
+    # La vela del toque va de 99 a 110.5: su mínimo pudo ser antes del toque, así que no prueba una vuelta.
+    assert _propose(_scenario("confirmed"))[1].structural_resolution == STRUCTURAL_MINIMAL
+
+
+def test_confirmed_with_less_than_24h_of_candles_after_the_touch_is_pending_unless_it_already_reverted():
+    assert _propose(_scenario("confirmed", minutes_after=600))[1] == StructuralProposal(
+        missing_reason=REASON_PENDING_CANDLES)
+    already = _scenario("confirmed", {300: (105.5, 100.9)}, minutes_after=600)
+    assert _propose(already)[1].structural_resolution == STRUCTURAL_REVERTED
+
+
+@pytest.mark.parametrize("low, expected", [(80.0, FAILURE_LIQUIDITY_SWEEP), (79.9, None)])
+def test_invalidated_is_a_liquidity_sweep_only_with_an_excess_of_at_most_1r(low, expected):
+    bank = _scenario("invalidated", {60: (95.5, low), 600: (110.5, 104.5)}, minutes_after=3000)
+    resolution, proposal = _propose(bank)
+    assert resolution.outcome == OUTCOME_INVALIDATED
+    assert proposal == StructuralProposal(STRUCTURAL_NA, expected)  # exceso 1.0R barre; 1.01R no
+
+
+@pytest.mark.parametrize("hours, expected", [(47, FAILURE_LIQUIDITY_SWEEP), (49, None)])
+def test_invalidated_is_a_liquidity_sweep_only_if_the_target_is_touched_within_48h(hours, expected):
+    bank = _scenario("invalidated", {hours * 60: (110.5, 104.5)}, minutes_after=3000)
+    assert _propose(bank)[1] == StructuralProposal(STRUCTURAL_NA, expected)
+
+
+def test_the_candle_that_touches_the_target_also_counts_for_the_sweep_excess():
+    # No se sabe si su mínimo fue antes o después del toque del objetivo: cuenta, para no proponer un sweep de más.
+    bank = _scenario("invalidated", {600: (110.5, 79.0)}, minutes_after=3000)
+    assert _propose(bank)[1] == StructuralProposal(STRUCTURAL_NA, None)
+
+
+def test_invalidated_with_less_than_48h_of_candles_and_no_target_yet_is_pending():
+    assert _propose(_scenario("invalidated", minutes_after=600))[1] == StructuralProposal(
+        STRUCTURAL_NA, None, REASON_PENDING_CANDLES)
+
+
+@pytest.mark.parametrize("kind, specials, mark_price", [
+    ("confirmed", {23 * 60 + 59: (105.5, 100.9)}, 101.0),
+    ("confirmed", {600: (115.0, 104.5)}, 101.0),
+    ("confirmed", {600: (114.9, 104.5)}, None),
+    ("invalidated", {60: (95.5, 80.0), 600: (110.5, 104.5)}, 101.0),
+    ("invalidated", {60: (95.5, 79.9), 600: (110.5, 104.5)}, 101.0),
+])
+def test_a_short_gets_the_same_proposal_as_the_mirrored_long(kind, specials, mark_price):
+    bank = _scenario(kind, specials, minutes_after=3000)
+    long_result = _propose(bank, mark_price)[1]
+    short_mark = None if mark_price is None else 200 - mark_price
+    short_resolution, short_result = _propose(_mirror(bank), short_mark, evp=90.0, si=110.0)
+    assert short_resolution.thesis_direction == "short"
+    assert short_result == long_result
+
+
+def test_overlap_proposes_na_and_the_overlap_failure_reason_whatever_the_touch():
+    for bank in (_scenario("confirmed"), _scenario("invalidated"), {"1M": _candles("1M", T0, 30)}):
+        assert _propose(bank, overlap=True)[1] == StructuralProposal(STRUCTURAL_NA, FAILURE_OVERLAP)
+
+
+def test_without_a_touch_nothing_is_proposed():
+    ambiguous = {"1M": _candles("1M", T0, 30, {13: (111.0, 89.0, 100.0)})}
+    pending = {"1M": _candles("1M", T0, 30)}
+    for bank in (ambiguous, pending):
+        assert _propose(bank)[1] == StructuralProposal()
+    assert _propose(pending, evp=105.0, si=108.0)[1] == StructuralProposal()  # no_levels

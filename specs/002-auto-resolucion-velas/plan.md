@@ -266,6 +266,22 @@ Se usa R = |precio de partida − SI|.
    entre `t_SI` y `t_V` es `<= 1 R`.
 5. Las ventanas se recorren con la misma escalera de 3.1.
 
+**Aclaraciones de T28** (`propose_structural`):
+- **Ventanas medio abiertas:** una vela que abre justo a las 24 h (o a las 48 h) ya no entra.
+- **Revertido:** se mira desde el cierre de la vela del toque. La vela del toque no cuenta, porque su extremo
+  contrario pudo ocurrir antes del toque.
+- **Expansión:** cuenta la vela del toque, porque todo lo que pasa del objetivo en ella ocurrió después de tocarlo.
+  La ventana termina en lo primero que ocurra: `EXPANSION_H` horas o el toque de la invalidación, y la vela de ese
+  toque no cuenta. Las dos ventanas tienen su propia duración (hoy son de 24 h las dos) y se recorre la más larga.
+- **Sweep:** el exceso se mide desde la vela que cruzó la invalidación hasta la que toca el objetivo, las dos
+  incluidas. De la segunda no se sabe si su mínimo fue antes o después del toque, y contarla evita proponer un
+  sweep de más.
+- **Ventana sin velas suficientes:** si el banco todavía no cubre la ventana que decide (24 h después del toque del
+  objetivo, o 48 h después del de la invalidación), el resultado es `pending_candles`. La excepción es que ya se
+  sepa: el precio ya volvió al Mark Price (que tiene prioridad), o ya tocó el objetivo después de la invalidación.
+- **Códigos neutros:** `reverted`, `expansion`, `minimal`, `n/a`, `liquidity_sweep` y `overlap`. Pasarlos a los
+  valores de `StructuralResolution` y `FailureReason` del wizard les toca a T30 y T40.
+
 ### 3.6 MAE/MFE táctico y `could_hit_tp` (RF-9, RF-10)
 
 - **Casos que no se proponen:**
