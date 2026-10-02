@@ -783,10 +783,38 @@
       Mutación: 6 cambios, todos detectados. Dos se agregaron porque al principio no se detectaban: la hora justo en el
       cierre, y el período con 1M y 15M a la vez.
       SUITE: `885 passed, 3 skipped, 97 warnings in 26.29s`; sin `.data/`.
-- [ ] T32. `tools/resolution_report.py`, datos: por cuenta, motivos, coincidencia manual contra automática,
+- [x] T32. `tools/resolution_report.py`, datos: por cuenta, motivos, coincidencia manual contra automática,
       compliance informativo, demora del audit, lista de diferencias, S1/S4 para todos y direccionales con el manual
       al lado, Overlap con B, Mark Price fuera de sus velas, y demora de los retroactivos. (RF-6, RF-3b, RF-17, RF-21)
       Hecho cuando: los tests sobre DBs y velas de fixture verifican cada bloque. SUITE en verde.
+      **Hecho 2026-10-02:** `tools/resolution_report.py` tiene:
+      - `read_manual_audits()`: `mode=ro`, columnas explícitas, y "Open" sin `real_bias_b` cuenta como vacío (N9);
+      - `build_report(accounts_data_dir, bank_root)`, que devuelve un `AccountReport` por cuenta existente con:
+        - total, resueltos, % y motivos faltantes;
+        - la comparación por campo y la lista de los que difieren;
+        - el compliance al lado;
+        - la demora del audit (`audit_registration_time`, o hoy `resolution_time`, menos el toque);
+        - S1 y S4, para todos y para los direccionales, con el win rate manual sobre los mismos análisis;
+        - los Overlap con su B, los Mark Price fuera de sus velas y la demora de los retroactivos con `saved_at`.
+      Agregados de apoyo:
+      - `counted_outcomes()` en `core/outcome_metrics.py`;
+      - `AnalysisRow` lee también `mark_price_time` y `saved_at`, vacías hasta T35;
+      - `AccountResolver.bank_for()`;
+      - los helpers `parse_datetime` y `parse_float` pasan a ser públicos.
+      Decisión de T32: MAE y MFE coinciden si la diferencia es de 0.1% o menos, la misma tolerancia de N16.
+      Tests: 11 en `tests/test_resolution_report.py`, uno por bloque, incluida la cuenta sin archivo y la de reloj sin
+      verificar. Mutación: 7 cambios, todos detectados. Tres se agregaron al fixture porque al principio no se
+      detectaban: un MAE dentro del 0.1%, un `Valid` fuera de la cifra, y `saved_at` en uno no retroactivo.
+      **Prueba de humo en solo lectura con los datos reales** (4 cuentas en 15 s, DBs intactas):
+      - XAU: 75 de 81 resueltos (6 `no_levels`). S1 direccional 23/39 = 59% (manual 24/39); S4 direccional 23/36
+        (3 fuera).
+      - BTC: 22 de 24 resueltos. S1 direccional 9/16.
+      - US500 y US100: todos `clock_unverified`.
+      - **Punto a revisar con el usuario:** en XAU difieren 69 de 75, casi todo por MAE/MFE (41 y 48 de 73) y por
+        Structural Resolution (30 de 74). Los MAE/MFE manuales parecen medir otra ventana que "del ancla al primer
+        toque" (a veces terminan antes y a veces mucho después). El tipo difiere en 12 de 74: 11 son Overlap que la
+        regla N11 marca y el manual no (14 contra 3); solo 1 es un desacuerdo real.
+      SUITE: `896 passed, 3 skipped, 97 warnings in 26.94s`; sin `.data/`.
 - [ ] T33. Salida del reporte en Markdown (inglés) y subcomando `resolution-report`. (RF-6)
       Hecho cuando: el test con `CliRunner` genera el `.md` en `tmp_path`, con los encabezados esperados y código 0, y
       no escribe en ninguna DB (lo cuida el audit hook y un test de `mtime`). SUITE en verde.

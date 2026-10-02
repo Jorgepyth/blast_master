@@ -52,7 +52,7 @@ from tools.p2_backtest import open_readonly_session
 
 # Columnas de `unified_department` que lee el servicio, en este orden (RF-6b: nunca `SELECT *`).
 ANALYSIS_COLUMNS = ("id", "asset", "created_at", "is_backdated", "analysis_start_time", "market_bias",
-                    "edge_validation_price", "structural_invalidation", "mark_price")
+                    "edge_validation_price", "structural_invalidation", "mark_price", "mark_price_time", "saved_at")
 
 # Códigos neutros del resolvedor → valores de los enums del wizard (cli/schemas/audit_efficiency.py).
 RESOLUTION_TYPE_BY_OUTCOME = {
@@ -84,15 +84,17 @@ class AnalysisRow:
     edge_validation_price: Optional[float]
     structural_invalidation: Optional[float]
     mark_price: Optional[float]
+    mark_price_time: Optional[datetime] = None  # columnas de T35: hasta entonces, vacías
+    saved_at: Optional[datetime] = None
 
 
-def _as_datetime(value) -> Optional[datetime]:
+def parse_datetime(value) -> Optional[datetime]:
     if value is None or isinstance(value, datetime):
         return value
     return datetime.fromisoformat(str(value))
 
 
-def _as_float(value) -> Optional[float]:
+def parse_float(value) -> Optional[float]:
     return None if value is None else float(value)
 
 
@@ -110,11 +112,12 @@ def read_analysis_rows(db_path: str) -> List[AnalysisRow]:
         values = {column: None for column in ANALYSIS_COLUMNS}
         values.update(zip(present, row))
         result.append(AnalysisRow(
-            trade_id=values["id"], asset=values["asset"], created_at=_as_datetime(values["created_at"]),
-            is_backdated=bool(values["is_backdated"]), analysis_start_time=_as_datetime(values["analysis_start_time"]),
-            market_bias=values["market_bias"], edge_validation_price=_as_float(values["edge_validation_price"]),
-            structural_invalidation=_as_float(values["structural_invalidation"]),
-            mark_price=_as_float(values["mark_price"])))
+            trade_id=values["id"], asset=values["asset"], created_at=parse_datetime(values["created_at"]),
+            is_backdated=bool(values["is_backdated"]), analysis_start_time=parse_datetime(values["analysis_start_time"]),
+            market_bias=values["market_bias"], edge_validation_price=parse_float(values["edge_validation_price"]),
+            structural_invalidation=parse_float(values["structural_invalidation"]),
+            mark_price=parse_float(values["mark_price"]), mark_price_time=parse_datetime(values["mark_price_time"]),
+            saved_at=parse_datetime(values["saved_at"])))
     return result
 
 
@@ -192,7 +195,8 @@ class AccountResolver:
     def anchor_of(self, row: AnalysisRow) -> datetime:
         return analysis_anchor(row.analysis_start_time, row.created_at, row.is_backdated)
 
-    def _bank(self, symbol: str):
+    def bank_for(self, symbol: str):
+        """`(motivo del reloj o None, velas de la escalera)` del símbolo, leídas una sola vez."""
         if symbol not in self._banks:
             bank_dir = os.path.join(self.bank_root, symbol)
             reason = bank_clock_reason(bank_dir)
@@ -208,7 +212,7 @@ class AccountResolver:
         symbol = self.symbol_map.get(row.asset)
         if symbol is None:
             return AutoProposal(trade_id, None, anchor, REASON_NO_MT5_SYMBOL)
-        clock_reason, candles = self._bank(symbol)
+        clock_reason, candles = self.bank_for(symbol)
         if clock_reason:
             return AutoProposal(trade_id, symbol, anchor, clock_reason)
 

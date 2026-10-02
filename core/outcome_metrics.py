@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Dict, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 from config.auto_resolution import ANCHOR_FALLBACK_MIN, S4_WINDOW_H
 from core.candle_resolution import OUTCOME_CONFIRMED, OUTCOME_INVALIDATED
@@ -80,13 +80,13 @@ class WinRate:
         return self.wins / self.n if self.n else None
 
 
-def _win_rate(
+def _classify(
     outcomes: Sequence[AnalysisOutcome],
     window_h: Optional[float],
     include_backdated: bool,
     directional_only: bool,
-) -> WinRate:
-    wins = n = outside = excluded = 0
+):
+    counted, outside, excluded = [], 0, 0
     for item in outcomes:
         if item.outcome not in _TOUCHED:
             continue
@@ -98,9 +98,26 @@ def _win_rate(
         if window_h is not None and item.hours_to_touch > window_h:
             outside += 1
             continue
-        n += 1
-        wins += item.outcome == OUTCOME_CONFIRMED
-    return WinRate(wins, n, outside, excluded)
+        counted.append(item)
+    return counted, outside, excluded
+
+
+def _win_rate(
+    outcomes: Sequence[AnalysisOutcome],
+    window_h: Optional[float],
+    include_backdated: bool,
+    directional_only: bool,
+) -> WinRate:
+    counted, outside, excluded = _classify(outcomes, window_h, include_backdated, directional_only)
+    wins = sum(item.outcome == OUTCOME_CONFIRMED for item in counted)
+    return WinRate(wins, len(counted), outside, excluded)
+
+
+def counted_outcomes(outcomes: Sequence[AnalysisOutcome], window_h: Optional[float] = None,
+                     include_backdated: bool = False, directional_only: bool = False) -> List[AnalysisOutcome]:
+    """Los análisis que entran en la cifra (S1 con `window_h=None`, S4 con 48): para medir otra cosa sobre los mismos,
+    por ejemplo el win rate manual del reporte (RF-6)."""
+    return _classify(outcomes, window_h, include_backdated, directional_only)[0]
 
 
 def s1(outcomes: Sequence[AnalysisOutcome], include_backdated: bool = False,
