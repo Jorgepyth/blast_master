@@ -2,10 +2,14 @@
 Las horas del análisis en `flow_new_analysis` (spec 002):
 - T37: `analysis_start_time` al confirmar P0 por primera vez, sin cambiar con `RestartFlowException`; la hora tipeada
   en un retroactivo y en un clon [2] (RF-13b gana); la hora de elección en un clon [1] (RF-13, RF-13b, RF-13c).
+- T38: `mark_price_time`, la hora en que se tipea el Mark Price (la hora tipeada del análisis en un retroactivo), y
+  `saved_at`, la hora real de "Confirm & Save", también en un retroactivo (RF-13d, RF-13e, N33).
 
-El reloj es falso (`cli.main._now_gt`): devuelve `at(n)`, donde n es la cantidad de `inquirer.select` ya respondidos.
-Así el test sabe en qué punto del wizard se tomó cada hora (`at(3)` = justo después de asset, P0 Direction y P0
-Strength). Mismo manejo del wizard que tests/test_wizard_safety_net.py (T7).
+El reloj es falso (`cli.main._now_gt`): devuelve `at(n)`, donde n es la cantidad de `inquirer.select` e
+`inquirer.text` ya respondidos. Así el test sabe en qué punto del wizard se tomó cada hora: `at(3)` es justo después
+de asset, P0 Direction y P0 Strength; `at(16)`, después de los 15 selects que van antes del Mark Price y del Mark
+Price mismo; `at(21)`, después de los 18 selects hasta "save" y los 3 textos.
+Mismo manejo del wizard que tests/test_wizard_safety_net.py (T7).
 """
 import datetime
 from unittest.mock import MagicMock, patch
@@ -24,7 +28,7 @@ from tools.database import Base, UnifiedDepartment
 
 BASE = datetime.datetime(2026, 10, 2, 9, 0)
 TYPED = datetime.datetime(2026, 9, 30, 14, 0)
-ANSWERED = {"selects": 0}
+ANSWERED = {"prompts": 0}
 
 
 def at(n):
@@ -41,11 +45,11 @@ def db(monkeypatch):
 
 @pytest.fixture
 def clock(monkeypatch):
-    ANSWERED["selects"] = 0
+    ANSWERED["prompts"] = 0
     calls = []
 
     def fake_now():
-        calls.append(at(ANSWERED["selects"]))
+        calls.append(at(ANSWERED["prompts"]))
         return calls[-1]
 
     monkeypatch.setattr(cli_main, "_now_gt", fake_now)
@@ -57,7 +61,9 @@ def _counting(answers):
 
     def answer(*args, **kwargs):
         value = next(answers)
-        ANSWERED["selects"] += 1
+        if isinstance(value, Exception):
+            raise value
+        ANSWERED["prompts"] += 1
         return value
 
     return answer
@@ -84,7 +90,7 @@ def _run(db, selects, texts=("",) * 3, mandatory_text=None, **kwargs):
             patch("cli.main.handle_visual_lesson_assignment", return_value="nan"), \
             patch("cli.main.flow_pending_audits"), patch("builtins.input", return_value=""):
         select_.return_value = MagicMock(**{"execute.side_effect": _counting(selects)})
-        text_.return_value = MagicMock(**{"execute.side_effect": list(texts)})
+        text_.return_value = MagicMock(**{"execute.side_effect": _counting(texts)})
         cli_main.flow_new_analysis(**kwargs)
     with Session(db) as session:
         return session.scalars(select(UnifiedDepartment)).one()
@@ -145,3 +151,32 @@ def test_a_discarded_analysis_saves_nothing(db, clock):
         cli_main.flow_new_analysis()
     with Session(db) as session:
         assert session.scalars(select(UnifiedDepartment)).all() == []
+
+
+# --- T38: mark_price_time y saved_at ----------------------------------------------------
+
+def test_mark_price_time_is_when_it_is_typed_and_saved_at_is_confirm_and_save(db, clock):
+    record = _run(db, _selects(), texts=("4568.12", "4584", "4520"))
+    assert float(record.mark_price) == 4568.12
+    assert record.mark_price_time == at(16)
+    assert record.saved_at == at(21)
+    assert record.created_at != record.saved_at  # created_at sigue con el default de la DB, sin cambios
+
+
+def test_without_a_mark_price_there_is_no_mark_price_time(db, clock):
+    record = _run(db, _selects(), texts=("", "4584", "4520"))
+    assert record.mark_price is None and record.mark_price_time is None
+    assert record.saved_at == at(21)
+
+
+def test_a_backdated_analysis_uses_the_typed_time_for_the_mark_price_and_the_real_time_for_saved_at(db, clock):
+    record = _run(db, _selects(), texts=("4568.12", "4584", "4520"), backdated_timestamp=TYPED)
+    assert record.mark_price_time == TYPED == record.created_at
+    assert record.saved_at == at(21)  # la hora real, no la tipeada (RF-13e)
+
+
+def test_typing_the_mark_price_again_after_going_back_updates_its_time(db, clock):
+    # Edge Validation Price: el operador vuelve atrás y tipea el Mark Price de nuevo.
+    record = _run(db, _selects(), texts=("4568.12", GoBackException(), "4570.00", "4584", "4520"))
+    assert float(record.mark_price) == 4570.00
+    assert record.mark_price_time == at(17)  # 15 selects, el primer Mark Price y el segundo

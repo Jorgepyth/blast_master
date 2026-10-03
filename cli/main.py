@@ -2683,6 +2683,9 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None, start
     # en un clon [1], la hora de la elección (RF-13c); si no, se fija la primera vez que se confirma la fuerza de P0
     # (RF-13) y no cambia con los reinicios del wizard ni si se vuelve a editar P0.
     analysis_start_time = backdated_timestamp or started_at
+    # RF-13d: cuándo se tipeó el Mark Price. Sobrevive a los reinicios; si el operador vuelve atrás y lo tipea de
+    # nuevo, cuenta la última vez.
+    typed_at = {}
         
     while True:
         try:
@@ -2801,7 +2804,12 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None, start
                 style=INQUIRER_STYLE
             )).execute())
 
-            mark_price_raw = session.prompt("mark_price_raw", lambda: bind_pause(inquirer.text(message="Mark Price (Asset price at analysis completion) [Optional] >", style=INQUIRER_STYLE)).execute())
+            def prompt_mark_price():
+                value = bind_pause(inquirer.text(message="Mark Price (Asset price at analysis completion) [Optional] >", style=INQUIRER_STYLE)).execute()
+                typed_at["mark_price"] = _now_gt()
+                return value
+
+            mark_price_raw = session.prompt("mark_price_raw", prompt_mark_price)
 
             evp_raw = session.prompt("evp_raw", lambda: bind_pause(inquirer.text(message="Edge Validation Price (Target Convergence) [Optional] >", style=INQUIRER_STYLE)).execute())
             si_raw = session.prompt("si_raw", lambda: bind_pause(inquirer.text(message="Structural Invalidation Price (Nullification Threshold) [Optional] >", style=INQUIRER_STYLE)).execute())
@@ -3104,6 +3112,11 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None, start
                             except Exception:
                                 console.print("[bold red]Invalid decimal input for Mark Price. Setting to None.[/bold red]")
                                 new_record.mark_price = None
+                            # RF-13d: en un retroactivo o un clon [2], la hora tipeada del análisis. RF-13e: `saved_at`
+                            # es siempre la hora real, también en un retroactivo (N33).
+                            if new_record.mark_price is not None:
+                                new_record.mark_price_time = backdated_timestamp or typed_at.get("mark_price")
+                            new_record.saved_at = _now_gt()
                             if backdated_timestamp:
                                 new_record.created_at = backdated_timestamp
                                 new_record.updated_at = backdated_timestamp

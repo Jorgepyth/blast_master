@@ -891,9 +891,17 @@
       - **Sin test automático:** la línea que conecta `ask_clone_timestamps()` con `show_unified_detail`, por estar
         anidada. Se revisa en la demo T61.
       SUITE: `945 passed, 3 skipped, 97 warnings in 34.14s`; sin `.data/`.
-- [ ] T38. `flow_new_analysis`: `mark_price_time` (la hora tipeada en retroactivos) y `saved_at` real. (RF-13d,
+- [x] T38. `flow_new_analysis`: `mark_price_time` (la hora tipeada en retroactivos) y `saved_at` real. (RF-13d,
       RF-13e)
       Hecho cuando: los tests verifican las dos horas en un análisis nuevo y en uno retroactivo. SUITE en verde.
+      Evidencia (2026-10-02):
+      - **`mark_price_time`:** el prompt del Mark Price anota la hora apenas se responde. Al guardar, se usa la hora
+        tipeada del análisis si es retroactivo o un clon [2], y si no, la de ese momento. Si se vuelve atrás y el Mark
+        Price se tipea de nuevo, cuenta la última vez. Sin Mark Price (vacío o inválido) queda vacía. El Mark Price no
+        está en el menú "Edit a Field", así que solo cambia volviendo atrás.
+      - **`saved_at`:** la hora real del "Confirm & Save", también en un retroactivo.
+      - **Tests:** 4 nuevos en `tests/test_analysis_times.py` (10 en total). Mutación: 6 de 6 muertos.
+      SUITE: `949 passed, 3 skipped, 97 warnings in 42.23s`; sin `.data/`.
 - [ ] T39. Aviso de una línea del Mark Price después de guardar, sin bloquear nunca. (RF-3)
       Hecho cuando: los tests prueban el aviso con el banco cubriendo, que no hay aviso sin banco, y que el guardado
       ocurre en los dos casos. SUITE en verde.
