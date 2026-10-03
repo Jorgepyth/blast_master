@@ -173,3 +173,62 @@ def test_an_overlap_with_the_same_touch_as_the_manual_audit_is_not_a_conflict(tm
     changes = _by_field(plan_account("000", str(db), str(bank_root)))
     for name in ("resolution_type", "structural_resolution", "failure_reason"):
         assert changes[("efficiency_audit", name)].kind == "unchanged", name
+
+
+# --- T49b: una hora vacía por un motivo temporal se vuelve a intentar ---------------------------------------------------
+
+def _waiting(tmp_path, reason, clock="verified", name="xau.db"):
+    """Un audit viejo al que un backfill anterior le movió la hora del guardado y dejó `resolution_time` vacía."""
+    return _account(tmp_path, clock=clock, name=name, efficiency=dict(
+        resolution_type=CONFIRMED, real_bias_b="BOS", resolution_time=None, audit_registration_time=SAVED_OLD,
+        resolution_time_source=reason))
+
+
+@pytest.mark.parametrize("reason", ["pending_candles", "clock_unverified", "clock_misaligned"])
+def test_a_time_left_empty_for_a_temporary_reason_is_filled_once_the_candles_have_the_touch(tmp_path, reason):
+    db, bank = _waiting(tmp_path, reason)
+    changes = _by_field(plan_account("000", db, bank))
+    time, source = changes[("efficiency_audit", "resolution_time")], changes[("efficiency_audit", "resolution_time_source")]
+    assert (time.kind, time.old_value, time.new_value, time.source) == (KIND_FILL, None, TOUCH, "candles")
+    assert (source.kind, source.old_value, source.new_value) == (KIND_FILL, reason, "candles")
+    assert ("efficiency_audit", "audit_registration_time") not in changes  # la hora del guardado ya se movió
+
+
+def test_a_temporary_reason_that_changes_is_updated_and_one_that_stays_is_left_alone(tmp_path):
+    db, bank = _waiting(tmp_path, "pending_candles", clock="clock_unverified")
+    changes = _by_field(plan_account("000", db, bank))
+    assert ("efficiency_audit", "resolution_time") not in changes
+    source = changes[("efficiency_audit", "resolution_time_source")]
+    assert (source.old_value, source.new_value) == ("pending_candles", "clock_unverified")
+    db2, _ = _waiting(tmp_path, "clock_unverified", clock="clock_unverified", name="same.db")
+    changes = _by_field(plan_account("000", db2, bank))
+    assert ("efficiency_audit", "resolution_time") not in changes
+    assert ("efficiency_audit", "resolution_time_source") not in changes
+
+
+@pytest.mark.parametrize("reason", ["no_levels", "no_history", "ambiguous", "open", "no_mt5_symbol", "corrected"])
+def test_a_final_reason_or_a_time_the_operator_cleared_is_never_filled(tmp_path, reason):
+    db, bank = _waiting(tmp_path, reason)
+    changes = _by_field(plan_account("000", db, bank))
+    assert ("efficiency_audit", "resolution_time") not in changes
+    assert ("efficiency_audit", "resolution_time_source") not in changes
+
+
+def test_an_account_whose_clock_is_verified_later_gets_its_times_in_a_second_run(tmp_path):
+    """El caso de US100: la primera corrida mueve la hora del guardado; la segunda, con el reloj ya verificado, llena
+    la hora del toque; la tercera no cambia nada."""
+    import sqlite3
+    from tools.auto_backfill import apply_plan
+    from tools.candle_bank import build_status_payload, write_bank_status
+    db, bank = _account(tmp_path, clock="clock_unverified", efficiency=dict(
+        resolution_type=CONFIRMED, real_bias_b="BOS", resolution_time=SAVED_OLD))
+    apply_plan(db, plan_account("000", db, bank), run_id="run-1")
+    write_bank_status(f"{bank}/XAUUSD", build_status_payload("XAUUSD", "verified", "overlap", "unverified", "r2",
+                                                             "merged", {}))
+    apply_plan(db, plan_account("000", db, bank), run_id="run-2")
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT resolution_time, resolution_time_source, audit_registration_time "
+                            "FROM efficiency_audit").fetchone() == (
+            "2026-06-01 01:00:00.000000", "candles", "2026-06-02 18:00:00.000000")
+    third = plan_account("000", db, bank)
+    assert third.count(KIND_FILL) == third.count(KIND_LEGACY_MOVE) == 0

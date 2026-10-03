@@ -1171,7 +1171,7 @@
       - **Tests:** `tests/test_backfill_apply.py` (10) y uno más en `tests/test_auto_backfill.py`. Mutación: 9 de 9
         muertos; 2 sobrevivieron al principio y se agregaron sus tests.
       SUITE: `1093 passed, 3 skipped, 144 warnings in 45.61s`; sin `.data/`.
-- [ ] T49b. *(Agregada el 2026-10-03: bug encontrado al medir el backfill sobre copias de las DBs reales.)* Una
+- [x] T49b. *(Agregada el 2026-10-03: bug encontrado al medir el backfill sobre copias de las DBs reales.)* Una
       `resolution_time` vacía con un motivo temporal (`pending_candles`, `clock_unverified`, `clock_misaligned`) se
       vuelve a intentar en la corrida siguiente. Hoy queda trabada: el backfill solo llena filas sin motivo. Afecta a
       los audits viejos de US100 y US500, cuyo reloj todavía no está verificado, y a los audits guardados con
@@ -1180,6 +1180,24 @@
       (con `resolution_time_source = candles`), que cambia de motivo si cambió, que no se repite si sigue igual, y que
       los motivos definitivos (`no_levels`, `no_history`, `ambiguous`, `open`, `no_mt5_symbol`) no se tocan. SUITE en
       verde.
+      Evidencia (2026-10-03):
+      - **`tools/auto_backfill.py`:** `RETRY_TIME_SOURCES` (`pending_candles`, `clock_unverified`, `clock_misaligned`).
+        Una `resolution_time` vacía con uno de esos motivos se vuelve a intentar en cada corrida:
+        - si las velas ya tienen el toque, se llenan la hora y el origen (`candles`), con el motivo anterior como valor
+          viejo en el historial;
+        - si cambió el motivo, se actualiza solo el origen;
+        - si sigue igual, no hay cambio.
+        Un motivo definitivo, o `corrected` (el operador la vació), no se toca. La regla del `legacy_move` no cambia.
+      - **Tests** (`tests/test_auto_backfill.py`, +11):
+        - los tres motivos temporales se llenan cuando hay toque;
+        - un motivo que cambia se actualiza y uno que sigue igual no se repite;
+        - los seis motivos definitivos no se tocan;
+        - de punta a punta, el caso de US100: la primera corrida, con el reloj sin verificar, mueve la hora del
+          guardado; la segunda, ya verificado, llena la hora del toque; la tercera no cambia nada.
+      - **Mutación:** 5 de 5 muertos.
+      - **También cubre los audits del wizard:** desde T43, un audit guardado antes de que llegaran las velas queda
+        con `pending_candles`, que antes tampoco se volvía a intentar.
+      SUITE: `1210 passed, 3 skipped, 405 warnings in 54.26s`; sin `.data/`.
 - [x] T50. Puertas: ensayo sobre una copia temporal con `init_db`, backup de las últimas 24 h, confirmación
       escribiendo `APPLY`, y sus códigos de salida. (RF-11d, R9)
       Hecho cuando: los tests prueban los códigos 3, 4 y 5 y que en esos casos no se escribe nada. SUITE en verde.

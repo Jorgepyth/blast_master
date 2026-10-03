@@ -35,7 +35,13 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from sqlalchemy import create_engine, text
 
-from config.auto_resolution import MARK_PRICE_TOLERANCE, REAL_ACCOUNTS
+from config.auto_resolution import (
+    MARK_PRICE_TOLERANCE,
+    REAL_ACCOUNTS,
+    REASON_CLOCK_MISALIGNED,
+    REASON_CLOCK_UNVERIFIED,
+    REASON_PENDING_CANDLES,
+)
 from tools.auto_resolution import AccountResolver, AutoProposal, parse_datetime, parse_float, tactical_from_candles
 from tools.p2_backtest import open_readonly_session
 
@@ -53,6 +59,10 @@ TACTICAL_COLUMNS = ("id", "trade_id", "order_filled", "entry_time", "exit_time",
 _PRICE_FIELDS = {"structural_mae", "structural_mfe"}
 _R_FIELDS = {"mae_adverse", "mfe_favorable"}
 _TIME_FIELDS = {"resolution_time"}
+# Motivos de una `resolution_time` vacía que se vuelven a intentar en la corrida siguiente (T49b): las velas todavía no
+# llegaban o el reloj no estaba verificado. Los demás (`no_levels`, `no_history`, `ambiguous`, `open`, `no_mt5_symbol`,
+# y `corrected`, que es el operador) son definitivos.
+RETRY_TIME_SOURCES = frozenset({REASON_PENDING_CANDLES, REASON_CLOCK_UNVERIFIED, REASON_CLOCK_MISALIGNED})
 
 
 @dataclass(frozen=True)
@@ -142,7 +152,8 @@ def _efficiency_changes(account: str, row: Dict[str, Any], proposal: AutoProposa
 
 
 def _resolution_time_changes(account: str, row: Dict[str, Any], proposal: AutoProposal) -> List[PlannedChange]:
-    """RF-11c: el `legacy_move` de los audits viejos y la hora del primer toque, con su `resolution_time_source`."""
+    """RF-11c: el `legacy_move` de los audits viejos y la hora del primer toque, con su `resolution_time_source`. Una
+    hora vacía por un motivo temporal (`RETRY_TIME_SOURCES`) se vuelve a intentar en cada corrida (T49b)."""
     trade_id = row["id"]
     current = parse_datetime(row["resolution_time"])
     registered = parse_datetime(row["audit_registration_time"])
@@ -161,10 +172,13 @@ def _resolution_time_changes(account: str, row: Dict[str, Any], proposal: AutoPr
             changes.append(change("resolution_time_source", KIND_FILL, row["resolution_time_source"], source, source))
         return changes
     if current is None:
-        if source is None or row["resolution_time_source"] is not None:
+        previous = row["resolution_time_source"]
+        if source is None or previous == source:
             return []
+        if previous is not None and previous not in RETRY_TIME_SOURCES:
+            return []  # vacía por un motivo definitivo, o porque el operador la vació: no se toca
         changes = [change("resolution_time", KIND_FILL, None, proposed, source)] if proposed is not None else []
-        return changes + [change("resolution_time_source", KIND_FILL, None, source, source)]
+        return changes + [change("resolution_time_source", KIND_FILL, previous, source, source)]
     if proposed is None:
         return []
     return [_compare(account, "efficiency_audit", trade_id, trade_id, "resolution_time", current, proposed)]
