@@ -1033,6 +1033,11 @@
       sin conflictos: los dos lados tocaban el exportador y sus tests en partes distintas). La SUITE sobre la mezcla
       dio `783 passed, 3 skipped`, sin `.data/`. Después, avance rápido de la rama principal a este commit, con las
       mismas verificaciones que en las integraciones anteriores.
+      **4.ª integración 2026-10-03 (aprobada por el usuario: "add the integration"):** avance rápido de `9ffc717` a
+      `da29692`, 11 commits (registro de N43, T25 a T34). Se cortó en T34 a propósito: desde T35, abrir el CLI migra
+      las DBs reales, así que T35 en adelante se integra recién con T58. Mismas verificaciones: ningún archivo del
+      usuario entre los cambiados, `git status` idéntico y los 30 archivos del usuario byte a byte iguales. La SUITE
+      sobre `da29692` es la de T34 (`911 passed`).
 - [ ] T58. 🖐 **Migración de esquema de las 4 DBs reales con las 3 puertas**, antes de correr cualquier comando del
       CLI nuevo en el checkout principal (N41, NFR-1, R9, constitución principio 5):
       1. copiar las 4 `.data/flight_account_*.db` a un directorio temporal, correr `init_db` sobre cada copia, y
