@@ -1082,6 +1082,11 @@
       las DBs reales, así que T35 en adelante se integra recién con T58. Mismas verificaciones: ningún archivo del
       usuario entre los cambiados, `git status` idéntico y los 30 archivos del usuario byte a byte iguales. La SUITE
       sobre `da29692` es la de T34 (`911 passed`).
+      **5.ª integración 2026-10-03 (con el "go" de T58):** avance rápido de `da29692` a `e94c580`, 13 commits: T35 a
+      T39, N45 a N51, T28b, T30b, T62a, T58a y el registro de T58. Recién después de migrar las 4 DBs reales (T58).
+      La SUITE de la rama justo antes dio `997 passed, 3 skipped`, sin `.data/`. Ningún archivo del usuario entre los
+      cambiados, y los 30 quedaron byte a byte iguales. Un `tools/backup.py backup --dry-run` desde el checkout
+      principal detecta el banco (20.8 MB) y B2; el USB no está montado.
 - [x] T58a. *(Agregada el 2026-10-03, N48.)* El banco de velas en el backup 3-2-1: artefacto `candle_bank.tar.gz` en
       local, USB y B2, y su restore en `<destino>/candle_bank/`. (NFR-1)
       Hecho cuando: los tests prueban el archivo (solo los CSV y `status.json` del banco, rutas relativas), la subida
