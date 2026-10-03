@@ -225,6 +225,10 @@ class FirstTouch:
     level: Optional[str] = None
     path_end: Optional[datetime] = None
     horizon_end: Optional[datetime] = None
+    # N46: el toque lo confirmó el operador en su gráfico (excepción); `closest_price` es el precio del banco más
+    # cercano al nivel, en la vela que pasa a ser la del toque.
+    exception: bool = False
+    closest_price: Optional[float] = None
 
 
 def horizon_end(anchor: datetime, one_hour_bars: Sequence[OhlcBar], max_horizon: int = MAX_HORIZON) -> Optional[datetime]:
@@ -351,6 +355,7 @@ def resolve_analysis(
     edge_validation_price: Optional[float],
     structural_invalidation: Optional[float],
     max_horizon: int = MAX_HORIZON,
+    touched_level: Optional[str] = None,
 ) -> AnalysisResolution:
     """
     Resuelve un análisis con las velas del banco (RF-4, RF-4d):
@@ -361,6 +366,9 @@ def resolve_analysis(
          partida (o uno justo en él) → `no_levels`;
       5. primer toque (`resolve_first_touch`) y, si lo hubo, MAE y MFE estructurales: en un long, el `low` más bajo y
          el `high` más alto del camino hasta la vela del toque; en un short, al revés.
+
+    `touched_level` (N46) es el nivel que el operador vio tocado en su gráfico aunque el banco no llegue
+    (`LEVEL_VALIDATION` o `LEVEL_INVALIDATION`): ver `_excepted_touch`.
     """
     if edge_validation_price is None or structural_invalidation is None:
         return AnalysisResolution(REASON_NO_LEVELS)
@@ -376,12 +384,50 @@ def resolve_analysis(
 
     touch = resolve_first_touch(anchor, candles_by_timeframe, thesis, edge_validation_price, structural_invalidation,
                                 max_horizon=max_horizon)
+    if touched_level is not None and touch.level != touched_level:
+        touch = _excepted_touch(anchor, candles_by_timeframe, thesis, edge_validation_price, structural_invalidation,
+                                touch, touched_level)
     mae = mfe = None
     if touch.outcome in (OUTCOME_CONFIRMED, OUTCOME_INVALIDATED):
         low, high = _extremes_through_touch(anchor, candles_by_timeframe, touch)
         mae, mfe = (low, high) if thesis == "long" else (high, low)
     return AnalysisResolution(touch.outcome, start.price, thesis, abs(start.price - structural_invalidation), touch,
                               mae, mfe)
+
+
+def _excepted_touch(
+    anchor: datetime,
+    candles_by_timeframe: Mapping[str, Sequence[Candle]],
+    thesis: str,
+    evp: float,
+    si: float,
+    touch: FirstTouch,
+    touched_level: str,
+) -> FirstTouch:
+    """
+    N46: el toque que confirmó el operador. Es la vela del camino que más se acerca a `touched_level` (en un long, el
+    `high` más alto para la validación y el `low` más bajo para la invalidación; en un short, al revés), antes del
+    primer toque real o, si no lo hubo, hasta donde llegó el camino. En un empate vale la primera. Sin velas en ese
+    tramo, el toque queda como estaba.
+    """
+    limit = touch.touch_time or touch.path_end
+    validation = touched_level == LEVEL_VALIDATION
+    level = evp if validation else si
+    upward = (thesis == "long") == validation  # el nivel queda por encima del precio
+    best = None
+    for bar in forward_path(anchor, candles_by_timeframe):
+        if limit is None or bar.time >= limit:
+            break
+        price = bar.high if upward else bar.low
+        if best is None or abs(level - price) < abs(level - best[1]):
+            best = (bar, price)
+    if best is None:
+        return touch
+    bar, price = best
+    opposite = "short" if thesis == "long" else "long"
+    return FirstTouch(OUTCOME_CONFIRMED if validation else OUTCOME_INVALIDATED, touch_time=bar.time,
+                      timeframe=bar.timeframe, direction=thesis if validation else opposite, level=touched_level,
+                      path_end=bar.end, horizon_end=touch.horizon_end, exception=True, closest_price=price)
 
 
 def _extremes_through_touch(

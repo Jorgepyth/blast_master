@@ -29,6 +29,7 @@ from sqlalchemy import text
 from config.auto_resolution import ANCHOR_FALLBACK_MIN, MARK_PRICE_TOLERANCE, REAL_ACCOUNTS, S4_WINDOW_H
 from core.candle_resolution import MarkPriceCheck, check_mark_price, check_mark_price_in_period
 from core.outcome_metrics import AnalysisOutcome, WinRate, counted_outcomes, s1, s4
+from core.p2_ground_truth import LEVEL_VALIDATION
 from tools.auto_resolution import AccountResolver, AutoProposal, parse_datetime, parse_float
 from tools.p2_backtest import open_readonly_session
 
@@ -131,6 +132,18 @@ class MarkPriceMisfit:
     with_mark_price_time: bool
 
 
+@dataclass(frozen=True)
+class TouchExceptionEntry:
+    """Un toque que confirmó el operador en su gráfico (N46): el nivel, su precio, el precio más cercano del banco y
+    la vela que pasó a ser la del toque."""
+    trade_id: str
+    level: str
+    level_price: float
+    closest_price: float
+    touch_time: datetime
+    note: str
+
+
 @dataclass
 class AccountReport:
     account: str
@@ -146,6 +159,7 @@ class AccountReport:
     overlaps: List[OverlapEntry]
     mark_price_misfits: List[MarkPriceMisfit]
     backdated_delays: List[Tuple[str, float]] = field(default_factory=list)
+    touch_exceptions: List[TouchExceptionEntry] = field(default_factory=list)
 
     @property
     def missing_pct(self) -> Optional[float]:
@@ -177,8 +191,9 @@ def _pair(outcomes: List[AnalysisOutcome], manual: Mapping[str, ManualAudit], wi
     return WinRatePair(rate, valid)
 
 
-def build_account_report(account: str, db_path: str, bank_root: str) -> AccountReport:
-    resolver = AccountResolver(db_path, bank_root, account=account)
+def build_account_report(account: str, db_path: str, bank_root: str,
+                         touch_exceptions: Optional[Mapping[str, tuple]] = None) -> AccountReport:
+    resolver = AccountResolver(db_path, bank_root, account=account, touch_exceptions=touch_exceptions)
     manual = read_manual_audits(db_path)
     proposals = resolver.propose_all()
     rows = {row.trade_id: row for row in resolver.rows}
@@ -214,24 +229,35 @@ def build_account_report(account: str, db_path: str, bank_root: str) -> AccountR
     backdated = [(row.trade_id, (row.saved_at - row.created_at).total_seconds() / 3600)
                  for row in resolver.rows if row.is_backdated and row.saved_at is not None]
 
+    exceptions = []
+    for proposal in proposals:
+        touch = proposal.resolution.first_touch if proposal.resolution else None
+        if touch is not None and touch.exception:
+            row = rows[proposal.trade_id]
+            level_price = row.edge_validation_price if touch.level == LEVEL_VALIDATION else row.structural_invalidation
+            exceptions.append(TouchExceptionEntry(proposal.trade_id, touch.level, level_price, touch.closest_price,
+                                                  touch.touch_time, resolver.touch_exceptions[proposal.trade_id][1]))
+
     return AccountReport(
         account=account, db_name=os.path.basename(db_path), total=len(proposals), resolved=len(resolved),
         missing_reasons=missing, comparisons=[_compare(p, manual.get(p.trade_id)) for p in proposals],
         s1_all=_pair(outcomes, manual, None, False), s4_all=_pair(outcomes, manual, S4_WINDOW_H, False),
         s1_directional=_pair(outcomes, manual, None, True), s4_directional=_pair(outcomes, manual, S4_WINDOW_H, True),
-        overlaps=overlaps, mark_price_misfits=misfits, backdated_delays=backdated,
+        overlaps=overlaps, mark_price_misfits=misfits, backdated_delays=backdated, touch_exceptions=exceptions,
     )
 
 
 def build_report(accounts_data_dir: str, bank_root: str,
-                 real_accounts: Optional[Mapping[str, str]] = None) -> List[AccountReport]:
-    """Un `AccountReport` por cada cuenta de `real_accounts` (por defecto `REAL_ACCOUNTS`) cuyo archivo exista."""
+                 real_accounts: Optional[Mapping[str, str]] = None,
+                 touch_exceptions: Optional[Mapping[str, tuple]] = None) -> List[AccountReport]:
+    """Un `AccountReport` por cada cuenta de `real_accounts` (por defecto `REAL_ACCOUNTS`) cuyo archivo exista.
+    `touch_exceptions` reemplaza a `TOUCH_EXCEPTIONS` (N46); los tests lo pasan."""
     real_accounts = REAL_ACCOUNTS if real_accounts is None else real_accounts
     reports = []
     for account, db_name in real_accounts.items():
         db_path = os.path.join(accounts_data_dir, db_name)
         if os.path.exists(db_path):
-            reports.append(build_account_report(account, db_path, bank_root))
+            reports.append(build_account_report(account, db_path, bank_root, touch_exceptions))
     return reports
 
 
@@ -321,6 +347,17 @@ def _account_markdown(report: AccountReport) -> List[str]:
                      "the registration time is the manual `resolution_time`.")
     else:
         lines.append("No analysis has both a manual audit and a touch.")
+    lines.append("")
+
+    lines += ["### Touch exceptions", ""]
+    if report.touch_exceptions:
+        lines += ["Touches the operator confirmed on their chart although the broker's candles fall short (N46). The "
+                  "touch moves to the closest candle.", ""]
+        lines += _table(("Analysis", "Level", "Level price", "Closest price", "Touch time", "Note"),
+                        [(_short_id(e.trade_id), e.level, e.level_price, e.closest_price, _time(e.touch_time), e.note)
+                         for e in report.touch_exceptions])
+    else:
+        lines.append("No touch exceptions.")
     lines.append("")
 
     lines += ["### Overlaps", ""]

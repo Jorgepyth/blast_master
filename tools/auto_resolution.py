@@ -27,6 +27,7 @@ from config.auto_resolution import (
     MAX_HORIZON,
     MT5_SYMBOL_MAP,
     REASON_CLOCK_UNVERIFIED,
+    TOUCH_EXCEPTIONS,
     REASON_NO_MT5_SYMBOL,
 )
 from core.candle_resolution import (
@@ -215,10 +216,13 @@ class AccountResolver:
     """Resuelve los análisis de la DB de una cuenta. Lee la DB una vez y las velas de cada símbolo una vez."""
 
     def __init__(self, db_path: str, bank_root: str, account: str,
-                 symbol_map: Optional[Mapping[str, str]] = None, max_horizon: int = MAX_HORIZON):
+                 symbol_map: Optional[Mapping[str, str]] = None, max_horizon: int = MAX_HORIZON,
+                 touch_exceptions: Optional[Mapping[str, tuple]] = None):
         self.account = account
         self.bank_root = bank_root
         self.symbol_map = MT5_SYMBOL_MAP if symbol_map is None else symbol_map
+        # N46: id -> (nivel, nota), por defecto los de config/auto_resolution.py.
+        self.touch_exceptions = TOUCH_EXCEPTIONS if touch_exceptions is None else touch_exceptions
         self.max_horizon = max_horizon
         self.rows = read_analysis_rows(db_path)
         self._by_id = {row.trade_id: row for row in self.rows}
@@ -260,8 +264,9 @@ class AccountResolver:
         if clock_reason:
             return AutoProposal(trade_id, symbol, anchor, clock_reason)
 
+        exception = self.touch_exceptions.get(trade_id)
         resolution = resolve_analysis(anchor, candles, row.edge_validation_price, row.structural_invalidation,
-                                      max_horizon=self.max_horizon)
+                                      max_horizon=self.max_horizon, touched_level=exception[0] if exception else None)
         overlap = self._overlap(row, anchor, resolution)
         structural = propose_structural(resolution, candles, row.edge_validation_price, row.structural_invalidation,
                                         row.mark_price, overlap=overlap is not None)

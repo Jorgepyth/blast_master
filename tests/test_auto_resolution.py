@@ -195,3 +195,39 @@ def test_rows_carry_what_the_metrics_need(env):
     _write_db(tmp_path / "account.db", [dict(A, is_backdated=True, market_bias="Bearish")])
     (row,) = read_analysis_rows(str(tmp_path / "account.db"))
     assert row == AnalysisRow("a1", "XAUUSDT.P", T0 + timedelta(minutes=30), True, None, "Bearish", 110.0, 90.0, 101.0)
+
+
+# --- Excepciones de toque (T30b, N46) --------------------------------------------------------------------------------
+
+def test_a_touch_exception_turns_an_untouched_target_into_a_confirmed_touch_at_the_closest_candle(env):
+    tmp_path, bank_root = env
+    # Objetivo 111: el banco llega a 110.5 a la 01:00 y nunca lo toca (pending_candles sin la excepción).
+    analysis = dict(A, evp=111.0)
+    _write_bank(bank_root)
+    _write_db(tmp_path / "account.db", [analysis])
+    plain = AccountResolver(str(tmp_path / "account.db"), str(bank_root), account="000").propose("a1")
+    assert plain.reason == REASON_PENDING_CANDLES
+
+    resolver = AccountResolver(str(tmp_path / "account.db"), str(bank_root), account="000",
+                               touch_exceptions={"a1": ("validation", "touched on the operator's chart")})
+    proposal = resolver.propose("a1")
+
+    assert proposal.resolution_type == ResolutionType.CONFIRMED.value and proposal.reason is None
+    assert proposal.resolution_time == TOUCH
+    assert proposal.resolution.first_touch.exception is True
+
+
+def test_the_configured_exceptions_are_full_ids_with_a_known_level_and_a_note():
+    from config.auto_resolution import TOUCH_EXCEPTIONS
+    from core.p2_ground_truth import LEVEL_INVALIDATION, LEVEL_VALIDATION
+    assert "4b17b903-407d-4a5e-b238-1491ab64679b" in TOUCH_EXCEPTIONS
+    for trade_id, (level, note) in TOUCH_EXCEPTIONS.items():
+        assert len(trade_id) == 36 and level in (LEVEL_VALIDATION, LEVEL_INVALIDATION) and note
+
+
+def test_by_default_the_resolver_uses_the_configured_exceptions(env, monkeypatch):
+    import tools.auto_resolution as auto_resolution
+    tmp_path, bank_root = env
+    monkeypatch.setattr(auto_resolution, "TOUCH_EXCEPTIONS", {"a1": ("validation", "note")})
+    proposal = _resolver(tmp_path, bank_root, [dict(A, evp=111.0)]).propose("a1")
+    assert proposal.resolution_type == ResolutionType.CONFIRMED.value

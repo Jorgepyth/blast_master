@@ -767,3 +767,64 @@ def test_without_mark_price_time_the_range_of_the_20_minutes_before_saving_is_us
                                       {"1M": one_minute, "15M": [Candle(T0, 100.0, 104.0, 96.0, 100.0),
                                                                  Candle(T0 + timedelta(minutes=15), 100.0, 104.0,
                                                                         96.0, 100.0)]}).fits is False
+
+
+# --- Excepciones de toque (T30b, N46) ------------------------------------------------------------------------------
+# El operador confirma en su gráfico que un nivel se tocó aunque el banco (el feed del broker) no llegue: el toque pasa
+# a la vela de máximo acercamiento a ese nivel, antes del primer toque real o hasta donde llega el camino.
+
+def _near_miss_bank(specials, n=60):
+    return {"1M": _candles("1M", T0, n, specials)}
+
+
+def test_an_exception_moves_the_touch_to_the_closest_candle_before_the_real_first_touch():
+    # 00:20 llega a 109.9 (no toca 110); 00:25 vuelve a 109.9 (empate: vale la primera); 00:40 toca la invalidación.
+    bank = _near_miss_bank({20: (109.9, 99.0, 100.0), 25: (109.9, 99.0, 100.0), 40: (101.0, 89.5, 100.0)})
+    assert resolve_analysis(ANCHOR, bank, 110.0, 90.0).outcome == OUTCOME_INVALIDATED
+
+    resolution = resolve_analysis(ANCHOR, bank, 110.0, 90.0, touched_level=LEVEL_VALIDATION)
+
+    touch = resolution.first_touch
+    assert resolution.outcome == OUTCOME_CONFIRMED
+    assert (touch.touch_time, touch.timeframe, touch.level, touch.direction) == (
+        T0 + timedelta(minutes=20), "1M", LEVEL_VALIDATION, "long")
+    assert (touch.exception, touch.closest_price, touch.path_end) == (True, 109.9, T0 + timedelta(minutes=21))
+    assert (resolution.structural_mae, resolution.structural_mfe) == (99.0, 109.9)  # hasta la vela de la excepción
+    mirrored = resolve_analysis(ANCHOR, _mirror(bank), 90.0, 110.0, touched_level=LEVEL_VALIDATION)
+    assert (mirrored.outcome, mirrored.first_touch.direction, mirrored.first_touch.closest_price) == (
+        OUTCOME_CONFIRMED, "short", 200 - 109.9)
+
+
+def test_an_exception_without_any_real_touch_uses_the_whole_path():
+    bank = _near_miss_bank({20: (109.9, 99.0, 100.0)}, n=30)  # el banco termina sin toques: pending_candles
+    assert resolve_analysis(ANCHOR, bank, 110.0, 90.0).outcome == REASON_PENDING_CANDLES
+    resolution = resolve_analysis(ANCHOR, bank, 110.0, 90.0, touched_level=LEVEL_VALIDATION)
+    assert resolution.outcome == OUTCOME_CONFIRMED and resolution.first_touch.touch_time == T0 + timedelta(minutes=20)
+
+
+def test_an_exception_can_also_confirm_the_invalidation():
+    bank = _near_miss_bank({20: (101.0, 90.2, 100.0), 40: (110.5, 99.0, 100.0)})
+    resolution = resolve_analysis(ANCHOR, bank, 110.0, 90.0, touched_level=LEVEL_INVALIDATION)
+    assert resolution.outcome == OUTCOME_INVALIDATED
+    assert (resolution.first_touch.direction, resolution.first_touch.closest_price) == ("short", 90.2)
+
+
+def test_an_exception_for_the_level_the_bank_already_touches_changes_nothing():
+    bank = _near_miss_bank({20: (110.5, 99.0, 100.0)})
+    assert resolve_analysis(ANCHOR, bank, 110.0, 90.0, touched_level=LEVEL_VALIDATION) == resolve_analysis(
+        ANCHOR, bank, 110.0, 90.0)
+
+
+def test_an_exception_without_candles_after_the_anchor_changes_nothing():
+    bank = _near_miss_bank({}, n=5)
+    late = T0 + timedelta(hours=2)  # el banco termina antes del ancla
+    assert resolve_analysis(late, bank, 110.0, 90.0, touched_level=LEVEL_VALIDATION) == resolve_analysis(
+        late, bank, 110.0, 90.0)
+
+
+def test_the_candle_of_the_real_touch_is_not_a_candidate_for_the_exception():
+    # La vela de las 00:40 toca la invalidación y además llega a 109.95: dentro de esa vela no se sabe el orden, así
+    # que la excepción queda en la de las 00:20 (109.9), anterior al toque real.
+    bank = _near_miss_bank({20: (109.9, 99.0, 100.0), 40: (109.95, 89.5, 100.0)})
+    resolution = resolve_analysis(ANCHOR, bank, 110.0, 90.0, touched_level=LEVEL_VALIDATION)
+    assert resolution.first_touch.touch_time == T0 + timedelta(minutes=20)

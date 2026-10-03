@@ -780,11 +780,25 @@
       Las DBs quedaron byte a byte iguales. Los 14 Overlap de XAU son los mismos 14 de `analisis-overlap-2d.md`; en
       BTC hay uno más que el 2026-09-27 (análisis posteriores).
       SUITE: `873 passed, 3 skipped, 97 warnings in 31.94s`; sin `.data/`.
-- [ ] T30b. *(Agregada el 2026-10-03, N46.)* Excepciones de toque por análisis (`TOUCH_EXCEPTIONS`): el toque pasa a
+- [x] T30b. *(Agregada el 2026-10-03, N46.)* Excepciones de toque por análisis (`TOUCH_EXCEPTIONS`): el toque pasa a
       la vela de máximo acercamiento al nivel confirmado por el operador, y el reporte lo marca. Primera: `4b17b903`.
       (RF-4, RF-6)
       Hecho cuando: los tests prueban la excepción con el otro nivel tocado después, sin toque, con el mismo nivel ya
       tocado (no cambia nada) y la marca en el reporte. SUITE en verde.
+      Evidencia (2026-10-03):
+      - **Configuración:** `TOUCH_EXCEPTIONS` en `config/auto_resolution.py` (id completo → nivel y nota).
+      - **Resolvedor:** `resolve_analysis(touched_level=...)` y `_excepted_touch()`. La vela candidata es anterior al
+        toque real; la del toque real queda fuera porque dentro de ella no se sabe el orden (la mutación lo mostró y se
+        agregó el test). Hay empate, gana la primera. Si el banco ya toca ese nivel, no cambia nada. `FirstTouch`
+        ganó `exception` y `closest_price`.
+      - **Servicio y reporte:** `AccountResolver(touch_exceptions=...)` usa por defecto los de la configuración, y el
+        reporte tiene una sección "Touch exceptions".
+      - **Tests:** 6 en `tests/test_candle_resolution.py`, 3 en `tests/test_auto_resolution.py` y 1 en
+        `tests/test_resolution_report.py`. Mutación: 12 de 12 muertos (3 sobrevivieron al principio y se agregaron
+        2 tests).
+      - **Datos reales, en solo lectura:** `4b17b903` pasa a Confirmed a las 08:06 (4369.62 contra 4370). XAU S1
+        todos 38/68 → 39/68; con retroactivos, 45/75 → 46/75. Los direccionales no cambian, porque es Choppy.
+      SUITE: `968 passed, 3 skipped, 97 warnings in 57.50s`; sin `.data/`.
 - [x] T31. Chequeo del Mark Price: escalera 1M → 5M → 15M con ±0.1% y versión por período. (RF-3, RF-3b)
       Hecho cuando: los tests prueban que coincide en 1M, que coincide recién en 15M, y que queda fuera (advertencia),
       más la versión por período para filas sin `mark_price_time`. SUITE en verde.

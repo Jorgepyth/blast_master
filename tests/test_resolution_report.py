@@ -154,3 +154,22 @@ def test_the_report_never_writes(tmp_path):
     before = (tmp_path / "xau.db").read_bytes()
     build_report(str(tmp_path), str(bank_root), real_accounts={"000": "xau.db"})
     assert (tmp_path / "xau.db").read_bytes() == before
+
+
+def test_touch_exceptions_are_listed_with_their_level_time_closest_price_and_note(tmp_path):
+    bank_root = tmp_path / "bank"
+    bank_root.mkdir()
+    _write_bank(bank_root)
+    _write_db(tmp_path / "xau.db", [{"id": "e1", "created_at": T0 + timedelta(minutes=30), "evp": 111.0}])
+    (xau,) = build_report(str(tmp_path), str(bank_root), real_accounts={"000": "xau.db"},
+                          touch_exceptions={"e1": ("validation", "touched 111 on the operator's chart")})
+    (entry,) = xau.touch_exceptions
+    assert (entry.trade_id, entry.level, entry.touch_time, entry.level_price, entry.closest_price, entry.note) == (
+        "e1", "validation", TOUCH, 111.0, 110.5, "touched 111 on the operator's chart")
+    from tools.resolution_report import render_markdown
+    markdown = render_markdown([xau], generated_at=T0)
+    assert "### Touch exceptions" in markdown
+    assert "| e1 | validation | 111.00 | 110.50 | 2026-06-01 01:00 | touched 111 on the operator's chart |" in markdown
+    assert "No touch exceptions." in render_markdown(
+        build_report(str(tmp_path), str(bank_root), real_accounts={"000": "xau.db"}, touch_exceptions={}),
+        generated_at=T0)

@@ -84,6 +84,21 @@ MT5_SYMBOL_MAP = {
 }
 
 # --------------------------------------------------------------------------
+# Excepciones de toque (N46)
+# --------------------------------------------------------------------------
+
+# Análisis en los que el operador confirmó en su gráfico que un nivel se tocó, aunque el banco (el feed del broker en
+# MT5) no llegue: id completo -> (nivel, nota). El nivel es "validation" o "invalidation" (los LEVEL_* de
+# core/p2_ground_truth.py). El resolvedor toma como toque la vela de máximo acercamiento a ese nivel, y el reporte la
+# lista. Los niveles guardados en la DB no se cambian. La nota se muestra en el reporte (en inglés, N30).
+TOUCH_EXCEPTIONS = {
+    "4b17b903-407d-4a5e-b238-1491ab64679b": (
+        "validation",
+        "Touched 4370 on the operator's chart; the broker's high was 4369.62 at 08:06 (confirmed 2026-10-03).",
+    ),
+}
+
+# --------------------------------------------------------------------------
 # Registro prospectivo del P2 sistemático (N38, N42)
 # --------------------------------------------------------------------------
 
