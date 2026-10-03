@@ -213,6 +213,12 @@ def _overlap_limit(resolution: AnalysisResolution) -> Optional[datetime]:
     return touch.path_end
 
 
+def propose_for_trade(db_path: str, trade_id: str, bank_root: str) -> AutoProposal:
+    """La propuesta de un solo análisis, para los wizards (T41). Lee la DB de la cuenta en solo lectura y las velas
+    de su símbolo; la cuenta para el Overlap es la misma DB."""
+    return AccountResolver(db_path, bank_root, account=os.path.basename(db_path)).propose(trade_id)
+
+
 class AccountResolver:
     """Resuelve los análisis de la DB de una cuenta. Lee la DB una vez y las velas de cada símbolo una vez."""
 

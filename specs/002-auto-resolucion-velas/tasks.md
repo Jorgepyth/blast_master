@@ -996,10 +996,19 @@
       - **Tests:** `tests/test_prompt_defaults.py`, 13 tests. Mutación: 9 de 9 muertos; uno sobrevivió al principio y
         se agregó un test con un `Enum` común.
       SUITE: `1018 passed, 3 skipped, 97 warnings in 47.16s` (más el test nuevo); sin `.data/`.
-- [ ] T41. Efficiency, parte 1: pedir la propuesta al abrir el wizard y mostrar el motivo en una línea cuando no la
+- [x] T41. Efficiency, parte 1: pedir la propuesta al abrir el wizard y mostrar el motivo en una línea cuando no la
       hay. (RF-7f, RF-5b)
       Hecho cuando: los tests prueban "Still open according to candles", `pending_candles` y `clock_unverified`, y que
       los prompts siguen sin default. SUITE en verde.
+      Evidencia (2026-10-03):
+      - **Servicio:** `propose_for_trade()` en `tools/auto_resolution.py` lee la DB de la cuenta activa en solo lectura
+        y el banco.
+      - **Wizard:** `efficiency_proposal()` la pide una sola vez antes de los prompts y nunca bloquea: un error da
+        `None`. `proposal_status_line()` arma la línea en inglés: "Still open according to candles", "Candles: no
+        proposal (<motivo>)" o "Candles: no proposal (unavailable)".
+      - **Tests:** `tests/test_efficiency_proposals.py`, 5 tests. Mutación: 4 de 4 muertos. La red de seguridad de T5
+        sigue en verde.
+      SUITE: `1024 passed, 3 skipped, 105 warnings in 38.20s`; sin `.data/`.
 - [ ] T42. Efficiency, parte 2: defaults `(auto)` en Resolution Type, Structural Resolution, Failure Reason y
       Structural MAE/MFE. (RF-7, RF-7e, RF-8 a RF-8d)
       Hecho cuando: los tests prueban que cada default llega a su prompt, que aceptar guarda el valor, que corregir

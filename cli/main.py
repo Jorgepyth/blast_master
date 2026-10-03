@@ -2739,6 +2739,30 @@ def warn_if_mark_price_off(asset, mark_price, mark_price_time):
         )
 
 
+def efficiency_proposal(trade_id):
+    """Spec 002 (RF-7, RF-7f): la propuesta de las velas para el audit de un análisis de la cuenta activa, o `None`
+    si no se pudo pedir. Es solo una ayuda: cualquier error se registra y el wizard sigue como siempre."""
+    try:
+        import config.auto_resolution as auto_cfg
+        import tools.auto_resolution as auto_resolution
+        db_path = get_active_engine().url.database
+        return auto_resolution.propose_for_trade(db_path, trade_id, auto_cfg.CANDLE_BANK_DIR)
+    except Exception as exc:
+        logging.info("Candle proposal unavailable for %s: %s", trade_id, exc)
+        return None
+
+
+def proposal_status_line(proposal):
+    """La línea que explica por qué no hay propuesta (RF-7f, RF-5b), en inglés (N30). `None` si hay propuesta."""
+    if proposal is None:
+        return "Candles: no proposal (unavailable)"
+    if proposal.reason == "open":
+        return "Still open according to candles"
+    if proposal.reason:
+        return f"Candles: no proposal ({proposal.reason})"
+    return None
+
+
 def ask_clone_timestamps():
     """
     El modo de hora de un clon: `(hora tipeada, None)` con "[2] Enter Custom/Backdated Time", y `(None, hora de la
@@ -3481,6 +3505,13 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
             bias_a = StructuralBias(bias_a_val)
         except ValueError:
             bias_a = StructuralBias.NO_BIAS_CHOPPY
+
+        # Spec 002 (T41): la propuesta de las velas se pide una sola vez, antes de los prompts; si no la hay, una línea
+        # con el motivo y los prompts quedan como siempre.
+        proposal = efficiency_proposal(trade_id)
+        status_line = proposal_status_line(proposal)
+        if status_line:
+            console.print(status_line, style="yellow", markup=False, highlight=False, soft_wrap=True)
 
         session = AuditSession(trade_id, "eff")
         while True:
