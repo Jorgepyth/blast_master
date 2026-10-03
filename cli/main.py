@@ -357,6 +357,12 @@ class FlightSessionManager:
                 try: os.remove(db_path)
                 except Exception: pass
 
+def _now_gt() -> datetime.datetime:
+    """La hora de ahora en GT naive (UTC−6, sin tzinfo), igual que `created_at` (tools/database.py). Las horas del
+    análisis de la spec 002 (RF-13 a RF-13e) salen de acá; los tests la reemplazan por un reloj falso."""
+    return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-6))).replace(tzinfo=None)
+
+
 class PauseAuditException(Exception):
     pass
 
@@ -2459,19 +2465,7 @@ def flow_review_analysis():
             return
         elif action == "clone":
             try:
-                ts_choice = inquirer.select(
-                    message="Select Timestamp mode for cloned trade >",
-                    choices=[
-                        Choice("current", name="[1] Use Current System Time"),
-                        Choice("custom", name="[2] Enter Custom/Backdated Time")
-                    ],
-                    pointer=">",
-                    qmark=""
-                ).execute()
-
-                backdated_ts = None
-                if ts_choice == "custom":
-                    backdated_ts = get_mandatory_datetime("Enter Target Timestamp", allow_cancel=True)
+                backdated_ts, started_at = ask_clone_timestamps()
 
                 macro_state = {
                     "asset": record["asset"],
@@ -2496,7 +2490,7 @@ def flow_review_analysis():
                 input("Press Enter to continue...")
                 return
 
-            flow_new_analysis(backdated_timestamp=backdated_ts, cloned_state=macro_state)
+            flow_new_analysis(backdated_timestamp=backdated_ts, cloned_state=macro_state, started_at=started_at)
             return
 
     while True:
@@ -2657,13 +2651,38 @@ def _dir_icon(d):
 def _str_icon(s):
     return "●●●" if s == "Strong" else "●●○" if s == "Mid" else "●○○"
 
-def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
+def ask_clone_timestamps():
+    """
+    El modo de hora de un clon: `(hora tipeada, None)` con "[2] Enter Custom/Backdated Time", y `(None, hora de la
+    elección)` con "[1] Use Current System Time", que es el inicio del análisis clonado (RF-13c, N6). Cancelar la hora
+    tipeada levanta `GoBackException`.
+    """
+    ts_choice = inquirer.select(
+        message="Select Timestamp mode for cloned trade >",
+        choices=[
+            Choice("current", name="[1] Use Current System Time"),
+            Choice("custom", name="[2] Enter Custom/Backdated Time")
+        ],
+        pointer=">",
+        qmark=""
+    ).execute()
+    if ts_choice == "custom":
+        return get_mandatory_datetime("Enter Target Timestamp", allow_cancel=True), None
+    return None, _now_gt()
+
+
+def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None, started_at=None):
     trade_id = str(uuid.uuid4())
     console.print(f"\n[muted]Initialized new unified trade context: {trade_id}[/muted]")
     
     session = AnalysisSession(trade_id)
     if cloned_state:
         session.state.update(cloned_state)
+
+    # Spec 002: el inicio del análisis. En un retroactivo o un clon [2] es la hora tipeada, que gana (RF-13b, N26);
+    # en un clon [1], la hora de la elección (RF-13c); si no, se fija la primera vez que se confirma la fuerza de P0
+    # (RF-13) y no cambia con los reinicios del wizard ni si se vuelve a editar P0.
+    analysis_start_time = backdated_timestamp or started_at
         
     while True:
         try:
@@ -2699,6 +2718,8 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
             p0_thesis = session.prompt("p0_thesis", get_mandatory_text, "P0 Thesis", multiline=True, default=p0_template)
             p0_dir = session.prompt("p0_dir", get_enum_choice, "P0 Direction", Direction)
             p0_str = session.prompt("p0_str", get_enum_choice, "P0 Strength", Strength)
+            if analysis_start_time is None:
+                analysis_start_time = _now_gt()
             
             p2_template = (
                 "20EMA: \n"
@@ -3064,7 +3085,8 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None):
                                 long_prob=tactical.long_prob,
                                 short_prob=tactical.short_prob,
                                 no_trade_prob=tactical.no_trade_prob,
-                                is_backdated=backdated_timestamp is not None
+                                is_backdated=backdated_timestamp is not None,
+                                analysis_start_time=analysis_start_time,
                             )
                             
                             evp_val = session.state.get("evp_raw", "")

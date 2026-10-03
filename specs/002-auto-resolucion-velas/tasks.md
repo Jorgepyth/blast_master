@@ -874,10 +874,23 @@
       siguen en verde. Mutación: 5 de 5 muertos. El wizard todavía guarda `resolution_time = now()` y nada en las
       columnas nuevas; eso lo cambia T43.
       SUITE: `939 passed, 3 skipped, 97 warnings in 33.07s`; sin `.data/`.
-- [ ] T37. `flow_new_analysis`: `analysis_start_time` al confirmar P0 por primera vez, sin cambiar con
+- [x] T37. `flow_new_analysis`: `analysis_start_time` al confirmar P0 por primera vez, sin cambiar con
       `RestartFlowException`; hora tipeada en retroactivo y clon [2] (RF-13b gana); hora de elección en clon [1].
       (RF-13, RF-13b, RF-13c)
       Hecho cuando: los tests cubren los 4 casos y la red de seguridad de T7 sigue en verde. SUITE en verde.
+      Evidencia (2026-10-02):
+      - **Reloj:** `_now_gt()`, en GT naive como `created_at`.
+      - **Clon:** la elección del modo de hora pasó a `ask_clone_timestamps()`, que devuelve `(hora tipeada, None)` o
+        `(None, hora de la elección)`. Así se puede probar fuera de la función anidada `show_unified_detail`.
+      - **`flow_new_analysis(started_at=...)`:** el valor inicial es `backdated_timestamp or started_at`. Si no hay
+        ninguno, se fija la primera vez que vuelve el prompt de la fuerza de P0, y nunca se sobrescribe.
+      - **Tests:** `tests/test_analysis_times.py`, 6 tests: los 4 casos, la vuelta atrás que vuelve a pedir P0 y el
+        descarte. El reloj falso devuelve una hora atada a la cantidad de prompts respondidos, así que el test
+        distingue "al confirmar P0" de "al abrir el wizard". Mutación: 7 de 7 muertos. La red de seguridad de T7 sigue
+        en verde.
+      - **Sin test automático:** la línea que conecta `ask_clone_timestamps()` con `show_unified_detail`, por estar
+        anidada. Se revisa en la demo T61.
+      SUITE: `945 passed, 3 skipped, 97 warnings in 34.14s`; sin `.data/`.
 - [ ] T38. `flow_new_analysis`: `mark_price_time` (la hora tipeada en retroactivos) y `saved_at` real. (RF-13d,
       RF-13e)
       Hecho cuando: los tests verifican las dos horas en un análisis nuevo y en uno retroactivo. SUITE en verde.
