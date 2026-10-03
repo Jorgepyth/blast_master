@@ -508,6 +508,15 @@ def sync_symbol(
                 write_sync_status(bank_dir, result)
             except Exception as exc:  # noqa: BLE001
                 result.error = f"{result.error or ''} (status.json not written: {exc})".strip()
+            if result.result == SYNC_RESULT_MERGED:
+                # RF-12b (T56): el catch-up del registro del P2, con el banco recién fusionado y su candado tomado.
+                # Nunca cambia el resultado del export.
+                try:
+                    from tools.p2_model_feedback import catch_up
+                    logged = catch_up(mt5_symbol, accounts_data_dir, bank_root, real_accounts, symbol_map)
+                    result.p2_logged, result.p2_warnings = len(logged.written), logged.warnings
+                except Exception as exc:  # noqa: BLE001
+                    result.p2_error = f"{type(exc).__name__}: {exc}"
             try:  # N47: con el candado del símbolo tomado; nunca cambia el resultado del export
                 pruned = prune_incoming_runs(incoming_root, mt5_symbol, protect=result.run_id)
                 result.pruned_runs, result.prune_skipped = pruned.removed, pruned.skipped
@@ -532,7 +541,8 @@ def exit_code_for(result: SyncResult) -> int:
 
 def format_result_line(result: SyncResult) -> str:
     """Una línea en inglés (N30). `export_failed` y `locked` son los "skipped"
-    de RF-20e/RF-20f. Al final, lo que hizo la retención de `_incoming` (N47)."""
+    de RF-20e/RF-20f. Al final, lo que hizo la retención de `_incoming` (N47) y el
+    catch-up del registro del P2 (T56): cuántas líneas, nunca qué dice el modelo."""
     line = _base_result_line(result)
     if result.pruned_runs:
         line += f"; removed old export runs: {', '.join(result.pruned_runs)}"
@@ -540,6 +550,12 @@ def format_result_line(result: SyncResult) -> str:
         line += f"; kept old export runs with other files inside: {', '.join(result.prune_skipped)}"
     if result.prune_error:
         line += f"; could not remove old export runs ({result.prune_error})"
+    if result.p2_logged:
+        line += f"; P2 model log: {result.p2_logged} new line{'s' if result.p2_logged != 1 else ''}"
+    if result.p2_warnings:
+        line += f"; P2 model log skipped: {', '.join(result.p2_warnings)}"
+    if result.p2_error:
+        line += f"; P2 model log failed ({result.p2_error})"
     return line
 
 

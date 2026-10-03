@@ -197,6 +197,19 @@ test lo verifica (RF-18).
   se lee y se agrega, para no duplicar líneas. Si una escritura anterior quedó cortada, se termina esa línea antes de
   agregar la nueva.
 
+**Aclaraciones de T56 (2026-10-03):**
+- **Sin velas no se escribe.** RF-12 y RF-12b registran cuando el banco cubre el ancla. El guardado y el catch-up no
+  escriben una línea nueva con `pending_candles` ni con un reloj sin verificar: el catch-up siguiente vuelve a probar.
+  `supersedes` sigue en el código para las líneas reintentables que ya existan.
+- **Primero se calcula, después se agrega.** Se decide y se calcula sin tocar el archivo, así que si no hay nada que
+  escribir ni se crea. Después se toma el archivo con el candado y se saltea el par que otro proceso haya escrito
+  mientras tanto.
+- **Solo cuentas reales:** el guardado registra solo si la DB activa es una de `REAL_ACCOUNTS`. Una Flight Session
+  nunca entra al registro.
+- **`p2-model`:** el análisis se busca en las cuentas reales por id completo o por un prefijo único (los 8 caracteres
+  que muestra el CLI), y un id exacto gana. Lo que no está registrado se calcula en el ancla de la spec (N4), también
+  para un análisis histórico, que se marca como "never logged".
+
 - **Cómo se suma un modelo H más adelante** (fuera de esta spec): se define `MODEL_H` en `tools/p2_backtest.py` con
   su test, se agrega a `MODELS`, y se suma `"H": "<fecha del día>"` a `P2_LOG_MODELS`. No hace falta tocar
   `tools/p2_model_feedback.py`. Si H usa indicadores que hoy no se calculan (EMA 50, RSI, ATR), antes hay que

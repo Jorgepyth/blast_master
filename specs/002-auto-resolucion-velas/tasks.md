@@ -1315,7 +1315,7 @@
         de XAU, en el ancla de los 3 últimos análisis de XAU, da `ok` en 0.1 s, con 1480 velas de 1W y P2 crudos de
         0.0, 0.16 y −0.37 (reescalados 0, 0 y −1).
       SUITE: `1178 passed, 3 skipped, 311 warnings in 63.22s`; sin `.data/`.
-- [ ] T56. Hooks: registrar al guardar un análisis (si hay velas), catch-up en `candle_sync` después de cada fusión,
+- [x] T56. Hooks: registrar al guardar un análisis (si hay velas), catch-up en `candle_sync` después de cada fusión,
       y el comando `p2-model --trade-id ID [--model NAME]`. (RF-12, RF-12b, RF-12d)
       Hecho cuando: los tests prueban:
       - que guardar con velas registra y sin velas no;
@@ -1328,6 +1328,39 @@
       - que el wizard no muestra nada del modelo.
 
       SUITE en verde.
+      Evidencia (2026-10-03):
+      - **`tools/p2_model_feedback.py`:**
+        - `log_on_save(db_path, trade_id)`, solo para cuentas de `REAL_ACCOUNTS` (`account_of`);
+        - `catch_up(symbol, ...)`, para todas las cuentas reales y solo los análisis de ese símbolo;
+        - `find_analysis()` y `model_views()` para `p2-model`;
+        - `log_account(write_pending=False)`: los disparos no escriben líneas sin velas.
+        - `log_account` ahora calcula primero y agrega después, con el candado; ver las aclaraciones de T56 en
+          `plan.md` §2.5.
+      - **`tools/candle_sync.py`:** después de cada fusión, con el candado del símbolo tomado, corre el catch-up. La
+        línea del export suma `P2 model log: N new lines` (cuántas, nunca qué dice el modelo), los avisos de RF-12e o
+        el error. Nada de esto cambia el resultado del export.
+      - **`cli/main.py`:**
+        - `log_p2_models_on_save()` después de guardar, junto al export de T52. Solo muestra los avisos de RF-12e.
+        - El comando `p2-model --trade-id ID [--model NAME]` muestra una línea por modelo, por ejemplo
+          `D (logged 2026-10-03 13:00): P2 +1.00 -> +2 | 1W +1 | 1D +1 | ...`. Lo que falta se calcula a pedido como
+          `not logged`. Un análisis o modelo desconocido, o un prefijo ambiguo, sale con 1.
+      - **Tests:** `tests/test_p2_model_hooks.py` (20):
+        - guardar con velas registra, sin velas no, y la salida del wizard es idéntica en los dos casos (mismos ids);
+        - una Flight Session no se registra;
+        - el aviso `unknown_model` con D registrado, y un registro que falla no frena el guardado;
+        - el catch-up registra una vez por modelo, solo el símbolo fusionado, nunca históricos, retroactivos ni clones
+          [2] ni anteriores al alta, y sin escribir pendientes hasta que el banco cubre;
+        - sumar `H_TEST` deja las líneas de D byte a byte iguales;
+        - un guardado y un catch-up a la vez escriben la línea una sola vez;
+        - el catch-up corre después de una fusión real de `candle_sync` (con un exportador falso) y no sin fusión, y si
+          falla, la fusión se mantiene;
+        - `p2-model`: la línea registrada, los modelos que faltan y `--model A` sin escribir el registro (bytes
+          iguales), un histórico "never logged", y los códigos 1;
+        - un id exacto gana sobre otro más largo que empieza igual.
+      - **Mutación:** 21 de 21 muertos.
+      - **Lo que encontró el test de guardar sin velas:** `log_account` creaba el archivo vacío aunque no tuviera nada
+        que escribir, porque lo abría para leer con el candado. Por eso ahora calcula primero y agrega después.
+      SUITE: `1198 passed, 3 skipped, 405 warnings in 63.26s`; sin `.data/`.
 
 ## Etapa 10 — Datos reales, demos y validación
 

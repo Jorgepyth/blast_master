@@ -1518,6 +1518,59 @@ def backfill_command(ctx, do_apply, accounts, hide_unchanged):
         ctx.exit(code)
 
 
+# --- Registro del P2 sistemático (spec 002, T56) ------------------------------------
+# Solo presentación (RF-12d): la lógica vive en tools/p2_model_feedback.py. Nunca escribe el registro: lo escriben el
+# guardado de un análisis y el catch-up después de cada export.
+P2_MODEL_EXIT_UNKNOWN = 1
+
+
+def _bias_text(bias):
+    return "?" if bias is None else f"{bias:+d}" if bias else "0"
+
+
+def p2_model_line(view):
+    """Una línea de `p2-model` por modelo: la registrada, o la calculada a pedido marcada `not logged`."""
+    if view.line is None:
+        return f"{view.model} (not logged): {view.error}"
+    line = view.line
+    when = f"logged {line['logged_at'][:16].replace('T', ' ')}" if view.logged else "not logged"
+    head = f"{view.model} ({when})"
+    if line["status"] != "ok":
+        return f"{head}: {line['status']}"
+    by_tf = " | ".join(f"{tf} {_bias_text(detail['bias'])}" for tf, detail in line["by_tf"].items())
+    return f"{head}: P2 {line['p2_raw']:+.2f} -> {line['p2_rescaled']:+d} | {by_tf}"
+
+
+@cli.command("p2-model")
+@click.option("--trade-id", "trade_id", required=True,
+              help="Analysis id, or a unique prefix such as the first 8 characters.")
+@click.option("--model", "model_name", default=None,
+              help="One model of tools/p2_backtest.py (default: the logged ones and those of P2_LOG_MODELS).")
+@click.pass_context
+def p2_model_command(ctx, trade_id, model_name):
+    """Show the systematic P2 of one analysis, one line per model. Never writes the log.
+
+    Exit code: 0 shown, 1 unknown analysis or model.
+    """
+    import tools.p2_model_feedback as p2_feedback
+
+    try:
+        analysis = p2_feedback.find_analysis(trade_id)
+        views = p2_feedback.model_views(analysis, model_name)
+    except p2_feedback.AnalysisLookupError as exc:
+        console.print(str(exc), style="red", markup=False)
+        ctx.exit(P2_MODEL_EXIT_UNKNOWN)
+    operator = analysis.operator_p2
+    header = (f"Analysis {analysis.trade_id} ({analysis.account}, {analysis.asset}), anchor "
+              f"{analysis.anchor:%Y-%m-%d %H:%M}; operator P2: {operator['direction']} {operator['strength']} "
+              f"({operator['score']})")
+    if not analysis.is_new:
+        header += "; not a new analysis, so it is never logged"
+    console.print(header, markup=False, highlight=False, soft_wrap=True)
+    for view in views:
+        console.print(p2_model_line(view), markup=False, highlight=False, soft_wrap=True)
+
+
 # --- Banco de velas (spec 002, T21) ---------------------------------------------
 # Solo presentación: la lógica vive en tools/candle_bank.py y tools/candle_sync.py
 # (constitución, principio 3). Todo lo que se muestra va en inglés (N30). Los códigos
@@ -2841,6 +2894,21 @@ def auto_export_in_background(symbols_of):
     return launch
 
 
+def log_p2_models_on_save(trade_id):
+    """Spec 002 (T56, RF-12, RF-12e): registra el P2 de los modelos de `P2_LOG_MODELS` para el análisis recién guardado,
+    si es de una cuenta real y el banco ya cubre su ancla; si no, lo registra el catch-up después de un export. No
+    muestra nada del modelo (D3), solo los avisos de RF-12e en una línea. Nunca levanta (INV-2)."""
+    try:
+        import tools.p2_model_feedback as p2_feedback
+        result = p2_feedback.log_on_save(get_active_engine().url.database, trade_id)
+    except Exception as exc:  # noqa: BLE001 -- INV-2: el registro nunca frena el guardado
+        logging.info("P2 model log skipped for %s: %s", trade_id, exc)
+        return None
+    if result is not None and result.warnings:
+        _export_line(f"P2 model log skipped: {', '.join(result.warnings)}", "yellow")
+    return result
+
+
 def auto_export_and_wait(symbols_of):
     """Spec 002 (T53, RF-20b, RF-20c, RF-20e): lanza el export de velas y lo espera hasta `AUTO_EXPORT_WAIT_S`, con el
     progreso en una línea. Si no termina, sigue con las velas que ya tiene el banco y el export continúa de fondo.
@@ -3481,6 +3549,8 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None, start
                     warn_if_mark_price_off(asset, *saved_mark_price)
                     # T52 (RF-20): el export del símbolo, de fondo; el wizard sigue sin esperarlo.
                     auto_export_in_background(lambda auto_export: auto_export.symbols_for_assets([asset]))
+                    # T56 (RF-12): el P2 de los modelos, si el banco ya cubre el ancla. No se muestra (D3).
+                    log_p2_models_on_save(trade_id)
 
                     feed_now = inquirer.select(
                         message="¿Deseas alimentar un Tactical Audit ahora para este análisis?",

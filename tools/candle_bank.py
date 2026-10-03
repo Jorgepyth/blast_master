@@ -955,6 +955,11 @@ class SyncResult:
     pruned_runs: List[str] = field(default_factory=list)
     prune_skipped: List[str] = field(default_factory=list)
     prune_error: Optional[str] = None
+    # Catch-up del registro del P2 sistemático después de fusionar (RF-12b, T56): líneas nuevas, avisos de RF-12e y el
+    # error si falló (nunca cambia `result`).
+    p2_logged: int = 0
+    p2_warnings: List[str] = field(default_factory=list)
+    p2_error: Optional[str] = None
 
 
 def merge_incoming_run(

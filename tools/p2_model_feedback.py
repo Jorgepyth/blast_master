@@ -108,7 +108,7 @@ def latest_lines(lines: Sequence[LogLine]) -> Dict[Tuple[str, str], LogLine]:
 @dataclass
 class ModelToLog:
     name: str
-    since: datetime
+    since: Optional[datetime]  # None: un modelo del registro que no está en P2_LOG_MODELS (solo `p2-model --model`)
     spec: "p2_backtest.ModelSpec"
     hash: str
 
@@ -233,7 +233,8 @@ def build_line(account: str, analysis: NewAnalysis, model: ModelToLog, bank_root
         "trade_id": analysis.trade_id, "account": account, "asset": analysis.asset, "symbol": symbol,
         "anchor": analysis.analysis_start_time.isoformat(), "logged_at": logged_at.isoformat(timespec="seconds"),
         "operator_p2": analysis.operator_p2,
-        "model": model.name, "model_since": model.since.date().isoformat(), "model_hash": model.hash,
+        "model": model.name, "model_since": model.since.date().isoformat() if model.since else None,
+        "model_hash": model.hash,
         "model_spec": model_recipe(model.spec),
         "p2_raw": raw, "p2_rescaled": rescaled, "status": status, "by_tf": detail,
     }
@@ -252,12 +253,16 @@ class LogResult:
 def log_account(db_path: str, account: str, bank_root: Optional[str] = None, path: Optional[str] = None,
                 trade_ids: Optional[Sequence[str]] = None, symbol: Optional[str] = None,
                 models: Optional[Mapping[str, str]] = None, symbol_map: Optional[Mapping[str, str]] = None,
-                now: Optional[datetime] = None) -> LogResult:
+                now: Optional[datetime] = None, write_pending: bool = True) -> LogResult:
     """
     Registra los análisis nuevos de una cuenta que todavía no tienen la línea de cada modelo, o cuya línea se reintenta
     (RF-12, RF-12b, RF-12c). `trade_ids` limita a esos análisis (el guardado), y `symbol`, a los de ese símbolo MT5 (el
     catch-up después de fusionar). Una línea que se reintenta y da el mismo motivo no se vuelve a escribir. El
     archivo se toma con un candado mientras se lee y se agrega, para que el guardado y el catch-up no dupliquen.
+
+    Con `write_pending=False` (los disparos de T56) un análisis que todavía no tiene línea y cuyo banco no llega al
+    ancla, o no tiene el reloj verificado, no se escribe: RF-12 y RF-12b registran solo cuando el banco cubre el ancla,
+    y el catch-up siguiente vuelve a probar.
     """
     bank_root = cfg.CANDLE_BANK_DIR if bank_root is None else bank_root
     path = log_path() if path is None else path
@@ -268,37 +273,200 @@ def log_account(db_path: str, account: str, bank_root: Optional[str] = None, pat
     analyses = [analysis for analysis in read_new_analyses(db_path, trade_ids)
                 if symbol is None or symbol_map.get(analysis.asset) == symbol]
     result = LogResult()
-    if not analyses:
-        result.warnings = check_models(models, read_log(path))[1]
+    lines = read_log(path)
+    valid, result.warnings = check_models(models, lines)
+    latest = latest_lines(lines)
+    # Primero se decide y se calcula sin tocar el archivo: si no hay nada que escribir, ni se crea.
+    pending: List[Tuple[Tuple[str, str], Optional[int], dict]] = []
+    for analysis in analyses:
+        for model in valid:
+            if analysis.analysis_start_time < model.since:
+                continue
+            key = (analysis.trade_id, model.name)
+            previous = latest.get(key)
+            if previous is not None and previous.data.get("status") not in RETRY_STATUSES:
+                continue
+            line = build_line(account, analysis, model, bank_root, symbol_map, now)
+            if previous is None and not write_pending and line["status"] in RETRY_STATUSES:
+                continue  # todavía sin velas: lo registra un catch-up posterior
+            if previous is not None:
+                if line["status"] == previous.data.get("status"):
+                    continue  # sigue igual: nada nuevo que registrar
+                line["supersedes"] = previous.number
+            pending.append((key, previous.number if previous is not None else None, line))
+    if not pending:
         return result
+    # Después se agrega con el archivo tomado, salteando el par que otro proceso haya escrito mientras tanto.
     with open(path, "a+", encoding="utf-8") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         try:
             handle.seek(0)
             text = handle.read()
-            lines = parse_log(text)
+            current = latest_lines(parse_log(text))
             next_number = len(text.splitlines()) + 1
             if text and not text.endswith("\n"):
                 handle.write("\n")  # una escritura anterior quedó cortada: esa línea queda sola y no se pega a la nueva
-            valid, result.warnings = check_models(models, lines)
-            latest = latest_lines(lines)
-            for analysis in analyses:
-                for model in valid:
-                    if analysis.analysis_start_time < model.since:
-                        continue
-                    previous = latest.get((analysis.trade_id, model.name))
-                    if previous is not None and previous.data.get("status") not in RETRY_STATUSES:
-                        continue
-                    line = build_line(account, analysis, model, bank_root, symbol_map, now)
-                    if previous is not None:
-                        if line["status"] == previous.data.get("status"):
-                            continue  # sigue igual: nada nuevo que registrar
-                        line["supersedes"] = previous.number
-                    handle.write(json.dumps(line, ensure_ascii=False) + "\n")
-                    latest[(analysis.trade_id, model.name)] = LogLine(next_number, line)
-                    next_number += 1
-                    result.written.append(line)
+            for key, previous_number, line in pending:
+                now_there = current.get(key)
+                if (now_there.number if now_there is not None else None) != previous_number:
+                    continue
+                handle.write(json.dumps(line, ensure_ascii=False) + "\n")
+                current[key] = LogLine(next_number, line)
+                next_number += 1
+                result.written.append(line)
             handle.flush()
         finally:
             fcntl.flock(handle, fcntl.LOCK_UN)
     return result
+
+
+# --------------------------------------------------------------------------
+# Los disparos (T56): al guardar, el catch-up y `p2-model`
+# --------------------------------------------------------------------------
+
+def account_of(db_path: str, accounts_data_dir: Optional[str] = None,
+               real_accounts: Optional[Mapping[str, str]] = None) -> Optional[str]:
+    """La cuenta de `REAL_ACCOUNTS` cuya DB es `db_path`, o `None` (una Flight Session no entra al registro)."""
+    accounts_data_dir = cfg.ACCOUNTS_DATA_DIR if accounts_data_dir is None else accounts_data_dir
+    real_accounts = cfg.REAL_ACCOUNTS if real_accounts is None else real_accounts
+    target = os.path.realpath(db_path)
+    for account, db_name in real_accounts.items():
+        if os.path.realpath(os.path.join(accounts_data_dir, db_name)) == target:
+            return account
+    return None
+
+
+def log_on_save(db_path: str, trade_id: str) -> Optional[LogResult]:
+    """RF-12: después de guardar un análisis de una cuenta real, su línea de cada modelo, si el banco ya cubre el
+    ancla. `None` si la DB no es de `REAL_ACCOUNTS`."""
+    account = account_of(db_path)
+    if account is None:
+        return None
+    return log_account(db_path, account, trade_ids=[trade_id], write_pending=False)
+
+
+def catch_up(symbol: str, accounts_data_dir: Optional[str] = None, bank_root: Optional[str] = None,
+             real_accounts: Optional[Mapping[str, str]] = None, symbol_map: Optional[Mapping[str, str]] = None,
+             models: Optional[Mapping[str, str]] = None) -> LogResult:
+    """RF-12b: después de fusionar velas de `symbol`, los análisis nuevos de ese símbolo en todas las cuentas reales que
+    todavía no tienen su línea. Una DB que no existe se saltea; los avisos de RF-12e se juntan sin repetir."""
+    accounts_data_dir = cfg.ACCOUNTS_DATA_DIR if accounts_data_dir is None else accounts_data_dir
+    real_accounts = cfg.REAL_ACCOUNTS if real_accounts is None else real_accounts
+    path = os.path.join(accounts_data_dir, cfg.P2_MODEL_LOG_NAME)
+    total = LogResult()
+    for account, db_name in real_accounts.items():
+        db_path = os.path.join(accounts_data_dir, db_name)
+        if not os.path.exists(db_path):
+            continue
+        result = log_account(db_path, account, bank_root=bank_root, path=path, symbol=symbol, models=models,
+                             symbol_map=symbol_map, write_pending=False)
+        total.written += result.written
+        total.warnings += [warning for warning in result.warnings if warning not in total.warnings]
+    return total
+
+
+@dataclass
+class AnalysisForView:
+    trade_id: str
+    account: str
+    asset: Optional[str]
+    anchor: datetime
+    is_new: bool
+    operator_p2: dict
+
+
+class AnalysisLookupError(LookupError):
+    pass
+
+
+def find_analysis(trade_id: str, accounts_data_dir: Optional[str] = None,
+                  real_accounts: Optional[Mapping[str, str]] = None) -> AnalysisForView:
+    """El análisis de `trade_id` (el id completo o un prefijo único, como los 8 caracteres que muestra el CLI) en las
+    cuentas reales, en solo lectura. Su ancla es la de la spec (`analysis_anchor`, N4). Levanta
+    `AnalysisLookupError` si no existe o si el prefijo es ambiguo."""
+    from core.outcome_metrics import analysis_anchor
+
+    accounts_data_dir = cfg.ACCOUNTS_DATA_DIR if accounts_data_dir is None else accounts_data_dir
+    real_accounts = cfg.REAL_ACCOUNTS if real_accounts is None else real_accounts
+    matches = []
+    for account, db_name in real_accounts.items():
+        db_path = os.path.join(accounts_data_dir, db_name)
+        if not os.path.exists(db_path):
+            continue
+        conn = sqlite3.connect(f"file:{os.path.abspath(db_path)}?mode=ro", uri=True)
+        try:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(unified_department)")}
+            start_column = "analysis_start_time" if "analysis_start_time" in columns else "NULL"
+            rows = conn.execute(
+                f"SELECT id, asset, created_at, COALESCE(is_backdated, 0), {start_column} FROM unified_department "
+                "WHERE substr(id, 1, ?) = ?", (len(trade_id), trade_id)).fetchall()
+            for row_id, asset, created, backdated, start in rows:
+                p2 = conn.execute(
+                    "SELECT direction, strength, score FROM analysis_layer "
+                    "WHERE trade_id = ? AND department = 'EFFICIENCY' AND layer_name = 'P2'", (row_id,)).fetchone()
+                start_time = parse_datetime(start)
+                matches.append(AnalysisForView(
+                    row_id, account, asset, analysis_anchor(start_time, parse_datetime(created), bool(backdated)),
+                    start_time is not None and not backdated,
+                    {"direction": p2[0], "strength": p2[1], "score": p2[2]} if p2 else
+                    {"direction": None, "strength": None, "score": None}))
+        finally:
+            conn.close()
+    exact = [match for match in matches if match.trade_id == trade_id]
+    if exact:
+        matches = exact
+    if not matches:
+        raise AnalysisLookupError(f"Unknown analysis: {trade_id}")
+    if len(matches) > 1:
+        raise AnalysisLookupError(f"Ambiguous analysis id {trade_id}: "
+                                  f"{', '.join(match.trade_id for match in matches)}")
+    return matches[0]
+
+
+@dataclass
+class ModelView:
+    """Lo que `p2-model` muestra de un modelo: la línea registrada vigente o una calculada a pedido (`logged`
+    False, nunca escrita), o el error si no se pudo calcular."""
+    model: str
+    logged: bool
+    line: Optional[dict] = None
+    error: Optional[str] = None
+
+
+def model_views(analysis: AnalysisForView, model_name: Optional[str] = None, bank_root: Optional[str] = None,
+                path: Optional[str] = None, models: Optional[Mapping[str, str]] = None,
+                symbol_map: Optional[Mapping[str, str]] = None, now: Optional[datetime] = None) -> List[ModelView]:
+    """RF-12d: una vista por modelo. Sin `model_name`, los modelos con línea registrada para el análisis más los de la
+    lista que faltan; con `model_name`, solo ese, que puede ser cualquiera del registro. Lo que falta se calcula a pedido
+    y no se escribe. Levanta `AnalysisLookupError` si `model_name` no es un modelo del registro ni tiene líneas."""
+    bank_root = cfg.CANDLE_BANK_DIR if bank_root is None else bank_root
+    models = cfg.P2_LOG_MODELS if models is None else models
+    symbol_map = cfg.MT5_SYMBOL_MAP if symbol_map is None else symbol_map
+    now = _now_gt() if now is None else now
+    latest = {model: line for (trade_id, model), line in latest_lines(read_log(path)).items()
+              if trade_id == analysis.trade_id}
+    if model_name is not None:
+        if model_name not in latest and model_name not in p2_backtest.MODELS_BY_NAME:
+            raise AnalysisLookupError(f"Unknown model: {model_name}")
+        names = [model_name]
+    else:
+        names = list(latest) + [name for name in models if name not in latest]
+    views = []
+    for name in names:
+        if name in latest:
+            views.append(ModelView(name, True, latest[name].data))
+            continue
+        spec = p2_backtest.MODELS_BY_NAME.get(name)
+        if spec is None:
+            views.append(ModelView(name, False, error=cfg.reason_unknown_model(name)))
+            continue
+        since = datetime.fromisoformat(models[name]) if name in models else None
+        target = NewAnalysis(analysis.trade_id, analysis.asset, analysis.anchor, analysis.operator_p2)
+        try:
+            line = build_line(analysis.account, target, ModelToLog(name, since, spec, model_hash(spec)), bank_root,
+                              symbol_map, now)
+        except Exception as exc:  # noqa: BLE001 -- se muestra; nunca frena el comando
+            views.append(ModelView(name, False, error=f"{type(exc).__name__}: {exc}"))
+            continue
+        views.append(ModelView(name, False, line))
+    return views
