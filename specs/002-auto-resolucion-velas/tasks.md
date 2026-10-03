@@ -1024,10 +1024,25 @@
         propuesto, corregir guarda lo del operador, y lo que las velas no proponen no lleva default. Mutación: 8 de 8
         muertos. La red de seguridad de T5 sigue en verde, con el mismo orden.
       SUITE: `1028 passed, 3 skipped, 113 warnings in 38.30s`; sin `.data/`.
-- [ ] T43. Efficiency, parte 3: prompt "Resolution Time" opcional al final, `audit_registration_time`, y
+- [x] T43. Efficiency, parte 3: prompt "Resolution Time" opcional al final, `audit_registration_time`, y
       `resolution_time_source` (`candles`, `corrected` o el motivo). (RF-7c, RF-7g, RF-14, RF-14b)
       Hecho cuando: los tests cubren aceptar, corregir, dejar vacío y el caso sin propuesta, con el valor persistido
       de las tres columnas. SUITE en verde.
+      Evidencia (2026-10-03):
+      - **Prompt:** "Resolution Time" va al final, después de Structural MFE, con `get_optional_datetime`: la hora
+        propuesta como `(auto: …, ±1 min)`, con la precisión según la TF del toque.
+      - **Al guardar:** `resolution_time` es lo que quedó en el prompt (antes era `now()`), `audit_registration_time`
+        es la hora real (GT) y `resolution_time_source` sigue `resolution_time_source()`. La aclaración de T43 está en
+        el plan §2.1.
+      - **Al retomar una pausa:** la hora llega como texto y se vuelve a leer como fecha (`resolution_time_entry`).
+      - **Red de seguridad de T5:** se actualizó a propósito, como anunciaba su propio comentario: 3 prompts de texto,
+        y la hora del guardado ahora va en `audit_registration_time`.
+      - **Tests:** 9 nuevos en `tests/test_efficiency_proposals.py`. Mutación: 7 de 8 muertos. El que sobrevive es
+        equivalente: una propuesta con hora de toque nunca trae motivo.
+      - **Pendiente fuera de esta tarea:** el flujo de reparación (`flow_repair_analysis_audits`, opción
+        `ea_res_time`) todavía edita `resolution_time` sin tocar `resolution_time_source`. Lo cubre T44 o se anota
+        aparte.
+      SUITE: `1039 passed, 3 skipped, 127 warnings in 39.29s`; sin `.data/`.
 - [ ] T44. Efficiency, parte 4: "Resolution Time" en el menú "Edit a Field" y en el panel de revisión con la marca
       `(auto)`. (RF-7, INV-1)
       Hecho cuando: los tests prueban que la edición funciona y que el panel muestra la marca. SUITE en verde.

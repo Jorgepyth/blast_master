@@ -116,16 +116,17 @@ def test_efficiency_prompt_order_excludes_open_and_persists_values(
 
     mock_text_prompt = MagicMock()
     mock_text.return_value = mock_text_prompt
-    mock_text_prompt.execute.side_effect = ["1948.5", "1962.0"]  # 6. MAE, 7. MFE
+    mock_text_prompt.execute.side_effect = ["1948.5", "1962.0", ""]  # 6. MAE, 7. MFE, 8. Resolution Time (T43)
 
     mock_select_prompt = MagicMock()
     mock_select.return_value = mock_select_prompt
     mock_select_prompt.execute.side_effect = ["save"]  # Review Action -> Confirm & Save
 
-    before = datetime.datetime.now()
+    import cli.main as cli_main
+    before = cli_main._now_gt().replace(microsecond=0)
     with patch("builtins.input", return_value=""):
         _run_efficiency_audit(trade_id, payload)
-    after = datetime.datetime.now()
+    after = cli_main._now_gt()
 
     # --- Orden de los 7 prompts (baseline §2.2, INV-1) ---
     enum_calls = mock_get_enum_choice.call_args_list
@@ -144,10 +145,11 @@ def test_efficiency_prompt_order_excludes_open_and_persists_values(
 
     # --- Puntos 5, 6 y 7, en orden: lesson_eff, luego MAE, luego MFE ---
     mock_get_optional_text.assert_called_once_with("Efficiency Lesson Learned")
-    assert mock_text_prompt.execute.call_count == 2
-    mae_call, mfe_call = mock_text.call_args_list
+    assert mock_text_prompt.execute.call_count == 3
+    mae_call, mfe_call, resolution_time_call = mock_text.call_args_list
     assert "Structural MAE" in mae_call.kwargs["message"]
     assert "Structural MFE" in mfe_call.kwargs["message"]
+    assert resolution_time_call.kwargs["message"].startswith("Resolution Time")  # el prompt nuevo va al final (RF-7c)
 
     # --- Valores guardados en efficiency_audit ---
     row = _get_saved_efficiency_row(in_memory_db, trade_id)
@@ -159,11 +161,10 @@ def test_efficiency_prompt_order_excludes_open_and_persists_values(
     assert row.lesson_learned == "Held the level as expected."
     assert float(row.structural_mae) == pytest.approx(1948.5)
     assert float(row.structural_mfe) == pytest.approx(1962.0)
-    # resolution_time es la hora del guardado del audit, nunca preguntada al
-    # operador (baseline §2.2) -- INV-1 lo deja así; RF-7g/RF-14 de la spec 002
-    # lo cambian recién cuando F7 llegue a esas tareas, no acá.
-    assert row.resolution_time is not None
-    assert before <= row.resolution_time <= after
+    # Spec 002, T43 (N1, RF-7g, RF-14): la hora del guardado pasa a audit_registration_time; resolution_time es la
+    # del primer toque, y acá quedó vacía (sin propuesta de las velas, el operador la dejó en blanco).
+    assert row.resolution_time is None
+    assert before <= row.audit_registration_time <= after
 
 
 @patch("cli.main.get_optional_text")
@@ -185,7 +186,7 @@ def test_efficiency_invalid_mae_mfe_both_become_none(
 
     mock_text_prompt = MagicMock()
     mock_text.return_value = mock_text_prompt
-    mock_text_prompt.execute.side_effect = ["not-a-number", "1962.0"]  # MAE inválido, MFE válido
+    mock_text_prompt.execute.side_effect = ["not-a-number", "1962.0", ""]  # MAE inválido, MFE válido, sin hora
 
     mock_select_prompt = MagicMock()
     mock_select.return_value = mock_select_prompt

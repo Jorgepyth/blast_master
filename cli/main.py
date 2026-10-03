@@ -43,7 +43,7 @@ from InquirerPy.separator import Separator
 from InquirerPy.utils import get_style
 
 from cli.schemas.efficiency import EfficiencyAnalysis, Direction, Strength
-from cli.schemas.audit_efficiency import EfficiencyAudit, StructuralBias, ResolutionType, StructuralResolution, FailureReason
+from cli.schemas.audit_efficiency import EfficiencyAudit, StructuralBias, ResolutionType, StructuralResolution, FailureReason, RESOLUTION_TIME_SOURCES, RESOLUTION_TIME_SOURCE_CANDLES, RESOLUTION_TIME_SOURCE_CORRECTED
 from cli.schemas.tactical import TacticalAnalysis, Hierarchy, Timeframe, FractalType, TacticalClassification
 from cli.schemas.audit_tactical import TacticalAudit, TierSetup, MarketState, Session, ExitType, TradeDecision, FollowedPlan, PrimaryEmotion, SetupType, HTFTrendContext, TrendContext, ConfirmationStatus, ConfirmationParams, Emotions, ACTIVE_EMOTIONS, BehavioralErrors, SkipReason, StopDeviationReason, STOP_DEVIATION_REASON_LABELS
 from tools.database import (
@@ -2758,6 +2758,42 @@ def auto_default(value):
     return {} if value is None else {"default": value}
 
 
+# La precisión de la hora del toque según la TF de la vela que tocó (N19).
+TOUCH_PRECISION = {"1M": "±1 min", "5M": "±5 min", "15M": "±15 min", "30M": "±30 min", "1H": "±1 h"}
+
+
+def touch_precision(proposal):
+    """El texto de la precisión de la hora propuesta (`±1 min` con 1M), o `None` si no se sabe."""
+    touch = proposal.resolution.first_touch if proposal is not None and proposal.resolution is not None else None
+    return TOUCH_PRECISION.get(touch.timeframe) if touch is not None else None
+
+
+def resolution_time_entry(value):
+    """La respuesta del prompt "Resolution Time" como datetime o `None`. Al retomar un audit pausado llega como el
+    texto `YYYY-MM-DD HH:MM` que guarda `AuditSession.save_state`."""
+    if isinstance(value, str):
+        return datetime.datetime.strptime(value.strip(), "%Y-%m-%d %H:%M") if value.strip() else None
+    return value
+
+
+def resolution_time_source(entered, proposal):
+    """
+    RF-14b: de dónde salió `resolution_time`, o por qué quedó vacía (aclaración de T43 en el plan §2.1):
+      - `candles`: el operador aceptó la hora propuesta;
+      - `corrected`: la hora la puso el operador, porque cambió la propuesta o porque no la había;
+      - el motivo (`pending_candles`, `open`, `clock_unverified`...): quedó vacía y las velas no proponían nada;
+      - `None`: el operador vació una hora propuesta, o la propuesta no se pudo pedir.
+    """
+    proposed = proposal.resolution_time if proposal is not None else None
+    if entered is not None:
+        if proposed is not None and entered == proposed.replace(second=0, microsecond=0):
+            return RESOLUTION_TIME_SOURCE_CANDLES
+        return RESOLUTION_TIME_SOURCE_CORRECTED
+    if proposal is not None and proposed is None and proposal.reason in RESOLUTION_TIME_SOURCES:
+        return proposal.reason
+    return None
+
+
 def proposal_status_line(proposal):
     """La línea que explica por qué no hay propuesta (RF-7f, RF-5b), en inglés (N30). `None` si hay propuesta."""
     if proposal is None:
@@ -3547,6 +3583,10 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
                     "Structural MAE (peor precio alcanzado en contra de la tesis)", auto and auto.structural_mae))
                 structural_mfe_raw = session.prompt("structural_mfe_raw", lambda: optional_price(
                     "Structural MFE (mejor precio alcanzado a favor de la tesis)", auto and auto.structural_mfe))
+                # T43 (RF-7c, N1): la hora del primer toque, al final y opcional; la del guardado va aparte (RF-14).
+                resolution_time_val = resolution_time_entry(session.prompt(
+                    "resolution_time", get_optional_datetime, "Resolution Time",
+                    precision=touch_precision(auto), **auto_default(auto and auto.resolution_time)))
                 try:
                     structural_mae_val = Decimal(str(structural_mae_raw)) if structural_mae_raw.strip() else None
                     structural_mfe_val = Decimal(str(structural_mfe_raw)) if structural_mfe_raw.strip() else None
@@ -3562,7 +3602,8 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
                     real_bias_b=real_bias_b,
                     structural_resolution=struct_res,
                     failure_reason=fail_reason,
-                    resolution_time=datetime.datetime.now(),
+                    resolution_time=resolution_time_val,
+                    resolution_time_source=resolution_time_source(resolution_time_val, auto),
                     lesson_learned=lesson_eff,
                     structural_mae=structural_mae_val,
                     structural_mfe=structural_mfe_val
@@ -3599,6 +3640,7 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
 
                 if action_choice == "save":
                     new_payload["audit_efficiency"] = audit_eff.model_dump()
+                    new_payload["audit_efficiency"]["audit_registration_time"] = _now_gt()  # RF-14
                     console.print("[green]Efficiency Audit saved.[/green]")
                     session.clear_state()
                     break

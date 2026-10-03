@@ -72,6 +72,11 @@ Valores de `resolution_time_source`: `candles`, `corrected`, `pending_candles`, 
 `corrected` sin `resolution_time`, porque se contradicen. No restringe un código de motivo con una hora tipeada: ese
 caso, "no hay propuesta pero el operador escribe una hora", lo define T43.
 
+**Aclaración de T43 (2026-10-03):** `corrected` significa que la hora la puso el operador, porque cambió la propuesta
+o porque no la había. Si vacía una hora propuesta, o si la propuesta no se pudo pedir, `resolution_time_source` queda
+vacío. El motivo (`pending_candles`, `open`...) solo se guarda cuando la hora queda vacía y las velas no proponían
+ninguna.
+
 ### 2.2 Tabla nueva `backfill_history`, en cada DB de cuenta
 
 ```sql
