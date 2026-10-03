@@ -189,12 +189,7 @@ def build_account_report(account: str, db_path: str, bank_root: str) -> AccountR
         if proposal.resolution_time is None:
             missing[proposal.reason] = missing.get(proposal.reason, 0) + 1
 
-    outcomes = []
-    for proposal in proposals:
-        row = rows[proposal.trade_id]
-        outcome = proposal.resolution.outcome if proposal.resolution else proposal.reason
-        outcomes.append(AnalysisOutcome(proposal.trade_id, account, proposal.anchor, row.is_backdated,
-                                        row.market_bias, outcome, proposal.resolution_time))
+    outcomes = resolver.outcomes(proposals)
 
     overlaps = [OverlapEntry(p.trade_id, p.resolution.first_touch.level if p.resolution.first_touch else None,
                              p.resolution_time, p.overlap.b_id, p.overlap.b_anchor)

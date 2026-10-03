@@ -206,6 +206,18 @@ class AccountResolver:
     def propose_all(self) -> List[AutoProposal]:
         return [self.propose(row.trade_id) for row in self.rows]
 
+    def outcomes(self, proposals: Optional[List[AutoProposal]] = None) -> List[AnalysisOutcome]:
+        """Los resultados de la cuenta para `core/outcome_metrics.py` (S1, S4). Un análisis sin toque lleva como
+        `outcome` el código del resolvedor o el motivo (`no_levels`, `clock_unverified`, ...) y no cuenta."""
+        proposals = self.propose_all() if proposals is None else proposals
+        result = []
+        for proposal in proposals:
+            row = self._by_id[proposal.trade_id]
+            outcome = proposal.resolution.outcome if proposal.resolution else proposal.reason
+            result.append(AnalysisOutcome(proposal.trade_id, self.account, proposal.anchor, row.is_backdated,
+                                          row.market_bias, outcome, proposal.resolution_time))
+        return result
+
     def propose(self, trade_id: str) -> AutoProposal:
         row = self._by_id[trade_id]
         anchor = self.anchor_of(row)

@@ -829,10 +829,17 @@
         se cerró por un análisis nuevo antes de que el precio tocara un nivel). El otro, `70ea32f5`, está marcado
         Confirmed a las 12:33 del 27-may y las velas tocan la validación recién a las 20:13.
       SUITE: `908 passed, 3 skipped, 97 warnings in 31.68s`; sin `.data/`.
-- [ ] T34. `docs/criterios-de-acierto.md`: apuntar la implementación a `core/outcome_metrics.py` y agregar un ejemplo
+- [x] T34. `docs/criterios-de-acierto.md`: apuntar la implementación a `core/outcome_metrics.py` y agregar un ejemplo
       de uso desde un cuaderno. (RF-21)
       Hecho cuando: `grep -n "core/outcome_metrics.py" docs/criterios-de-acierto.md` da resultado y el ejemplo corre
       en un test de humo sobre el fixture. SUITE en verde.
+      Evidencia (2026-10-02): el `grep` da la línea 6. Sección nueva "Uso desde un cuaderno", con las rutas de
+      `config/auto_resolution.py`, así que sirve desde cualquier carpeta de trabajo. Para no copiar lógica del reporte
+      en el ejemplo, el paso de propuestas a `AnalysisOutcome` pasó de `build_account_report` a
+      `AccountResolver.outcomes()`; el reporte con datos reales sale igual línea por línea. `tests/test_criterios_doc_example.py`
+      (3 tests) saca el bloque de código del documento y lo corre sobre el fixture. Mutación de `outcomes()`: 6 de 6
+      muertos.
+      SUITE: `911 passed, 3 skipped, 97 warnings in 29.01s`; sin `.data/`.
 
 ## Etapa 4 — Esquema y horas del análisis
 

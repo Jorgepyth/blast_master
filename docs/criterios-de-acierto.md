@@ -3,8 +3,9 @@
 - **Decididos:** 2026-09-27, por el usuario.
 - **Origen:** spec 002, F3 [2][5], decisiones N35, N36 y N37.
 - **Evidencia:** `specs/002-auto-resolucion-velas/analisis-overlap-2d.md`.
-- **Implementación:** vivirá en un solo módulo reutilizable (RF-21 de la spec 002). Hasta que exista, la
-  implementación de referencia es `specs/002-auto-resolucion-velas/analisis/overlap_2d.py`.
+- **Implementación:** `core/outcome_metrics.py` (RF-21 de la spec 002), la única. La usan el reporte
+  `python cli/main.py resolution-report` y cualquier cuaderno (ver "Uso desde un cuaderno"). El script
+  `specs/002-auto-resolucion-velas/analisis/overlap_2d.py` queda solo como la evidencia de la decisión.
 
 **Todo análisis de acierto de este proyecto, sea en un cuaderno, un reporte o una auditoría, usa estos criterios.** Si
 un análisis usa otro criterio, tiene que decirlo explícitamente y explicar por qué.
@@ -80,6 +81,38 @@ inicio) va al reporte, no a ese campo.
 - **Precisión.** Hay que indicar con qué temporalidad se midió el toque (±1 min con 1M, ±15 min con 15M) y si el
   reloj de las velas está verificado.
 
+## Uso desde un cuaderno
+
+Con la raíz del repo en `sys.path`, como en los demás cuadernos de `jupyter/`. Todo es de solo lectura: la DB se abre
+en `mode=ro` y el banco de velas solo se lee. Las rutas salen de `config/auto_resolution.py`, así que funciona con
+cualquier carpeta de trabajo. `"000"` es la cuenta de XAU en `REAL_ACCOUNTS`.
+
+```python
+import os
+
+from config.auto_resolution import ACCOUNTS_DATA_DIR, CANDLE_BANK_DIR, REAL_ACCOUNTS
+from core.outcome_metrics import s1, s4
+from tools.auto_resolution import AccountResolver
+
+resolver = AccountResolver(os.path.join(ACCOUNTS_DATA_DIR, REAL_ACCOUNTS["000"]), CANDLE_BANK_DIR, account="000")
+proposals = resolver.propose_all()   # el primer toque de cada análisis, según las velas
+outcomes = resolver.outcomes(proposals)
+
+for name, rate in (("S1", s1(outcomes, directional_only=True)), ("S4", s4(outcomes, directional_only=True))):
+    pct = f"{rate.rate:.0%}" if rate.n else "n/a"
+    print(f"{name}: {rate.wins}/{rate.n} = {pct}, outside 48 h {rate.outside}, "
+          f"backdated excluded {rate.excluded_backdated}")
+
+for p in proposals:   # Overlap: solo una etiqueta, no cambia las cifras de arriba
+    if p.overlap is not None:
+        print(f"{p.trade_id[:8]} Overlap: B = {p.overlap.b_id[:8]}, first touch {p.resolution_time}")
+```
+
+- `directional_only=True` deja solo los Bullish/Bearish. Sin ese argumento entran también los `Choppy / Neutral`.
+- `include_backdated=True` mete a los retroactivos. Por defecto quedan fuera y se cuentan en `excluded_backdated`.
+- Un análisis sin toque (abierto, ambiguo, sin niveles, sin reloj verificado) no cuenta. El motivo está en
+  `proposal.reason`.
+
 ## Foto al 2026-09-27
 
 Direccionales, sin retroactivos, con velas de 15M y 1H:
@@ -90,4 +123,5 @@ Direccionales, sin retroactivos, con velas de 15M y 1H:
 | S4 | 23/36 = 64% (2 fuera) | 8/10 = 80% (2 fuera) |
 | Etiqueta manual, mismos análisis que S1 | 24/38 = 63% | 8/12 = 67% |
 
-Esta foto es de esa fecha. Hay que recalcularla antes de citarla.
+Esta foto es de esa fecha. Hay que recalcularla antes de citarla, con `python cli/main.py resolution-report` o con
+el ejemplo de arriba.
