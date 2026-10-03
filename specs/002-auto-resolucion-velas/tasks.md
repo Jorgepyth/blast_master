@@ -1070,11 +1070,28 @@
       las DBs reales, así que T35 en adelante se integra recién con T58. Mismas verificaciones: ningún archivo del
       usuario entre los cambiados, `git status` idéntico y los 30 archivos del usuario byte a byte iguales. La SUITE
       sobre `da29692` es la de T34 (`911 passed`).
-- [ ] T58a. *(Agregada el 2026-10-03, N48.)* El banco de velas en el backup 3-2-1: artefacto `candle_bank.tar.gz` en
+- [x] T58a. *(Agregada el 2026-10-03, N48.)* El banco de velas en el backup 3-2-1: artefacto `candle_bank.tar.gz` en
       local, USB y B2, y su restore en `<destino>/candle_bank/`. (NFR-1)
       Hecho cuando: los tests prueban el archivo (solo los CSV y `status.json` del banco, rutas relativas), la subida
       con su clave, el restore que nunca escribe en `.data/` ni fuera del destino, y el listado de B2 por fecha.
       SUITE en verde.
+      Evidencia (2026-10-03):
+      - **Respaldo:** `archive_candle_bank()` y `backup_candle_bank()` en `tools/backup.py`. Clave en B2
+        `candle_bank/<fecha>.tar.gz`; en el USB, `<fecha>/candle_bank.tar.gz`. `main_backup` lo suma como un artefacto
+        más, y si la carpeta del banco no existe se saltea con un aviso.
+      - **Restauración:** `restore_candle_bank_archive()` valida todas las entradas antes de escribir, y es todo o
+        nada: rechaza rutas que salen del destino, enlaces y archivos que no son del banco.
+      - **Arreglos de paso:** las tres restauraciones comparten `_check_restored_file()`; el nombre local en B2
+        conserva `.tar.gz`, y el listado de B2 agrupa por fecha.
+      - **Tests:** `tests/test_backup_candle_bank.py` (15); los 26 de `tests/test_backup.py` siguen en verde.
+        Mutación: 11 de 11 muertos; uno sobrevivió al principio y se sumó al fixture un temporal `1M.csv.tmp`.
+      - **Lo que paró el guard de aislamiento:** el primer test de `main_backup` llegó a pedir el candado en la ruta
+        por defecto. `acquire_backup_lock` fija su ruta al importar el módulo, así que el test ahora reemplaza las
+        funciones. No se creó nada: el worktree no tiene `.data/`.
+      - **Humo con el banco real:** se comprimió y se restauró en el scratchpad, en solo lectura. 22 archivos, 5.7 MB,
+        3.9 s; el restaurado es idéntico byte a byte y el banco no cambió. No se corrió ningún backup real, porque
+        el cron usa el checkout principal: esto entra con la integración.
+      SUITE: `997 passed, 3 skipped, 97 warnings in 36.93s`; sin `.data/`.
 - [ ] T58. 🖐 **Migración de esquema de las 4 DBs reales con las 3 puertas**, antes de correr cualquier comando del
       CLI nuevo en el checkout principal (N41, NFR-1, R9, constitución principio 5):
       1. copiar las 4 `.data/flight_account_*.db` a un directorio temporal, correr `init_db` sobre cada copia, y

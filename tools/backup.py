@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 backup.py — Backup 3-2-1 diario de las cuentas activas descubiertas vía
-.data/flight_sessions.json + el propio flight_sessions.json.
+.data/flight_sessions.json + el propio flight_sessions.json + el banco de velas
+(candle_bank.tar.gz: los CSV de temporalidades y el status.json de cada símbolo;
+spec 002, N48). El restore descomprime el banco en <destino>/candle_bank/.
 
 Medio 1: snapshot local vía sqlite3 VACUUM INTO (nunca copia de archivo cruda
 -- las DBs de cuenta corren en WAL y pueden tener transacciones committeadas
@@ -27,8 +29,10 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
+import tarfile
 import sys
 import time
 from dataclasses import dataclass, field
@@ -54,6 +58,13 @@ BACKUP_STAGING_ROOT = os.path.join(DATA_DIR, "backups")
 LOG_DIR = os.path.join(DATA_DIR, "archives")
 LOCK_FILE_PATH = os.path.join(BACKUP_STAGING_ROOT, ".lock")
 DEFAULT_RESTORE_DIR = os.path.join(DATA_DIR, "restored")
+
+# El banco de velas (spec 002, N48): la misma carpeta que usa el resto del sistema (config/auto_resolution.py).
+from config.auto_resolution import CANDLE_BANK_DIR  # noqa: E402
+CANDLE_BANK_ARCHIVE = "candle_bank.tar.gz"
+# Lo único que entra del banco: los CSV de temporalidades y el status.json de cada símbolo (sin candados ni temporales).
+_BANK_FILE = re.compile(r"^(\d+[MHDW]\.csv|status\.json)$")
+_BANK_MEMBER = re.compile(r"^candle_bank/([A-Za-z0-9_.-]+)/(\d+[MHDW]\.csv|status\.json)$")
 
 USB_BACKUP_PATH = os.getenv("USB_BACKUP_PATH")
 B2_KEY_ID = os.getenv("B2_KEY_ID")
@@ -383,6 +394,51 @@ def backup_flight_sessions_json(run_staging_dir: str, date_str: str, bucket) -> 
     return result
 
 
+def archive_candle_bank(bank_dir: str, dest_path: str) -> int:
+    """
+    Comprime en `dest_path` (tar.gz) los CSV de temporalidades y el `status.json` de cada símbolo del banco, con rutas
+    `candle_bank/<SÍMBOLO>/<archivo>`. Deja afuera candados, temporales, enlaces y cualquier otro archivo. Cada CSV del
+    banco se reemplaza de forma atómica (`os.replace`), así que cada archivo entra entero aunque haya un export en
+    curso. Devuelve cuántos archivos guardó.
+    """
+    count = 0
+    with tarfile.open(dest_path, "w:gz") as tar:
+        for symbol in sorted(os.listdir(bank_dir)):
+            symbol_dir = os.path.join(bank_dir, symbol)
+            if os.path.islink(symbol_dir) or not os.path.isdir(symbol_dir):
+                continue
+            for name in sorted(os.listdir(symbol_dir)):
+                path = os.path.join(symbol_dir, name)
+                if _BANK_FILE.match(name) and not os.path.islink(path) and os.path.isfile(path):
+                    tar.add(path, arcname=f"candle_bank/{symbol}/{name}")
+                    count += 1
+    return count
+
+
+def backup_candle_bank(run_staging_dir: str, date_str: str, bucket) -> Optional[ArtifactResult]:
+    """El banco de velas como un artefacto más (N48). `None` si la carpeta del banco no existe."""
+    if not os.path.isdir(CANDLE_BANK_DIR):
+        logging.warning(f"[candle_bank] no existe {CANDLE_BANK_DIR}: no se respalda")
+        return None
+    result = ArtifactResult(label="candle_bank")
+    try:
+        local_snapshot = os.path.join(run_staging_dir, CANDLE_BANK_ARCHIVE)
+        files = archive_candle_bank(CANDLE_BANK_DIR, local_snapshot)
+        result.local_sha256 = sha256_of_file(local_snapshot)
+        result.local_ok = True
+        result.local_path = local_snapshot
+        logging.info(f"[candle_bank] {files} archivos en {CANDLE_BANK_ARCHIVE}")
+    except Exception as exc:
+        result.errors.append(f"archivo local: {exc}")
+        logging.exception("[candle_bank] el archivo local falló")
+        return result
+
+    object_key = f"candle_bank/{date_str}.tar.gz"
+    _finish_backup_media(result, local_snapshot, os.path.join(date_str, CANDLE_BANK_ARCHIVE), object_key,
+                         run_staging_dir, bucket)
+    return result
+
+
 # --------------------------------------------------------------------------
 # Logging, resumen, orquestación
 # --------------------------------------------------------------------------
@@ -501,6 +557,51 @@ def verify_restored_db(db_path: str) -> RestoreResult:
     return result
 
 
+def restore_candle_bank_archive(archive_path: str, target_dir: str, result: RestoreResult) -> None:
+    """
+    Descomprime el banco en `<target_dir>/candle_bank/` (N48). Primero valida cada entrada: tiene que ser un archivo
+    común llamado `candle_bank/<SÍMBOLO>/<CSV de temporalidad o status.json>`. Con una sola entrada distinta (una ruta
+    que sale del destino, un enlace, otro archivo) no escribe nada: todo o nada.
+    """
+    try:
+        with tarfile.open(archive_path, "r:gz") as tar:
+            members = tar.getmembers()
+            bad = [m.name for m in members if not m.isreg() or not _BANK_MEMBER.match(m.name)]
+            if bad or not members:
+                result.errors.append(f"archivo del banco inválido: {', '.join(bad) or 'vacío'}")
+                return
+            for member in members:
+                symbol, name = _BANK_MEMBER.match(member.name).groups()
+                dest_dir = os.path.join(target_dir, "candle_bank", symbol)
+                os.makedirs(dest_dir, exist_ok=True)
+                with tar.extractfile(member) as source, open(os.path.join(dest_dir, name), "wb") as dest:
+                    shutil.copyfileobj(source, dest)
+        result.integrity_ok = True
+        result.row_counts = {"files": len(members)}
+    except Exception as exc:
+        result.errors.append(f"archivo del banco: {exc}")
+
+
+def _check_restored_file(result: RestoreResult, dest: str, target_dir: str) -> None:
+    """La verificación de un artefacto restaurado según su tipo: DB, JSON o el banco de velas."""
+    name = os.path.basename(dest)
+    if name.endswith(".db"):
+        verification = verify_restored_db(dest)
+        result.integrity_ok = verification.integrity_ok
+        result.tables_found = verification.tables_found
+        result.row_counts = verification.row_counts
+        result.errors = verification.errors
+    elif name.endswith(".json"):
+        try:
+            with open(dest, "r", encoding="utf-8") as f:
+                json.load(f)
+            result.integrity_ok = True
+        except Exception as exc:
+            result.errors.append(f"JSON inválido: {exc}")
+    elif name == CANDLE_BANK_ARCHIVE:
+        restore_candle_bank_archive(dest, target_dir, result)
+
+
 def list_local_backups() -> list[dict]:
     """
     Lista los backups disponibles en el directorio de staging local
@@ -572,7 +673,7 @@ def list_b2_backups(bucket=None) -> list[dict]:
     for file_version, _ in bucket.ls(latest_only=True, recursive=True):
         parts = file_version.file_name.split("/")
         if len(parts) >= 2:
-            date_key = parts[1].replace(".db", "").replace(".json", "")
+            date_key = parts[1].replace(".tar.gz", "").replace(".db", "").replace(".json", "")
         else:
             date_key = "unknown"
         if date_key not in by_date:
@@ -621,19 +722,7 @@ def restore_from_local(timestamp: str, target_dir: str) -> list[RestoreResult]:
             sha256=sha256_of_file(dest),
         )
 
-        if filename.endswith(".db"):
-            verification = verify_restored_db(dest)
-            result.integrity_ok = verification.integrity_ok
-            result.tables_found = verification.tables_found
-            result.row_counts = verification.row_counts
-            result.errors = verification.errors
-        elif filename.endswith(".json"):
-            try:
-                with open(dest, "r", encoding="utf-8") as f:
-                    json.load(f)
-                result.integrity_ok = True
-            except Exception as exc:
-                result.errors.append(f"JSON inválido: {exc}")
+        _check_restored_file(result, dest, target_dir)
 
         results.append(result)
 
@@ -673,19 +762,7 @@ def restore_from_usb(date_str: str, target_dir: str) -> list[RestoreResult]:
             sha256=sha256_of_file(dest),
         )
 
-        if filename.endswith(".db"):
-            verification = verify_restored_db(dest)
-            result.integrity_ok = verification.integrity_ok
-            result.tables_found = verification.tables_found
-            result.row_counts = verification.row_counts
-            result.errors = verification.errors
-        elif filename.endswith(".json"):
-            try:
-                with open(dest, "r", encoding="utf-8") as f:
-                    json.load(f)
-                result.integrity_ok = True
-            except Exception as exc:
-                result.errors.append(f"JSON inválido: {exc}")
+        _check_restored_file(result, dest, target_dir)
 
         results.append(result)
 
@@ -712,7 +789,7 @@ def restore_from_b2(date_str: str, target_dir: str, bucket=None) -> list[Restore
         parts = file_version.file_name.split("/")
         if len(parts) >= 2:
             prefix = parts[0]  # e.g., "flight_account_001_xauusd"
-            ext = os.path.splitext(parts[-1])[1]  # e.g., ".db"
+            ext = ".tar.gz" if parts[-1].endswith(".tar.gz") else os.path.splitext(parts[-1])[1]  # e.g., ".db"
             local_name = f"{prefix}{ext}"
         else:
             local_name = os.path.basename(file_version.file_name)
@@ -730,19 +807,7 @@ def restore_from_b2(date_str: str, target_dir: str, bucket=None) -> list[Restore
                 sha256=sha256_of_file(dest),
             )
 
-            if local_name.endswith(".db"):
-                verification = verify_restored_db(dest)
-                result.integrity_ok = verification.integrity_ok
-                result.tables_found = verification.tables_found
-                result.row_counts = verification.row_counts
-                result.errors = verification.errors
-            elif local_name.endswith(".json"):
-                try:
-                    with open(dest, "r", encoding="utf-8") as f:
-                        json.load(f)
-                    result.integrity_ok = True
-                except Exception as exc:
-                    result.errors.append(f"JSON inválido: {exc}")
+            _check_restored_file(result, dest, target_dir)
 
             results.append(result)
         except Exception as exc:
@@ -818,6 +883,14 @@ def dry_run_backup() -> None:
     else:
         logging.warning("✗ Ningún archivo .db de cuenta existe — no se puede probar VACUUM INTO")
 
+    # 2b. Banco de velas (N48)
+    if os.path.isdir(CANDLE_BANK_DIR):
+        bank_bytes = sum(os.path.getsize(os.path.join(dirpath, name))
+                         for dirpath, _, names in os.walk(CANDLE_BANK_DIR) for name in names)
+        logging.info(f"✓ Banco de velas {CANDLE_BANK_DIR}: {bank_bytes:,} bytes sin comprimir")
+    else:
+        logging.warning(f"✗ Banco de velas {CANDLE_BANK_DIR} no existe: no se respaldará")
+
     # 3. USB
     if USB_BACKUP_PATH:
         if os.path.isdir(USB_BACKUP_PATH):
@@ -880,6 +953,9 @@ def main_backup(dry_run: bool = False):
         for account in accounts:
             results.append(backup_account(account, run_staging_dir, date_str, bucket))
         results.append(backup_flight_sessions_json(run_staging_dir, date_str, bucket))
+        bank = backup_candle_bank(run_staging_dir, date_str, bucket)
+        if bank is not None:
+            results.append(bank)
 
         print_summary(results, log_path)
 
