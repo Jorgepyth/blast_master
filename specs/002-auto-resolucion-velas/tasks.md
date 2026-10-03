@@ -902,9 +902,23 @@
       - **`saved_at`:** la hora real del "Confirm & Save", también en un retroactivo.
       - **Tests:** 4 nuevos en `tests/test_analysis_times.py` (10 en total). Mutación: 6 de 6 muertos.
       SUITE: `949 passed, 3 skipped, 97 warnings in 42.23s`; sin `.data/`.
-- [ ] T39. Aviso de una línea del Mark Price después de guardar, sin bloquear nunca. (RF-3)
+- [x] T39. Aviso de una línea del Mark Price después de guardar, sin bloquear nunca. (RF-3)
       Hecho cuando: los tests prueban el aviso con el banco cubriendo, que no hay aviso sin banco, y que el guardado
       ocurre en los dos casos. SUITE en verde.
+      Evidencia (2026-10-02):
+      - **`check_saved_mark_price()`** (`tools/auto_resolution.py`): lee solo la hora de velas anterior a
+        `mark_price_time` en 1M, 5M y 15M y usa `check_mark_price` (T31). Devuelve `None` si no hay símbolo MT5, si
+        el reloj no está verificado o si no hay vela en esa hora. Con el banco real tarda 0.14 s.
+      - **`warn_if_mark_price_off()`** (`cli/main.py`) muestra la línea "Warning: Mark Price ... The analysis was
+        saved." solo con `fits=False`. Atrapa cualquier error del chequeo.
+      - **Defecto encontrado por mutación:** al principio la llamada iba dentro del `try` de la transacción, así que
+        un error después del commit mostraba "Transaction rolled back" (falso, ya estaba guardado) y se salteaba
+        "¿Deseas alimentar un Tactical Audit ahora?". Ahora va después del bloque, y los tests comprueban que el
+        wizard llega hasta el final sin ese mensaje.
+      - **Tests:** 6 nuevos en `tests/test_analysis_times.py` (16 en total): el Mark Price dentro y fuera de la
+        vela, sin banco, con el reloj sin verificar, con el chequeo roto, y la función sola. Mutación: 7 de 7
+        muertos.
+      SUITE: `955 passed, 3 skipped, 97 warnings in 38.50s`; sin `.data/`.
 
 ## Etapa 5 — Propuestas en el Efficiency Audit
 

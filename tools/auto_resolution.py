@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Mapping, Optional
 
 from sqlalchemy import text
@@ -31,6 +31,7 @@ from config.auto_resolution import (
 )
 from core.candle_resolution import (
     LADDER,
+    MARK_PRICE_LADDER,
     OUTCOME_CONFIRMED,
     OUTCOME_INVALIDATED,
     STRUCTURAL_EXPANSION,
@@ -42,7 +43,9 @@ from core.candle_resolution import (
     FAILURE_OVERLAP,
     AnalysisResolution,
     Candle,
+    MarkPriceCheck,
     StructuralProposal,
+    check_mark_price,
     propose_structural,
     resolve_analysis,
 )
@@ -143,6 +146,35 @@ def bank_clock_reason(bank_dir: str) -> Optional[str]:
         return REASON_CLOCK_UNVERIFIED
     clock = status.get("clock")
     return None if clock == "verified" else (clock or REASON_CLOCK_UNVERIFIED)
+
+
+# Al guardar un análisis solo se leen las velas de la hora anterior al Mark Price: alcanza para la vela de 15M que lo
+# contiene, y el guardado no carga el banco entero.
+_MARK_PRICE_READ_WINDOW = timedelta(hours=1)
+
+
+def check_saved_mark_price(asset: Optional[str], mark_price: float, mark_price_time: datetime, bank_root: str,
+                           symbol_map: Optional[Mapping[str, str]] = None) -> Optional[MarkPriceCheck]:
+    """
+    RF-3: el chequeo del Mark Price de un análisis recién guardado, con la escalera 1M → 5M → 15M de
+    `core/candle_resolution.check_mark_price`. `None` si no se puede chequear: el asset no tiene símbolo MT5, el reloj
+    del símbolo no está verificado o el banco no tiene vela en esa hora. Solo lee; nunca escribe.
+    """
+    symbol = (MT5_SYMBOL_MAP if symbol_map is None else symbol_map).get(asset)
+    if symbol is None:
+        return None
+    bank_dir = os.path.join(bank_root, symbol)
+    if bank_clock_reason(bank_dir):
+        return None
+    candles: Dict[str, List[Candle]] = {}
+    for tf in MARK_PRICE_LADDER:
+        df = read_candle_csv(bank_csv_path(bank_dir, tf))
+        near = df[(df["time"] > mark_price_time - _MARK_PRICE_READ_WINDOW) & (df["time"] <= mark_price_time)]
+        if not near.empty:
+            candles[tf] = [Candle(row.time.to_pydatetime(), float(row.open), float(row.high), float(row.low),
+                                  float(row.close)) for row in near.itertuples(index=False)]
+    check = check_mark_price(mark_price, mark_price_time, candles)
+    return None if check.fits is None else check
 
 
 @dataclass(frozen=True)

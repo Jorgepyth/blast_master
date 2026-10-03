@@ -4,6 +4,7 @@ Las horas del análisis en `flow_new_analysis` (spec 002):
   en un retroactivo y en un clon [2] (RF-13b gana); la hora de elección en un clon [1] (RF-13, RF-13b, RF-13c).
 - T38: `mark_price_time`, la hora en que se tipea el Mark Price (la hora tipeada del análisis en un retroactivo), y
   `saved_at`, la hora real de "Confirm & Save", también en un retroactivo (RF-13d, RF-13e, N33).
+- T39: después de guardar, una línea de aviso si el Mark Price no cae en su vela; nunca bloquea el guardado (RF-3).
 
 El reloj es falso (`cli.main._now_gt`): devuelve `at(n)`, donde n es la cantidad de `inquirer.select` e
 `inquirer.text` ya respondidos. Así el test sabe en qué punto del wizard se tomó cada hora: `at(3)` es justo después
@@ -14,16 +15,20 @@ Mismo manejo del wizard que tests/test_wizard_safety_net.py (T7).
 import datetime
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 import cli.main as cli_main
+import config.auto_resolution as auto_cfg
+import tools.auto_resolution
 import tools.database
 from cli.main import GoBackException
 from cli.schemas.audit_efficiency import StructuralBias
 from cli.schemas.efficiency import Direction, Strength
 from cli.schemas.tactical import FractalType, Hierarchy, TacticalClassification, Timeframe
+from tools.candle_bank import build_status_payload, write_bank_status
 from tools.database import Base, UnifiedDepartment
 
 BASE = datetime.datetime(2026, 10, 2, 9, 0)
@@ -180,3 +185,83 @@ def test_typing_the_mark_price_again_after_going_back_updates_its_time(db, clock
     record = _run(db, _selects(), texts=("4568.12", GoBackException(), "4570.00", "4584", "4520"))
     assert float(record.mark_price) == 4570.00
     assert record.mark_price_time == at(17)  # 15 selects, el primer Mark Price y el segundo
+
+
+# --- T39: aviso del Mark Price -------------------------------------------------------------
+
+WARNING = "Warning: Mark Price"
+ALL_PROMPTS = 22  # 19 selects (el último, "feed a Tactical Audit now?") y 3 textos: el wizard llegó al final
+
+
+def _saved_and_finished(out):
+    assert "rolled back" not in out and ANSWERED["prompts"] == ALL_PROMPTS
+
+
+def _bank(root, clock="verified"):
+    """XAUUSD con velas de 1M entre 4560 y 4570 alrededor de las 09:16, la hora en que se tipea el Mark Price."""
+    bank_dir = root / "XAUUSD"
+    bank_dir.mkdir(parents=True)
+    times = [BASE - datetime.timedelta(hours=1) + datetime.timedelta(minutes=i) for i in range(120)]
+    pd.DataFrame({"time": times, "open": 4565.0, "high": 4570.0, "low": 4560.0, "close": 4565.0}).to_csv(
+        bank_dir / "1M.csv", index=False)
+    write_bank_status(str(bank_dir), build_status_payload("XAUUSD", clock, "overlap", "unverified", "r1", "merged", {}))
+
+
+@pytest.fixture
+def bank(tmp_path, monkeypatch):
+    root = tmp_path / "bank"
+    root.mkdir()
+    monkeypatch.setattr(auto_cfg, "CANDLE_BANK_DIR", str(root))
+    return root
+
+
+def _xau_selects():
+    selects = _selects()
+    selects[0] = "XAUUSDT.P"
+    return selects
+
+
+@pytest.mark.parametrize("mark_price, warned", [("4568.12", False), ("4600", True)])
+def test_the_mark_price_is_checked_against_its_candle_after_saving(db, clock, bank, capsys, mark_price, warned):
+    _bank(bank)
+    record = _run(db, _xau_selects(), texts=(mark_price, "4584", "4520"))
+    out = capsys.readouterr().out
+    assert record.mark_price_time == at(16)  # se guardó en los dos casos
+    _saved_and_finished(out)
+    assert (WARNING in out) is warned
+    if warned:
+        assert "Warning: Mark Price 4600 is outside its 1M candle at 2026-10-02 09:16 by 30.00" in out
+
+
+def test_without_a_bank_there_is_no_warning_and_the_analysis_is_saved(db, clock, bank, capsys):
+    record = _run(db, _xau_selects(), texts=("4600", "4584", "4520"))
+    out = capsys.readouterr().out
+    assert float(record.mark_price) == 4600 and WARNING not in out
+    _saved_and_finished(out)
+
+
+def test_an_unverified_clock_gives_no_warning(db, clock, bank, capsys):
+    _bank(bank, clock="clock_unverified")
+    _run(db, _xau_selects(), texts=("4600", "4584", "4520"))
+    assert WARNING not in capsys.readouterr().out
+
+
+def test_a_failing_check_never_blocks_the_save(db, clock, bank, capsys, monkeypatch):
+    def broken(*args, **kwargs):
+        raise ValueError("corrupted CSV")
+
+    monkeypatch.setattr(tools.auto_resolution, "check_saved_mark_price", broken)
+    record = _run(db, _xau_selects(), texts=("4600", "4584", "4520"))
+    out = capsys.readouterr().out
+    assert float(record.mark_price) == 4600 and WARNING not in out
+    _saved_and_finished(out)
+
+
+def test_check_saved_mark_price_is_none_when_it_cannot_check(bank):
+    from tools.auto_resolution import check_saved_mark_price
+    _bank(bank)
+    t = at(16)
+    assert check_saved_mark_price("ETHUSDT.P", 4600.0, t, str(bank)) is None             # sin símbolo MT5
+    assert check_saved_mark_price("XAUUSDT.P", 4600.0, t + datetime.timedelta(days=2), str(bank)) is None  # sin vela
+    assert check_saved_mark_price("XAUUSDT.P", 4600.0, t, str(bank)).fits is False
+    assert check_saved_mark_price("XAUUSDT.P", 4600.0, t, str(bank)).timeframe == "1M"

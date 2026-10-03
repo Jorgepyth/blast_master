@@ -2651,6 +2651,27 @@ def _dir_icon(d):
 def _str_icon(s):
     return "●●●" if s == "Strong" else "●●○" if s == "Mid" else "●○○"
 
+def warn_if_mark_price_off(asset, mark_price, mark_price_time):
+    """RF-3: después de guardar un análisis, una línea si el Mark Price no cae en su vela del banco. Es solo un aviso:
+    si el chequeo no se puede hacer o falla, no muestra nada y el análisis ya quedó guardado."""
+    if mark_price is None or mark_price_time is None:
+        return
+    try:
+        import config.auto_resolution as auto_cfg
+        import tools.auto_resolution as auto_resolution
+        check = auto_resolution.check_saved_mark_price(asset, float(mark_price), mark_price_time,
+                                                       auto_cfg.CANDLE_BANK_DIR)
+    except Exception as exc:
+        logging.info("Mark Price check skipped: %s", exc)
+        return
+    if check is not None and check.fits is False:
+        console.print(
+            f"Warning: Mark Price {float(mark_price):g} is outside its {check.timeframe} candle at "
+            f"{mark_price_time:%Y-%m-%d %H:%M} by {check.distance:.2f}. The analysis was saved.",
+            style="yellow", markup=False, highlight=False, soft_wrap=True,
+        )
+
+
 def ask_clone_timestamps():
     """
     El modo de hora de un clon: `(hora tipeada, None)` con "[2] Enter Custom/Backdated Time", y `(None, hora de la
@@ -3117,6 +3138,7 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None, start
                             if new_record.mark_price is not None:
                                 new_record.mark_price_time = backdated_timestamp or typed_at.get("mark_price")
                             new_record.saved_at = _now_gt()
+                            saved_mark_price = (new_record.mark_price, new_record.mark_price_time)
                             if backdated_timestamp:
                                 new_record.created_at = backdated_timestamp
                                 new_record.updated_at = backdated_timestamp
@@ -3147,6 +3169,9 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None, start
                             console.print(f"[danger]Transaction rolled back due to error: {e}[/danger]")
                             input("Press Enter to continue...")
                             return
+
+                    # Fuera del bloque de la transacción: el análisis ya está guardado y el aviso nunca lo deshace.
+                    warn_if_mark_price_off(asset, *saved_mark_price)
 
                     feed_now = inquirer.select(
                         message="¿Deseas alimentar un Tactical Audit ahora para este análisis?",
