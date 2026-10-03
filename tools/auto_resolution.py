@@ -42,7 +42,6 @@ from core.candle_resolution import (
     STRUCTURAL_REVERTED,
     FAILURE_LIQUIDITY_SWEEP,
     FAILURE_NA,
-    FAILURE_OVERLAP,
     AnalysisResolution,
     Candle,
     MarkPriceCheck,
@@ -77,7 +76,6 @@ STRUCTURAL_RESOLUTION_BY_CODE = {
 FAILURE_REASON_BY_CODE = {
     FAILURE_NA: FailureReason.NA.value,
     FAILURE_LIQUIDITY_SWEEP: FailureReason.LIQUIDITY_SWEEP.value,
-    FAILURE_OVERLAP: FailureReason.OVERLAP.value,
 }
 
 
@@ -330,13 +328,12 @@ class AccountResolver:
         resolution = resolve_analysis(anchor, candles, row.edge_validation_price, row.structural_invalidation,
                                       max_horizon=self.max_horizon, touched_level=exception[0] if exception else None)
         overlap = self._overlap(row, anchor, resolution)
+        # N52: la etiqueta Overlap es solo informativa; el tipo, la Structural Resolution y el Failure Reason salen del
+        # toque, como en cualquier otro análisis.
         structural = propose_structural(resolution, candles, row.edge_validation_price, row.structural_invalidation,
-                                        row.mark_price, overlap=overlap is not None)
+                                        row.mark_price)
         touched = resolution.outcome in (OUTCOME_CONFIRMED, OUTCOME_INVALIDATED)
-        if overlap is not None:
-            resolution_type = ResolutionType.OVERLAP_INVALIDATION.value
-        else:
-            resolution_type = RESOLUTION_TYPE_BY_OUTCOME.get(resolution.outcome)
+        resolution_type = RESOLUTION_TYPE_BY_OUTCOME.get(resolution.outcome)
         return AutoProposal(
             trade_id, symbol, anchor,
             reason=None if touched else resolution.outcome,

@@ -154,3 +154,22 @@ def test_a_time_with_a_source_is_never_taken_for_an_old_save_time(tmp_path):
     changes = _by_field(plan_account("000", db, bank))
     assert ("efficiency_audit", "audit_registration_time") not in changes
     assert changes[("efficiency_audit", "resolution_time")].kind == KIND_UNCHANGED
+
+
+def test_an_overlap_with_the_same_touch_as_the_manual_audit_is_not_a_conflict(tmp_path):
+    """N52: con un análisis B iniciado antes del toque, el plan propone lo del toque, no "Overlap Invalidation"."""
+    bank_root = tmp_path / "bank"
+    bank_root.mkdir()
+    _write_bank(bank_root)
+    db = tmp_path / "xau.db"
+    _write_db(db, [{"id": "a1", "created_at": T0 + timedelta(minutes=30)},
+                   {"id": "b1", "created_at": T0 + timedelta(minutes=50)}], old_schema=False)  # b1: 00:30, antes del toque
+    engine = create_engine(f"sqlite:///{db}")
+    with engine.begin() as conn:
+        conn.execute(insert(EfficiencyAudit.__table__).values(
+            id="a1", bias_a="BOS", real_bias_b="BOS", resolution_type=CONFIRMED, structural_resolution=MINIMAL,
+            failure_reason=FailureReason.NA.value))
+    engine.dispose()
+    changes = _by_field(plan_account("000", str(db), str(bank_root)))
+    for name in ("resolution_type", "structural_resolution", "failure_reason"):
+        assert changes[("efficiency_audit", name)].kind == "unchanged", name

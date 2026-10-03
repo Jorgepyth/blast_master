@@ -817,13 +817,35 @@
       - **Datos reales, en solo lectura:** `4b17b903` pasa a Confirmed a las 08:06 (4369.62 contra 4370). XAU S1
         todos 38/68 → 39/68; con retroactivos, 45/75 → 46/75. Los direccionales no cambian, porque es Choppy.
       SUITE: `968 passed, 3 skipped, 97 warnings in 57.50s`; sin `.data/`.
-- [ ] T30c. *(Agregada el 2026-10-03, N52.)* El Overlap deja de decidir las propuestas: el tipo sale del primer toque
+- [x] T30c. *(Agregada el 2026-10-03, N52.)* El Overlap deja de decidir las propuestas: el tipo sale del primer toque
       y la Structural Resolution y el Failure Reason, de RF-8 y RF-8b. La etiqueta sigue en `AutoProposal.overlap` y en
       el reporte. (RF-5, RF-8c)
       Hecho cuando: los tests prueban que un análisis con Overlap propone Confirmed o Invalidated según su toque, con la
       Structural Resolution y el Failure Reason de cualquier otro análisis, y conserva la etiqueta; que un Overlap sin
       toque no propone tipo; que el reporte sigue listando los Overlap; y que el backfill ya no propone "Overlap
       Invalidation". SUITE en verde.
+      Evidencia (2026-10-03):
+      - **`tools/auto_resolution.py`:** `propose()` toma el tipo de `RESOLUTION_TYPE_BY_OUTCOME` siempre, y llama a
+        `propose_structural` sin la etiqueta. La etiqueta se sigue calculando y queda en `AutoProposal.overlap`, que
+        usan el reporte y los criterios de acierto.
+      - **`core/candle_resolution.py`:** `propose_structural` ya no tiene el parámetro `overlap` ni el código
+        `FAILURE_OVERLAP`.
+      - **El wizard** no cambia de código: muestra lo que propone el servicio. "Overlap Invalidation" y el Failure
+        Reason "Overlap" se siguen pudiendo elegir a mano.
+      - **Tests:**
+        - `tests/test_auto_resolution.py`: un Overlap propone lo mismo que sin el B (Confirmed, mínima, N/A, la hora y
+          el MAE/MFE) y conserva la etiqueta; un Overlap sin toque no propone tipo.
+        - `tests/test_candle_resolution.py`: `propose_structural` ya no conoce el Overlap.
+        - `tests/test_auto_backfill.py`: un Overlap con el mismo toque que el audit manual no es conflicto.
+        - `tests/test_resolution_report.py` y `tests/test_cli_resolution_report.py`: la fixture a1 pasa a coincidir
+          con la regla nueva, y a3 muestra lo que proponen las velas.
+      - **Mutación:** 3 de 3 muertos (volver a proponer Overlap Invalidation, perder la etiqueta, volver a N/A).
+      - **El plan real, recalculado sobre copias:**
+        - **XAU:** los conflictos bajan de 180 a 167. Los de tipo bajan de 11 a 8: 5 son desacuerdos reales sobre qué
+          se tocó primero (3 Confirmed → Invalidated, 2 al revés), y 3 son análisis que el operador marcó como
+          "Overlap Invalidation" con la regla anterior. Los de Failure Reason bajan de 11 a 3.
+        - **BTC:** los conflictos bajan de 56 a 50, y los de tipo de 7 a 6 (3 reales y 3 marcados como Overlap).
+      SUITE: `1199 passed, 3 skipped, 405 warnings in 54.94s`; sin `.data/`.
 - [x] T31. Chequeo del Mark Price: escalera 1M → 5M → 15M con ±0.1% y versión por período. (RF-3, RF-3b)
       Hecho cuando: los tests prueban que coincide en 1M, que coincide recién en 15M, y que queda fuera (advertencia),
       más la versión por período para filas sin `mark_price_time`. SUITE en verde.

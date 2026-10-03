@@ -83,8 +83,9 @@ def test_win_rate_table_with_the_manual_rate_on_the_same_analyses(markdown):
 def test_agreement_per_field_and_one_row_per_difference_with_compliance(markdown):
     assert "| resolution_type | 1 | 1 | 3 |" in markdown
     assert "| structural_mae | 1 | 1 | 3 |" in markdown
-    assert ("| a3 | resolution_type | Overlap Invalidation (New Bias before resolution) | "
-            "Invalidated (B not equal to A) | Invalid |") in markdown
+    # a3 es Overlap, pero desde N52 las velas proponen lo de su toque (Confirmed), no "Overlap Invalidation".
+    assert "| a3 | resolution_type | Confirmed (A equal to B) | Invalidated (B not equal to A) | Invalid |" in markdown
+    assert "| a3 | failure_reason | N/A | Overlap -- nuevo bias antes de resolucion | Invalid |" in markdown
     assert "| a3 | structural_mae | 99.00 | 95.00 | Invalid |" in markdown
     assert "| a1 |" not in markdown.split("### Differences")[1].split("###")[0]  # a1 coincide en todo
 

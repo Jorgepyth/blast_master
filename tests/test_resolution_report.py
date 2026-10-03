@@ -17,7 +17,6 @@ from tools.database import EfficiencyAudit
 from tools.resolution_report import ManualAudit, build_report, read_manual_audits
 
 CONFIRMED, INVALIDATED = ResolutionType.CONFIRMED.value, ResolutionType.INVALIDATED.value
-OVERLAP = ResolutionType.OVERLAP_INVALIDATION.value
 
 ANALYSES = [
     # a1: toca a la 01:00; a3 empieza a las 00:40, antes del toque: a1 es Overlap con B = a3.
@@ -33,13 +32,15 @@ ANALYSES = [
 ]
 
 MANUAL = {
-    # a1 coincide en todo; el MAE tipeado (99.05) difiere de las velas (99.0) por menos de 0.1%.
-    "a1": dict(resolution_type=OVERLAP, structural_resolution=StructuralResolution.NA.value,
-               failure_reason=FailureReason.OVERLAP.value, specific_bias_compliance="Valid",
+    # a1 coincide en todo; el MAE tipeado (99.05) difiere de las velas (99.0) por menos de 0.1%. Es Overlap, pero
+    # desde N52 la propuesta sale del toque, como en cualquier otro análisis.
+    "a1": dict(resolution_type=CONFIRMED, structural_resolution=StructuralResolution.CONFIRMED_MINIMAL.value,
+               failure_reason=FailureReason.NA.value, specific_bias_compliance="Valid",
                resolution_time=T0 + timedelta(hours=5), structural_mae=99.05, structural_mfe=110.5),
     # a4 (no_levels) tiene audit y Valid: no entra en el win rate manual, porque no entra en el de velas.
     "a4": dict(resolution_type=CONFIRMED, specific_bias_compliance="Valid", resolution_time=T0 + timedelta(hours=3)),
-    # a3 difiere en el tipo y en el MAE (95 contra 99).
+    # a3 difiere en el tipo y en el MAE (95 contra 99). El operador lo marcó con la regla vieja del Overlap (N/A y
+    # Failure Reason "Overlap"): las velas proponen lo de cualquier Confirmed.
     "a3": dict(resolution_type=INVALIDATED, structural_resolution=StructuralResolution.NA.value,
                failure_reason=FailureReason.OVERLAP.value, specific_bias_compliance="Invalid",
                resolution_time=T0 + timedelta(hours=3), structural_mae=95.0, structural_mfe=110.5),

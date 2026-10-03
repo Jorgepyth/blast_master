@@ -447,10 +447,9 @@ def _extremes_through_touch(
 STRUCTURAL_REVERTED = "reverted"             # "Confirmed pero inmediatamente revertido" (N13)
 STRUCTURAL_EXPANSION = "expansion"           # "Confirmed + expansión significativa" (N14, N20)
 STRUCTURAL_MINIMAL = "minimal"               # "Confirmed pero mínima"
-STRUCTURAL_NA = "n/a"                        # en Invalidated y en Overlap (RF-8b, RF-8c)
+STRUCTURAL_NA = "n/a"                        # en Invalidated (RF-8b)
 FAILURE_NA = "n/a"                           # en los tres Confirmed (RF-8)
 FAILURE_LIQUIDITY_SWEEP = "liquidity_sweep"  # un Invalidated que barrió la invalidación (N15, N21)
-FAILURE_OVERLAP = "overlap"                  # Overlap Invalidation (RF-8c)
 
 
 @dataclass(frozen=True)
@@ -471,11 +470,9 @@ def propose_structural(
     edge_validation_price: float,
     structural_invalidation: float,
     mark_price: Optional[float],
-    overlap: bool = False,
 ) -> StructuralProposal:
     """
     RF-8 a RF-8d (plan.md §3.5). Las ventanas se recorren con el mismo camino de T25, desde la vela del toque:
-    - Overlap (RF-8c, lo decide T29) → `n/a` y `overlap`, sea cual sea el toque;
     - Confirmed (RF-8): gana lo que pasa primero, recorriendo vela por vela desde la del toque (N45):
       1. `reverted`: después de la vela del toque y antes de `REVERT_H` horas desde ella, el precio vuelve al Mark
          Price (en un long, `low <= mark_price`). Sin Mark Price, al precio de partida (RF-8d). La vela del toque no
@@ -489,9 +486,9 @@ def propose_structural(
       el toque de la invalidación, y lo más lejos que fue más allá de la invalidación en ese tramo, contando la vela
       del objetivo, es `SWEEP_R` R o menos (N15, N21). Si no, no se propone Failure Reason;
     - sin toque (open, ambiguous, pending, no_levels...) → no se propone nada.
+
+    La etiqueta Overlap no cambia nada de esto (N52): un análisis con Overlap se propone según su toque.
     """
-    if overlap:
-        return StructuralProposal(STRUCTURAL_NA, FAILURE_OVERLAP)
     if resolution.outcome == OUTCOME_CONFIRMED:
         reference = mark_price if mark_price is not None else resolution.start_price
         return _confirmed_proposal(resolution, candles_by_timeframe, edge_validation_price, structural_invalidation,

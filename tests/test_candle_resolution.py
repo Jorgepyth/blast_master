@@ -22,7 +22,6 @@ from core.candle_resolution import (
     OUTCOME_OPEN,
     FAILURE_LIQUIDITY_SWEEP,
     FAILURE_NA,
-    FAILURE_OVERLAP,
     STRUCTURAL_EXPANSION,
     STRUCTURAL_MINIMAL,
     STRUCTURAL_NA,
@@ -555,9 +554,9 @@ def _scenario(kind, specials=None, minutes_after=1500):
     return {"1M": rows}
 
 
-def _propose(bank, mark_price=101.0, evp=110.0, si=90.0, overlap=False):
+def _propose(bank, mark_price=101.0, evp=110.0, si=90.0):
     resolution = resolve_analysis(ANCHOR, bank, evp, si)
-    return resolution, propose_structural(resolution, bank, evp, si, mark_price, overlap=overlap)
+    return resolution, propose_structural(resolution, bank, evp, si, mark_price)
 
 
 def _mirror(bank):
@@ -682,9 +681,12 @@ def test_a_short_gets_the_same_proposal_as_the_mirrored_long(kind, specials, mar
     assert short_result == long_result
 
 
-def test_overlap_proposes_na_and_the_overlap_failure_reason_whatever_the_touch():
-    for bank in (_scenario("confirmed"), _scenario("invalidated"), {"1M": _candles("1M", T0, 30)}):
-        assert _propose(bank, overlap=True)[1] == StructuralProposal(STRUCTURAL_NA, FAILURE_OVERLAP)
+def test_propose_structural_no_longer_knows_about_overlap():
+    """N52: el Overlap es solo una etiqueta; la propuesta sale del toque y ya no hay código `overlap`."""
+    import inspect
+    import core.candle_resolution as candle_resolution
+    assert "overlap" not in inspect.signature(propose_structural).parameters
+    assert not hasattr(candle_resolution, "FAILURE_OVERLAP")
 
 
 def test_without_a_touch_nothing_is_proposed():

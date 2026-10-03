@@ -118,25 +118,28 @@ def test_levels_on_the_same_side_are_no_levels(env):
     assert (proposal.reason, proposal.resolution_type, proposal.resolution_time) == (REASON_NO_LEVELS, None, None)
 
 
-def test_a_later_analysis_before_the_touch_makes_it_an_overlap_and_keeps_the_touch_time(env):
+def test_an_overlap_is_only_a_label_and_the_proposal_follows_the_touch(env):
+    """N52: con un análisis B iniciado antes del toque, a1 se propone igual que sin B; solo cambia la etiqueta."""
     tmp_path, bank_root = env
     b = {"id": "b1", "created_at": T0 + timedelta(minutes=50)}  # ancla 00:30, antes del toque de a1 (01:00)
     proposal = _resolver(tmp_path, bank_root, [A, b]).propose("a1")
 
     assert proposal.overlap.b_id == "b1"
-    assert proposal.resolution_type == ResolutionType.OVERLAP_INVALIDATION.value
-    assert proposal.structural_resolution == StructuralResolution.NA.value
-    assert proposal.failure_reason == FailureReason.OVERLAP.value
+    assert proposal.resolution_type == ResolutionType.CONFIRMED.value
+    assert proposal.structural_resolution == StructuralResolution.CONFIRMED_MINIMAL.value
+    assert proposal.failure_reason == FailureReason.NA.value
     assert proposal.resolution_time == TOUCH  # N37: la hora del primer toque, también en un Overlap
+    assert (proposal.structural_mae, proposal.structural_mfe) == (99.0, 110.5)
 
 
-def test_an_overlap_that_has_not_touched_yet_is_labeled_with_pending_candles(env):
+def test_an_overlap_that_has_not_touched_yet_has_the_label_and_no_type(env):
     tmp_path, bank_root = env
     b = {"id": "b1", "created_at": T0 + timedelta(minutes=40)}
     resolver = _resolver(tmp_path, bank_root, [A, b], minutes=55)   # el banco termina antes del toque
     proposal = resolver.propose("a1")
-    assert proposal.reason == REASON_PENDING_CANDLES
-    assert proposal.resolution_type == ResolutionType.OVERLAP_INVALIDATION.value and proposal.resolution_time is None
+    assert proposal.reason == REASON_PENDING_CANDLES and proposal.overlap.b_id == "b1"
+    assert (proposal.resolution_type, proposal.structural_resolution, proposal.failure_reason,
+            proposal.resolution_time) == (None, None, None, None)
 
 
 def test_open_proposes_no_resolution_type(env):
