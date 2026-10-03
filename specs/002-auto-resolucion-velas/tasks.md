@@ -843,10 +843,26 @@
 
 ## Etapa 4 — Esquema y horas del análisis
 
-- [ ] T35. `tools/database.py`: columnas nuevas, ORM de `backfill_history` y shim de `init_db`. (RF-13d, RF-13e,
+- [x] T35. `tools/database.py`: columnas nuevas, ORM de `backfill_history` y shim de `init_db`. (RF-13d, RF-13e,
       RF-14, RF-14b, RF-18, NFR-1)
       Hecho cuando: los tests prueban que `init_db` sobre una DB de archivo en `tmp_path`, creada con el esquema
       viejo, agrega las 5 columnas y la tabla, y que correrlo dos veces no falla. SUITE en verde.
+      Evidencia (2026-10-02):
+      - **Columnas:** `analysis_start_time`, `mark_price_time` y `saved_at` en `UnifiedDepartment`;
+        `audit_registration_time` y `resolution_time_source` en `EfficiencyAudit`. El shim las agrega vacías.
+      - **Tabla:** `BackfillHistory`, según §2.2, con dos triggers que abortan UPDATE y DELETE (aclaración en el plan
+        §2.2).
+      - **Lector en solo lectura:** `assemble_p2_systematic_rows` pide columnas explícitas. Con la entidad completa,
+        sobre una DB sin migrar, fallaba con "no such column".
+      - **Fixtures:** los de T30 y T32 crean por defecto el esquema de antes de T35 (`drop_spec002_schema`, O1), y hay
+        un test con el esquema nuevo.
+      - **Tests:** `tests/test_database_spec002_schema.py` (10). Mutación: 7 de 7 muertos.
+      - **Ensayo sobre copias** de las 4 DBs reales, hechas con la API de backup de SQLite en solo lectura y guardadas
+        en el scratchpad: `init_db` dos veces. En las 4 aparecen las 5 columnas, la tabla y los 2 triggers;
+        `integrity_check` da ok, `foreign_key_check` vacío y los conteos de filas son iguales. Las reales tienen el
+        mismo SHA-256 antes y después.
+      - **Esto todavía no es T58:** las DBs reales no se tocaron.
+      SUITE: `922 passed, 3 skipped, 97 warnings in 33.70s`; sin `.data/`.
 - [ ] T36. `cli/schemas/audit_efficiency.py`: `resolution_time` opcional, `audit_registration_time` y
       `resolution_time_source`. (RF-7g, RF-14, RF-14b)
       Hecho cuando: los tests del schema (existentes y nuevos) pasan y el guardado persiste los campos nuevos vía

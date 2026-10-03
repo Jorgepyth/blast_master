@@ -42,8 +42,9 @@ def _write_bank(bank_root, symbol="XAUUSD", clock="verified", minutes=3000):
             symbol, clock, "overlap" if clock == "verified" else None, "unverified", "r1", "merged", {}))
 
 
-def _write_db(path, analyses):
-    """`analyses`: dicts con id, asset, created_at y opcionales evp, si, mark_price, is_backdated, market_bias."""
+def _write_db(path, analyses, old_schema=True):
+    """`analyses`: dicts con id, asset, created_at y opcionales evp, si, mark_price, is_backdated, market_bias. Por
+    defecto la DB queda con el esquema de antes de T35, como US100 (O1); `old_schema=False` deja las columnas nuevas."""
     engine = create_engine(f"sqlite:///{path}")
     Base.metadata.create_all(engine)
     with sessionmaker(bind=engine)() as session:
@@ -57,6 +58,9 @@ def _write_db(path, analyses):
                 mark_price=a.get("mark_price", 101.0)))
         session.commit()
     engine.dispose()
+    if old_schema:
+        from tests.test_database_spec002_schema import drop_spec002_schema
+        drop_spec002_schema(path)
 
 
 @pytest.fixture
@@ -161,6 +165,20 @@ def test_reading_tolerates_missing_new_columns_and_uses_analysis_start_time_when
     _write_bank(bank_root)
     proposal = AccountResolver(str(db), str(bank_root), account="000").propose("a1")
     assert proposal.anchor == T0 + timedelta(minutes=5)
+
+
+def test_with_the_new_schema_the_three_times_are_read(env):
+    tmp_path, _ = env
+    db = tmp_path / "account.db"
+    _write_db(db, [A], old_schema=False)
+    engine = create_engine(f"sqlite:///{db}")
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE unified_department SET analysis_start_time = '2026-06-01 00:05:00.000000', "
+                          "mark_price_time = '2026-06-01 00:20:00.000000', saved_at = '2026-06-01 00:31:00.000000'"))
+    engine.dispose()
+    (row,) = read_analysis_rows(str(db))
+    assert (row.analysis_start_time, row.mark_price_time, row.saved_at) == (
+        T0 + timedelta(minutes=5), T0 + timedelta(minutes=20), T0 + timedelta(minutes=31))
 
 
 def test_the_database_is_read_without_writing_a_single_byte(env):

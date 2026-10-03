@@ -3,7 +3,7 @@ import uuid
 import datetime
 from enum import Enum
 from typing import Dict, Any, List, Optional
-from sqlalchemy import String, DateTime, Numeric, Integer, ForeignKey, select, JSON, BigInteger, SmallInteger, Boolean, Text, event, text
+from sqlalchemy import String, DateTime, Numeric, Integer, ForeignKey, select, JSON, BigInteger, SmallInteger, Boolean, Text, event, text, DDL
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session, relationship
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
@@ -120,6 +120,12 @@ class UnifiedDepartment(Base):
     edge_validation_price: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
     structural_invalidation: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
     mark_price: Mapped[Optional[float]] = mapped_column(Numeric(18, 8), nullable=True)
+    # Spec 002 (plan.md §2.1), GT naive como `created_at`. `analysis_start_time`: el ancla del análisis (RF-13 a
+    # RF-13c); `mark_price_time`: cuándo se tipeó el Mark Price, la hora tipeada en un retroactivo (RF-13d);
+    # `saved_at`: la hora real de "Confirm & Save", también en un retroactivo (RF-13e). Vacías en las filas viejas.
+    analysis_start_time: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
+    mark_price_time: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
+    saved_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
 
     analysis_layers: Mapped[List["AnalysisLayer"]] = relationship(back_populates="unified_department", cascade="all, delete-orphan")
     efficiency_audit: Mapped[Optional["EfficiencyAudit"]] = relationship(back_populates="unified_department", cascade="all, delete-orphan", single_parent=True)
@@ -138,6 +144,11 @@ class EfficiencyAudit(Base):
     false_regime_rate: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     efficiency_timeframe: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     resolution_time: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
+    # Spec 002 (N1, N25): `resolution_time` pasa a ser la hora del primer toque según las velas; la hora en que se
+    # guardó el audit va a `audit_registration_time` (RF-14). `resolution_time_source` dice de dónde salió
+    # `resolution_time` (`candles`, `corrected`) o por qué está vacío (el código de motivo) (RF-14b).
+    audit_registration_time: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
+    resolution_time_source: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     
     lesson_learned: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     # Structural_MAE/MFE: entrada MANUAL (no hay feed de precio en el sistema —
@@ -256,6 +267,31 @@ class TacticalAudit(Base):
     size_migrated_at: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     unified_department: Mapped["UnifiedDepartment"] = relationship(back_populates="tactical_audits")
+
+class BackfillHistory(Base):
+    """
+    Spec 002 (RF-18, N27; plan.md §2.2): una fila por cada cambio que aplica el backfill, en la DB de cada cuenta.
+    Solo acepta inserciones: dos triggers abortan cualquier UPDATE o DELETE (se crean junto con la tabla).
+    `kind` es `fill`, `accepted_conflict` o `legacy_move`; `source`, `candles` o un código de motivo.
+    """
+    __tablename__ = "backfill_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    run_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    table_name: Mapped[str] = mapped_column(String, nullable=False)
+    record_id: Mapped[str] = mapped_column(String, nullable=False)
+    field: Mapped[str] = mapped_column(String, nullable=False)
+    old_value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    new_value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(String, nullable=False)
+
+
+for _statement in ("UPDATE", "DELETE"):
+    event.listen(BackfillHistory.__table__, "after_create", DDL(
+        f"CREATE TRIGGER IF NOT EXISTS backfill_history_no_{_statement.lower()} BEFORE {_statement} ON backfill_history "
+        "BEGIN SELECT RAISE(ABORT, 'backfill_history is append-only'); END"))
 
 engine_default = None
 
@@ -376,6 +412,17 @@ def init_db(db_url: str = "sqlite:///.data/flight_account_001_xauusd.db"):
                 conn.execute(text("ALTER TABLE unified_department ADD COLUMN efficiency_page_id VARCHAR"))
             if 'is_backdated' not in columns:
                 conn.execute(text("ALTER TABLE unified_department ADD COLUMN is_backdated BOOLEAN DEFAULT 0"))
+            # Spec 002 (plan.md §2.1, NFR-1): solo agregados, vacíos en las filas viejas.
+            for _col in ("analysis_start_time", "mark_price_time", "saved_at"):
+                if _col not in columns:
+                    conn.execute(text(f"ALTER TABLE unified_department ADD COLUMN {_col} DATETIME"))
+
+        if "efficiency_audit" in inspector.get_table_names():
+            columns = [col['name'] for col in inspector.get_columns('efficiency_audit')]
+            if 'audit_registration_time' not in columns:
+                conn.execute(text("ALTER TABLE efficiency_audit ADD COLUMN audit_registration_time DATETIME"))
+            if 'resolution_time_source' not in columns:
+                conn.execute(text("ALTER TABLE efficiency_audit ADD COLUMN resolution_time_source VARCHAR"))
                 
     if db_url == "sqlite:///.data/flight_account_001_xauusd.db":
         engine_default = engine

@@ -91,6 +91,14 @@ Ejemplo de fila: `(1, '7f3a2c1e-...', '2026-10-05 14:20:11', 'legacy_move', 'eff
 Solo se insertan filas. El código de `tools/auto_backfill.py` nunca hace `UPDATE` ni `DELETE` sobre esta tabla, y un
 test lo verifica (RF-18).
 
+**Aclaración de T35 (2026-10-02):**
+- **La DB también lo impide.** Dos triggers, `backfill_history_no_update` y `backfill_history_no_delete`, abortan con
+  `backfill_history is append-only`. Se crean junto con la tabla (evento `after_create` del ORM), así que existen en
+  las DBs nuevas y en las viejas que migra `init_db`. Es un agregado, como la tabla.
+- **Lectores en solo lectura.** Las columnas nuevas del ORM rompen a todo código que haga `SELECT` de la entidad
+  completa sobre una DB que el CLI todavía no migró, porque falla con "no such column". El único caso era
+  `assemble_p2_systematic_rows` (`tools/p2_backtest.py`), que ahora pide columnas explícitas.
+
 ### 2.3 Banco de velas (nuevo)
 
 - **Ubicación:** `${CANDLE_BANK_DIR}/{MT5_SYMBOL}/{TF}.csv`. El valor por defecto de `CANDLE_BANK_DIR` es

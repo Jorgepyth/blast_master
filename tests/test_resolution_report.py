@@ -6,8 +6,7 @@ sin reloj verificado. Solo lectura.
 from datetime import datetime, timedelta
 
 import pytest
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine, insert, text
 
 from cli.schemas.audit_efficiency import FailureReason, ResolutionType, StructuralResolution
 from config.auto_resolution import REASON_CLOCK_UNVERIFIED, REASON_NO_LEVELS, REASON_PENDING_CANDLES
@@ -47,12 +46,13 @@ MANUAL = {
 }
 
 
-def _add_manual_audits(db_path, audits):
+def _add_manual_audits(db_path, audits, real_bias_b="BOS"):
+    """Un `insert` de Core, que nombra solo las columnas que recibe: sirve también con el esquema de antes de T35."""
     engine = create_engine(f"sqlite:///{db_path}")
-    with sessionmaker(bind=engine)() as session:
+    with engine.begin() as conn:
         for trade_id, fields in audits.items():
-            session.add(EfficiencyAudit(id=trade_id, bias_a="BOS", real_bias_b="BOS", **fields))
-        session.commit()
+            conn.execute(insert(EfficiencyAudit.__table__).values(
+                **dict(dict(id=trade_id, bias_a="BOS", real_bias_b=real_bias_b), **fields)))
     engine.dispose()
 
 
@@ -139,13 +139,8 @@ def test_backdated_loading_delay_appears_once_saved_at_exists(report, tmp_path):
 
 def test_manual_audits_read_with_explicit_columns_and_open_without_real_bias_b_counts_as_empty(tmp_path):
     _write_db(tmp_path / "x.db", [{"id": "a1", "created_at": T0}, {"id": "a2", "created_at": T0}])
-    engine = create_engine(f"sqlite:///{tmp_path / 'x.db'}")
-    with sessionmaker(bind=engine)() as session:
-        session.add(EfficiencyAudit(id="a1", bias_a="BOS", resolution_type="Open", real_bias_b=None))
-        session.add(EfficiencyAudit(id="a2", bias_a="BOS", resolution_type=CONFIRMED, real_bias_b="BOS",
-                                    structural_mae=2650))
-        session.commit()
-    engine.dispose()
+    _add_manual_audits(tmp_path / "x.db", {"a1": dict(resolution_type="Open", real_bias_b=None),
+                                           "a2": dict(resolution_type=CONFIRMED, structural_mae=2650)})
     audits = read_manual_audits(str(tmp_path / "x.db"))
     assert audits["a1"].resolution_type is None  # N9: "Open" de un audit nunca hecho es vacío
     assert audits["a2"] == ManualAudit("a2", CONFIRMED, None, None, None, None, None, 2650.0, None)

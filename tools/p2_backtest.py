@@ -863,7 +863,13 @@ def assemble_p2_systematic_rows(
     rows: List[P2SystematicRow] = []
     exclusions: List[ExclusionRecord] = []
 
-    trades = session.scalars(select(UnifiedDepartment)).all()
+    # Columnas explícitas, nunca la entidad completa: una cuenta que el CLI no migró no tiene las columnas nuevas del
+    # ORM (spec 002, T35) y el SELECT fallaría con "no such column".
+    trades = session.execute(select(
+        UnifiedDepartment.id, UnifiedDepartment.created_at, UnifiedDepartment.is_backdated,
+        UnifiedDepartment.edge_validation_price, UnifiedDepartment.structural_invalidation,
+        UnifiedDepartment.mark_price, UnifiedDepartment.calc_edge, UnifiedDepartment.asset,
+    )).all()
     for trade in trades:
         anchor = resolve_anchor(session, trade.id, trade.created_at)
 
