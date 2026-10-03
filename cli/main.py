@@ -430,19 +430,29 @@ def get_keypress():
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
     return None
 
-def get_enum_choice(prompt_text, enum_class, exclude=None):
+def get_enum_choice(prompt_text, enum_class, exclude=None, default=None):
+    """`default` (spec 002, RF-7; plan T11): un valor propuesto, como miembro del enum o como su texto. Queda
+    preseleccionado y el mensaje lo marca `(auto: ...)`; si no está entre las opciones, se ignora. Sin default, el prompt
+    es el de siempre."""
     if exclude is None:
         exclude = []
     choices = [e for e in enum_class if e.name != "SKIP" and e not in exclude]
     inq_choices = [Choice(e, name=f"[{i+1}] {e.value}") for i, e in enumerate(choices)]
-    
+    proposed = next((e for e in choices if default is not None and (e == default or e.value == default)), None)
+    extra = {}
+    message = f"{prompt_text} >"
+    if proposed is not None:
+        extra["default"] = proposed
+        message = f"{prompt_text} (auto: {proposed.value}) >"
+
     result = bind_pause(inquirer.select(
-        message=f"{prompt_text} >",
+        message=message,
         choices=inq_choices,
         pointer=">",
         qmark="",
         keybindings={"skip": []},
-        style=INQUIRER_STYLE
+        style=INQUIRER_STYLE,
+        **extra
     )).execute()
     return result
 
@@ -764,7 +774,15 @@ def get_mandatory_int(prompt_text, min_val=None, max_val=None):
     )).execute()
     return int(val)
 
-def get_mandatory_float(prompt_text, min_val=None, max_val=None):
+def _plain_number(value: float) -> str:
+    """Un número sin notación científica ni ceros de más: 4369.62, 0.00005, 2650."""
+    text = format(value, "f").rstrip("0").rstrip(".")
+    return text if text not in ("", "-0") else "0"
+
+
+def get_mandatory_float(prompt_text, min_val=None, max_val=None, default=None):
+    """`default` (spec 002, RF-7): un valor propuesto, ya escrito en el campo (Enter lo acepta) y marcado `(auto: ...)`
+    en el mensaje. Sin default, el prompt es el de siempre."""
     def validate_float(result):
         if not result: return False
         is_float = result.replace('.', '', 1).isdigit() or (result.startswith('-') and result[1:].replace('.', '', 1).isdigit())
@@ -774,14 +792,56 @@ def get_mandatory_float(prompt_text, min_val=None, max_val=None):
         if max_val is not None and v > max_val: return False
         return True
 
+    extra = {}
+    message = f"{prompt_text} >"
+    if default is not None:
+        extra["default"] = _plain_number(float(default))
+        message = f"{prompt_text} (auto: {extra['default']}) >"
+
     val = bind_pause(inquirer.text(
-        message=f"{prompt_text} >",
+        message=message,
         validate=validate_float,
         invalid_message="Must be a valid float",
         keybindings={"skip": []},
-        style=INQUIRER_STYLE
+        style=INQUIRER_STYLE,
+        **extra
     )).execute()
     return float(val)
+
+
+def get_optional_datetime(prompt_text, default=None, precision=None):
+    """
+    Spec 002 (RF-7c, RF-7g; plan T11): una fecha y hora opcional. Con `default` (la hora propuesta por las velas), el
+    campo ya viene escrito y el mensaje dice `(auto: YYYY-MM-DD HH:MM, <precision>)`; Enter la acepta, otra hora la
+    corrige y dejarlo vacío devuelve `None`. Sin default, el mensaje dice `[Optional]`.
+    """
+    def validate_datetime(result):
+        if not result or not result.strip():
+            return True
+        try:
+            datetime.datetime.strptime(result.strip(), "%Y-%m-%d %H:%M")
+            return True
+        except ValueError:
+            return False
+
+    extra = {}
+    message = f"{prompt_text} (YYYY-MM-DD HH:MM) [Optional] >"
+    if default is not None:
+        extra["default"] = default.strftime("%Y-%m-%d %H:%M")
+        note = f", {precision}" if precision else ""
+        message = f"{prompt_text} (YYYY-MM-DD HH:MM) (auto: {extra['default']}{note}) >"
+
+    val = bind_pause(inquirer.text(
+        message=message,
+        validate=validate_datetime,
+        invalid_message="Must be in format YYYY-MM-DD HH:MM, or empty",
+        keybindings={"skip": []},
+        style=INQUIRER_STYLE,
+        **extra
+    )).execute()
+    if not val or not val.strip():
+        return None
+    return datetime.datetime.strptime(val.strip(), "%Y-%m-%d %H:%M")
 
 
 def render_pnl_box(asset, entry_price, size_lots, stop_loss, take_profit):

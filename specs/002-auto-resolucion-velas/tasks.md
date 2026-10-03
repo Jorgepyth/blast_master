@@ -982,10 +982,20 @@
 
 ## Etapa 5 — Propuestas en el Efficiency Audit
 
-- [ ] T40. Parámetro `default` en `get_enum_choice` y `get_mandatory_float`, y helper nuevo
+- [x] T40. Parámetro `default` en `get_enum_choice` y `get_mandatory_float`, y helper nuevo
       `get_optional_datetime`. (RF-7, RF-7e)
       Hecho cuando: los tests prueban que el default llega a `inquirer`, que sin default el comportamiento es el de
       hoy, y que los tests existentes siguen en verde. SUITE en verde.
+      Evidencia (2026-10-03):
+      - **Con un valor propuesto:** el mensaje lo marca `(auto: ...)` y llega a InquirerPy como `default`.
+        `get_enum_choice` acepta el miembro o su texto e ignora un default que no está entre las opciones.
+        `get_mandatory_float` lo escribe sin notación científica.
+      - **`get_optional_datetime`:** `(auto: 2026-08-21 09:15, ±1 min)`, acepta el campo vacío y devuelve `None` en
+        ese caso.
+      - **Sin default:** InquirerPy recibe exactamente lo mismo que antes; lo prueban los tests.
+      - **Tests:** `tests/test_prompt_defaults.py`, 13 tests. Mutación: 9 de 9 muertos; uno sobrevivió al principio y
+        se agregó un test con un `Enum` común.
+      SUITE: `1018 passed, 3 skipped, 97 warnings in 47.16s` (más el test nuevo); sin `.data/`.
 - [ ] T41. Efficiency, parte 1: pedir la propuesta al abrir el wizard y mostrar el motivo en una línea cuando no la
       hay. (RF-7f, RF-5b)
       Hecho cuando: los tests prueban "Still open according to candles", `pending_candles` y `clock_unverified`, y que
