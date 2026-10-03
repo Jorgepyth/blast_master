@@ -1104,7 +1104,7 @@
         3.9 s; el restaurado es idéntico byte a byte y el banco no cambió. No se corrió ningún backup real, porque
         el cron usa el checkout principal: esto entra con la integración.
       SUITE: `997 passed, 3 skipped, 97 warnings in 36.93s`; sin `.data/`.
-- [ ] T58. 🖐 **Migración de esquema de las 4 DBs reales con las 3 puertas**, antes de correr cualquier comando del
+- [x] T58. 🖐 **Migración de esquema de las 4 DBs reales con las 3 puertas**, antes de correr cualquier comando del
       CLI nuevo en el checkout principal (N41, NFR-1, R9, constitución principio 5):
       1. copiar las 4 `.data/flight_account_*.db` a un directorio temporal, correr `init_db` sobre cada copia, y
          verificar con `PRAGMA table_info` y `PRAGMA integrity_check`;
@@ -1115,6 +1115,20 @@
       Hecho cuando: las 4 copias y después las 4 reales tienen las 5 columnas nuevas y `backfill_history`,
       `integrity_check` da `ok`, el conteo de filas de cada tabla es igual antes y después, y el backup del día
       figura en `tools/backup.py list`.
+      **Hecho 2026-10-03, con el "go" del usuario ("continue with the go for T58"):**
+      1. **Copias:** se copiaron las 4 DBs con la API de backup de SQLite, en solo lectura, y se corrió `init_db` del
+         código de la rama tres veces sobre cada copia. Las 5 columnas, `backfill_history` y sus 2 triggers;
+         `integrity_check` ok; `foreign_key_check` vacío; conteos iguales. Desde la segunda corrida no cambia nada.
+      2. **Backup:** `tools/backup.py backup`, el del cron, a las 09:04, run `20261003_090434`. Copia local y B2 con
+         `b2_verified=True` en los 5 artefactos, y `verify` ok en las 4 copias locales. **El USB falló**: `/mnt/d` no
+         está montado. Tampoco lo estaba a las 08:00 del 1 y del 3 de octubre; solo el 2 dio 5/5. Con dos copias
+         verificadas, una inmutable en B2, y una migración que solo agrega, se siguió.
+      3. **Aprobación:** el "go" del usuario.
+      4. **Migración real:** un comando de Python aparte, sin abrir el CLI y sin procesos del CLI corriendo. En las 4
+         DBs quedaron las 5 columnas, `backfill_history` vacía y los 2 triggers; `integrity_check` ok y
+         `foreign_key_check` vacío. Antes y después, los conteos son iguales: XAU 81 unified, 82 tactical, 81
+         efficiency y 405 layers; BTC 24/24/24/120; US500 10/2/10/50; US100 8/6/8/40. En US100 el shim también agregó
+         las columnas viejas que le faltaban, porque el CLI no la abría desde antes de `stop_slippage_r`.
 - [x] T59. 🖐 Crear el banco real con `candles import-legacy` en el checkout principal. Escribe en `.data/`, así que
       requiere tu aprobación. (RF-2c)
       Hecho cuando: `candles status` muestra XAUUSD y BTCUSD verificados, USTEC en `clock_unverified`, y el 5M de XAU
