@@ -47,8 +47,12 @@ from core.candle_resolution import (
     Candle,
     MarkPriceCheck,
     StructuralProposal,
+    TpCheck,
+    TradeExcursion,
     check_mark_price,
+    could_hit_tp,
     propose_structural,
+    trade_excursion,
     resolve_analysis,
 )
 from core.outcome_metrics import AnalysisOutcome, OverlapLabel, analysis_anchor, overlap_labels
@@ -211,6 +215,41 @@ def _overlap_limit(resolution: AnalysisResolution) -> Optional[datetime]:
     if resolution.outcome in (OUTCOME_CONFIRMED, OUTCOME_INVALIDATED):
         return touch.touch_time
     return touch.path_end
+
+
+@dataclass(frozen=True)
+class TacticalProposal:
+    """La propuesta para el Tactical Audit (T45, T46): MAE/MFE en R y `Could hit TP?`. `reason` es el motivo común a
+    los dos (sin símbolo MT5, reloj sin verificar); cada parte trae además el suyo."""
+    symbol: Optional[str]
+    reason: Optional[str] = None
+    excursion: Optional[TradeExcursion] = None
+    tp: Optional[TpCheck] = None
+
+
+def propose_tactical(asset: Optional[str], entry_time: Optional[datetime], exit_time: Optional[datetime],
+                     entry_price: float, stop_loss: float, take_profit: Optional[float], bank_root: str,
+                     symbol_map: Optional[Mapping[str, str]] = None) -> TacticalProposal:
+    """
+    T45, T46 (RF-9, RF-10): MAE/MFE y `Could hit TP?` de una orden con las velas del banco de su símbolo. La dirección
+    es la del schema del Tactical Audit: Long si la entrada está por encima del SL, Short si no. Solo lee.
+    """
+    symbol = (MT5_SYMBOL_MAP if symbol_map is None else symbol_map).get(asset)
+    if symbol is None:
+        return TacticalProposal(None, REASON_NO_MT5_SYMBOL)
+    bank_dir = os.path.join(bank_root, symbol)
+    clock_reason = bank_clock_reason(bank_dir)
+    if clock_reason:
+        return TacticalProposal(symbol, clock_reason)
+    candles = load_bank_candles(bank_dir)
+    direction = "long" if entry_price > stop_loss else "short"
+    excursion = None
+    if entry_time is not None and exit_time is not None:
+        excursion = trade_excursion(direction, entry_time, exit_time, entry_price, stop_loss, candles)
+    tp = None
+    if entry_time is not None and take_profit is not None:
+        tp = could_hit_tp(direction, entry_time, entry_price, stop_loss, take_profit, candles)
+    return TacticalProposal(symbol, None, excursion, tp)
 
 
 def propose_for_trade(db_path: str, trade_id: str, bank_root: str) -> AutoProposal:

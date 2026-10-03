@@ -1060,14 +1060,38 @@
 
 ## Etapa 6 — Propuestas en el Tactical Audit
 
-- [ ] T45. MAE/MFE propuestos, con la TF más fina validada, R, tope de 10 y los motivos `no_interval`, `zero_r` y
+- [x] T45. MAE/MFE propuestos, con la TF más fina validada, R, tope de 10 y los motivos `no_interval`, `zero_r` y
       `pending_candles`. (RF-9, RF-9b, RF-9c, RF-9d)
       Hecho cuando: los tests cubren la propuesta aceptada y corregida y cada motivo, y la red de seguridad de T6 sigue
       en verde. SUITE en verde.
-- [ ] T46. `Could hit TP?` propuesto, más `invalid_tp` y la vela doble. `session` no se toca. (RF-10, RF-10b, RF-10c,
+- [x] T46. `Could hit TP?` propuesto, más `invalid_tp` y la vela doble. `session` no se toca. (RF-10, RF-10b, RF-10c,
       RF-10d)
       Hecho cuando: los tests cubren "yes", "no", la vela doble sin propuesta e `invalid_tp`, y `session` sigue
       calculándose igual. SUITE en verde.
+      Evidencia de T45 y T46 (2026-10-03), en un solo commit porque comparten el núcleo, el servicio y el wizard:
+      - **Núcleo** (`core/candle_resolution.py`):
+        - `trade_excursion()`: la primera de 1M, 5M y 15M que cubre todo el trade; las velas que se solapan con
+          [entrada, salida], también las de la entrada y la salida; en R, de 0 a 10 y a 2 decimales.
+        - `could_hit_tp()`: el camino de T25 solo en 1M, 5M y 15M (N8), hasta el SL o `MAX_HORIZON`.
+        - Motivos: `no_interval`, `zero_r`, `invalid_tp`, `ambiguous`, `pending_candles` y `no_history`.
+      - **Servicio:** `propose_tactical()` en `tools/auto_resolution.py`, con la dirección del schema (Long si la
+        entrada está sobre el SL), el símbolo MT5 y el reloj verificado.
+      - **Wizard:**
+        - `Could hit TP?`, MAE y MFE llevan la propuesta como default `(auto)`, también en "Edit a Field".
+        - Sin propuesta, una línea con el motivo y los prompts de siempre.
+        - La propuesta se calcula una vez por cada combinación de datos de la orden.
+        - Un error del servicio nunca bloquea.
+        - `session` sigue saliendo de `entry_time`.
+      - **Tests:** `tests/test_trade_proposals.py` (17) y `tests/test_tactical_proposals.py` (7). La red de seguridad
+        de T6 sigue en verde. Mutación: 15 de 15 en el núcleo y 11 de 11 en el servicio y el wizard; 2 sobrevivieron
+        al principio (el camino solo en 1M/5M/15M y el reloj sin verificar) y se agregaron sus tests.
+      - **Datos reales, en solo lectura:**
+        - XAU: de 35 órdenes llenadas, hay MAE/MFE propuesto en 31; las 4 sin propuesta son `no_interval`, con la
+          salida igual a la entrada. Coinciden con lo manual, a ±0.1R, el MAE en 6 y el MFE en 12. Las diferencias
+          tienen mediana casi 0 (sin sesgo, pero dispersas). `Could hit TP?` coincide en 32 de 35.
+        - BTC: 4 órdenes.
+        - **Punto a revisar con el usuario.**
+      SUITE: `1069 passed, 3 skipped, 144 warnings in 35.88s`; sin `.data/`.
 
 ## Etapa 7 — Backfill
 

@@ -564,6 +564,111 @@ def _invalidated_proposal(
     return StructuralProposal(STRUCTURAL_NA)
 
 
+# --- Propuestas del Tactical Audit (T45, T46; RF-9, RF-10; N8, N12) -------------------------------------------------
+
+# N8: el MAE/MFE táctico y `could_hit_tp` usan la TF más fina validada: 1M, si no 5M, si no 15M.
+TRADE_LADDER = ("1M", "5M", "15M")
+TRADE_EXCURSION_CAP = 10.0  # el máximo de los campos MAE y MFE del wizard (baseline §2.5)
+REASON_NO_INTERVAL = "no_interval"  # RF-9b: la salida no es posterior a la entrada
+REASON_ZERO_R = "zero_r"            # RF-9c: la entrada es igual al SL
+REASON_INVALID_TP = "invalid_tp"    # RF-10d: el TP está del lado contrario de la tesis
+
+
+@dataclass(frozen=True)
+class TradeExcursion:
+    """MAE y MFE de un trade en R (RF-9), con la TF usada; `reason` cuando no se proponen."""
+    mae_r: Optional[float]
+    mfe_r: Optional[float]
+    timeframe: Optional[str]
+    reason: Optional[str] = None
+
+
+def _in_r(distance: float, r: float) -> float:
+    return round(min(max(distance / r, 0.0), TRADE_EXCURSION_CAP), 2)
+
+
+def trade_excursion(
+    direction: str,
+    entry_time: datetime,
+    exit_time: datetime,
+    entry_price: float,
+    stop_loss: float,
+    candles_by_timeframe: Mapping[str, Sequence[Candle]],
+) -> TradeExcursion:
+    """
+    RF-9 (N8): el MAE y el MFE de una orden llenada, en R = |entrada − SL|. Usa la primera TF de 1M, 5M y 15M cuyas
+    velas cubren todo el trade, y toma el máximo y el mínimo (mechas incluidas) de las velas que se solapan con
+    [entrada, salida], también las de la entrada y la salida. Cada valor va de 0 a 10, a 2 decimales. Sin propuesta:
+    `no_interval` (RF-9b), `zero_r` (RF-9c), y `no_history` o `pending_candles` si el banco no cubre el trade (RF-9d).
+    """
+    if exit_time <= entry_time:
+        return TradeExcursion(None, None, None, REASON_NO_INTERVAL)
+    r = abs(entry_price - stop_loss)
+    if r == 0:
+        return TradeExcursion(None, None, None, REASON_ZERO_R)
+    trade_bars = {tf: candles_by_timeframe.get(tf) or () for tf in TRADE_LADDER}
+    coverage = bank_coverage(trade_bars)
+    for tf in TRADE_LADDER:
+        span = coverage.by_timeframe.get(tf)
+        if span is None or span.start > entry_time or span.end < exit_time:
+            continue
+        duration = timedelta(minutes=LADDER_MINUTES[tf])
+        bars = [c for c in trade_bars[tf] if c.time < exit_time and c.time + duration > entry_time]
+        high, low = max(c.high for c in bars), min(c.low for c in bars)
+        if direction == "long":
+            return TradeExcursion(_in_r(entry_price - low, r), _in_r(high - entry_price, r), tf)
+        return TradeExcursion(_in_r(high - entry_price, r), _in_r(entry_price - low, r), tf)
+    if coverage.start is not None and entry_time < coverage.start:
+        return TradeExcursion(None, None, None, REASON_NO_HISTORY)
+    return TradeExcursion(None, None, None, REASON_PENDING_CANDLES)
+
+
+@dataclass(frozen=True)
+class TpCheck:
+    """`Could hit TP?` (RF-10): `answer` es "yes", "no" o `None` (sin propuesta, con `reason`); `timeframe`, la TF de
+    la vela que decidió."""
+    answer: Optional[str]
+    timeframe: Optional[str]
+    reason: Optional[str] = None
+
+
+def could_hit_tp(
+    direction: str,
+    entry_time: datetime,
+    entry_price: float,
+    stop_loss: float,
+    take_profit: float,
+    candles_by_timeframe: Mapping[str, Sequence[Candle]],
+    max_horizon: int = MAX_HORIZON,
+) -> TpCheck:
+    """
+    RF-10 (N8, N12): recorre desde la entrada con el camino de T25, en 1M, 5M y 15M, hasta el primer toque del SL o
+    el fin del horizonte (`max_horizon` velas de 1H). "yes" si antes tocó el TP; "no" si tocó el SL o llegó al fin del
+    horizonte sin tocar el TP. Sin propuesta: `zero_r` (RF-9c), `invalid_tp` si el TP no está del lado de la tesis
+    (RF-10d), `ambiguous` si una vela toca los dos (RF-10b), y `no_history` o `pending_candles` si faltan velas.
+    """
+    if entry_price == stop_loss:
+        return TpCheck(None, None, REASON_ZERO_R)
+    long = direction == "long"
+    if (take_profit <= entry_price) if long else (take_profit >= entry_price):
+        return TpCheck(None, None, REASON_INVALID_TP)
+    trade_bars = {tf: candles_by_timeframe.get(tf) or () for tf in TRADE_LADDER}
+    missing = anchor_missing_reason(entry_time, bank_coverage(trade_bars))
+    if missing:
+        return TpCheck(None, None, missing)
+    end = horizon_end(entry_time, candles_by_timeframe.get("1H") or (), max_horizon)
+    for bar in forward_path(entry_time, trade_bars):
+        if end is not None and bar.time >= end:
+            return TpCheck("no", None)
+        tp_hit = bar.high >= take_profit if long else bar.low <= take_profit
+        sl_hit = bar.low <= stop_loss if long else bar.high >= stop_loss
+        if tp_hit and sl_hit:
+            return TpCheck(None, bar.timeframe, REASON_AMBIGUOUS)
+        if tp_hit or sl_hit:
+            return TpCheck("yes" if tp_hit else "no", bar.timeframe)
+    return TpCheck(None, None, REASON_PENDING_CANDLES)
+
+
 # --- Chequeo del Mark Price (T31, RF-3, RF-3b, N16, N33; plan.md §3.7) ---------------------------------------------
 
 # La escalera del chequeo: hasta 15M, que es la última y la única con tolerancia (N33).

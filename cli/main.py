@@ -2825,6 +2825,35 @@ def proposal_status_line(proposal):
     return None
 
 
+def tactical_proposal(asset, entry_time, exit_time, entry_price, stop_loss, take_profit):
+    """Spec 002 (T45, T46): la propuesta de las velas para el Tactical Audit, o `None` si no se pudo pedir. Nunca
+    bloquea el wizard."""
+    try:
+        import config.auto_resolution as auto_cfg
+        import tools.auto_resolution as auto_resolution
+        return auto_resolution.propose_tactical(asset, entry_time, exit_time, float(entry_price), float(stop_loss),
+                                                None if take_profit is None else float(take_profit),
+                                                auto_cfg.CANDLE_BANK_DIR)
+    except Exception as exc:
+        logging.info("Tactical candle proposal unavailable: %s", exc)
+        return None
+
+
+def tactical_reason_line(field, proposal, part):
+    """Una línea con el motivo por el que no hay propuesta para `field` (RF-9b a RF-9d, RF-10b, RF-10d), o `None`."""
+    if proposal is None:
+        reason = "unavailable"
+    elif proposal.reason:
+        reason = proposal.reason
+    elif part is None:
+        return None
+    elif part.reason:
+        reason = part.reason
+    else:
+        return None
+    return f"Candles: no proposal for {field} ({reason})"
+
+
 def ask_clone_timestamps():
     """
     El modo de hora de un clon: `(hora tipeada, None)` con "[2] Enter Custom/Backdated Time", y `(None, hora de la
@@ -3729,7 +3758,9 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
         market_bias_val = payload.get("efficiency", {}).get("Market_Bias", "Unknown")
         console.print(f"[bold cyan]Original Market Bias:[/bold cyan] {market_bias_val}")
         session = AuditSession(trade_id, f"tac:{existing_tactical_row_id or 'new'}")
+        tactical_proposals = {}  # T45, T46: propuestas de las velas por datos de la orden, para no recalcular
         while True:
+            tac_auto = tp_check = excursion = None  # existen aunque esta vuelta no pase por la orden llenada
             try:
                 # --- Bifurcación temprana: ¿hubo trade esta sesión? (agnóstica al bias) ---
                 def ask_tac_mode():
@@ -3890,13 +3921,15 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
                     if gate_action == "Abortar Trade":
                         abort_trade = True
 
-                def ask_could_hit_tp():
+                def ask_could_hit_tp(default=None):
+                    # T46 (RF-10): con propuesta de las velas, "yes"/"no" queda preseleccionado y marcado (auto).
                     return bind_pause(inquirer.select(
-                        message="Could hit TP? >",
+                        message="Could hit TP? >" if default is None else f"Could hit TP? (auto: {default}) >",
                         choices=[Choice("yes", name="yes"), Choice("no", name="no")],
                         pointer=">",
                         qmark="",
-                        keybindings={"skip": []}
+                        keybindings={"skip": []},
+                        **auto_default(default)
                     )).execute()
 
                 def ask_order_filled():
@@ -4363,11 +4396,29 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
                             exit_time = session.prompt("exit_time", get_mandatory_datetime, "Exit Time")
                             exit_type = session.prompt("exit_type", get_enum_choice, "Exit Type", ExitType)
                             close_p = session.prompt("close_p", get_mandatory_float, "Closing Price")
-                            could_hit_tp = session.prompt("could_hit_tp", ask_could_hit_tp)
+                            # T45, T46: la propuesta de las velas, una vez por cada combinación de datos de la orden.
+                            proposal_key = (payload.get("asset"), entry_time, exit_time, entry_p, sl, tp)
+                            if proposal_key not in tactical_proposals:
+                                tactical_proposals[proposal_key] = tactical_proposal(*proposal_key)
+                            tac_auto = tactical_proposals[proposal_key]
+                            tp_check = tac_auto.tp if tac_auto is not None else None
+                            excursion = tac_auto.excursion if tac_auto is not None else None
+                            if "could_hit_tp" not in session.state:
+                                line = tactical_reason_line("Could hit TP?", tac_auto, tp_check)
+                                if line:
+                                    console.print(line, style="yellow", markup=False, highlight=False, soft_wrap=True)
+                            could_hit_tp = session.prompt("could_hit_tp", ask_could_hit_tp,
+                                                          **auto_default(tp_check and tp_check.answer))
                             f_plan = session.prompt("f_plan", get_enum_choice, "Followed Plan", FollowedPlan)
                             behav_errors = session.prompt("behav_errors", get_multi_enum_choice, "Behavioral Errors", BehavioralErrors)
-                            mae = session.prompt("mae", get_mandatory_float, "MAE (0 <= MAE <= 10)", min_val=0, max_val=10)
-                            mfe = session.prompt("mfe", get_mandatory_float, "MFE (0 <= MFE <= 10)", min_val=0, max_val=10)
+                            if "mae" not in session.state:
+                                line = tactical_reason_line("MAE/MFE", tac_auto, excursion)
+                                if line:
+                                    console.print(line, style="yellow", markup=False, highlight=False, soft_wrap=True)
+                            mae = session.prompt("mae", get_mandatory_float, "MAE (0 <= MAE <= 10)", min_val=0, max_val=10,
+                                                 **auto_default(excursion and excursion.mae_r))
+                            mfe = session.prompt("mfe", get_mandatory_float, "MFE (0 <= MFE <= 10)", min_val=0, max_val=10,
+                                                 **auto_default(excursion and excursion.mfe_r))
                             lesson_tact = session.prompt("lesson_tact", get_mandatory_text, "Tactical Lesson Learned", multiline=True)
                             visual_path = session.prompt("visual_lesson_path", handle_visual_lesson_assignment, trade_id, payload.get("asset", "Unknown"))
 
@@ -4707,15 +4758,17 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
                             elif field_to_edit == "close_p":
                                 session.state["close_p"] = get_mandatory_float("Edit Closing Price")
                             elif field_to_edit == "could_hit_tp":
-                                session.state["could_hit_tp"] = ask_could_hit_tp()
+                                session.state["could_hit_tp"] = ask_could_hit_tp(**auto_default(tp_check and tp_check.answer))
                             elif field_to_edit == "f_plan":
                                 session.state["f_plan"] = get_enum_choice("Edit Followed Plan", FollowedPlan)
                             elif field_to_edit == "behav_errors":
                                 session.state["behav_errors"] = get_multi_enum_choice("Edit Behavioral Errors", BehavioralErrors)
                             elif field_to_edit == "mae":
-                                session.state["mae"] = get_mandatory_float("Edit MAE (0 <= MAE <= 10)", min_val=0, max_val=10)
+                                session.state["mae"] = get_mandatory_float("Edit MAE (0 <= MAE <= 10)", min_val=0, max_val=10,
+                                                                           **auto_default(excursion and excursion.mae_r))
                             elif field_to_edit == "mfe":
-                                session.state["mfe"] = get_mandatory_float("Edit MFE (0 <= MFE <= 10)", min_val=0, max_val=10)
+                                session.state["mfe"] = get_mandatory_float("Edit MFE (0 <= MFE <= 10)", min_val=0, max_val=10,
+                                                                           **auto_default(excursion and excursion.mfe_r))
                             elif field_to_edit == "mid_trade_emotions":
                                 session.state["mid_trade_emotions"] = get_mandatory_text("Edit Mid Trade Emotions")
                             elif field_to_edit == "post_trade_emotions":
