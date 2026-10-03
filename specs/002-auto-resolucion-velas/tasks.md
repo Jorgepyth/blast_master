@@ -1114,9 +1114,18 @@
         - US500: 10 `fill`, solo el motivo `clock_unverified`.
         - US100: 13 `fill` y 5 `legacy_move`.
       SUITE: `1078 passed, 3 skipped, 144 warnings in 38.85s`; sin `.data/`.
-- [ ] T48. `cli/backfill_view.py`: vista estilo `git log --decorate --oneline --graph`. (RF-19)
+- [x] T48. `cli/backfill_view.py`: vista estilo `git log --decorate --oneline --graph`. (RF-19)
       Hecho cuando: los tests verifican el texto: una línea por corrida con las decoraciones, `!` en los conflictos y
       `—` en los vacíos. SUITE en verde.
+      Evidencia (2026-10-03):
+      - **`render_runs()`** devuelve las líneas con su estilo, para testearlas sin terminal; `print_runs()` las
+        imprime con Rich.
+      - **Formato:** la corrida más nueva primero; decoraciones con la cuenta, `HEAD` y `dry-run`; un resumen por tipo.
+        En cada cambio, `+` para llenar (verde), `>` para el traslado de la hora vieja (verde), `!` para un conflicto
+        (amarillo) y `=` si no cambia (gris), y `—` en los vacíos. Se puede ocultar lo que no cambia.
+      - **Tests:** `tests/test_backfill_view.py` (5). Mutación: 10 de 10 muertos.
+      - **Muestra con datos reales**, en solo lectura, para `887dbdc1`: 2 `fill`, 5 `unchanged` y 1 `legacy_move`.
+      SUITE: `1083 passed, 3 skipped, 144 warnings in 44.85s`; sin `.data/`.
 - [ ] T49. Aplicación transaccional, inserciones en `backfill_history` e idempotencia. (RF-11b, RF-11c, RF-18)
       Hecho cuando: los tests prueban que la segunda corrida no cambia nada, que el historial tiene una fila por
       cambio, y que el código nunca hace `UPDATE` ni `DELETE` sobre `backfill_history`. SUITE en verde.
