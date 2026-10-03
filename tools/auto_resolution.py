@@ -27,6 +27,7 @@ from config.auto_resolution import (
     MAX_HORIZON,
     MT5_SYMBOL_MAP,
     REASON_CLOCK_UNVERIFIED,
+    RECOVERED_BACKDATED,
     TOUCH_EXCEPTIONS,
     REASON_NO_MT5_SYMBOL,
 )
@@ -217,12 +218,15 @@ class AccountResolver:
 
     def __init__(self, db_path: str, bank_root: str, account: str,
                  symbol_map: Optional[Mapping[str, str]] = None, max_horizon: int = MAX_HORIZON,
-                 touch_exceptions: Optional[Mapping[str, tuple]] = None):
+                 touch_exceptions: Optional[Mapping[str, tuple]] = None,
+                 recovered_backdated: Optional[frozenset] = None):
         self.account = account
         self.bank_root = bank_root
         self.symbol_map = MT5_SYMBOL_MAP if symbol_map is None else symbol_map
         # N46: id -> (nivel, nota), por defecto los de config/auto_resolution.py.
         self.touch_exceptions = TOUCH_EXCEPTIONS if touch_exceptions is None else touch_exceptions
+        # N50: retroactivos que cuentan en el win rate, por defecto los de config/auto_resolution.py.
+        self.recovered_backdated = RECOVERED_BACKDATED if recovered_backdated is None else recovered_backdated
         self.max_horizon = max_horizon
         self.rows = read_analysis_rows(db_path)
         self._by_id = {row.trade_id: row for row in self.rows}
@@ -243,15 +247,20 @@ class AccountResolver:
         return [self.propose(row.trade_id) for row in self.rows]
 
     def outcomes(self, proposals: Optional[List[AutoProposal]] = None) -> List[AnalysisOutcome]:
-        """Los resultados de la cuenta para `core/outcome_metrics.py` (S1, S4). Un análisis sin toque lleva como
-        `outcome` el código del resolvedor o el motivo (`no_levels`, `clock_unverified`, ...) y no cuenta."""
+        """Los resultados de la cuenta para `core/outcome_metrics.py` (S4 estricto, S1, S4). Un análisis sin toque lleva
+        como `outcome` el código del resolvedor o el motivo (`no_levels`, `clock_unverified`, ...), y `path_end` dice
+        hasta dónde llegaron las velas. Los retroactivos recuperados (N50) van como no retroactivos; su ancla sigue
+        siendo la hora tipeada."""
         proposals = self.propose_all() if proposals is None else proposals
         result = []
         for proposal in proposals:
             row = self._by_id[proposal.trade_id]
             outcome = proposal.resolution.outcome if proposal.resolution else proposal.reason
-            result.append(AnalysisOutcome(proposal.trade_id, self.account, proposal.anchor, row.is_backdated,
-                                          row.market_bias, outcome, proposal.resolution_time))
+            touch = proposal.resolution.first_touch if proposal.resolution else None
+            backdated = row.is_backdated and proposal.trade_id not in self.recovered_backdated
+            result.append(AnalysisOutcome(proposal.trade_id, self.account, proposal.anchor, backdated,
+                                          row.market_bias, outcome, proposal.resolution_time,
+                                          path_end=touch.path_end if touch else None))
         return result
 
     def propose(self, trade_id: str) -> AutoProposal:

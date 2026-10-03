@@ -8,7 +8,8 @@ operador cargó a mano en el Efficiency Audit:
     `failure_reason`) y la lista de los que difieren;
   - `specific_bias_compliance` al lado, solo informativo, sin porcentaje (N23);
   - la demora del audit: la hora en que se registró menos la del toque;
-  - S1 y S4 para todos y para los direccionales, con el win rate manual sobre los mismos análisis (N35, RF-21);
+  - S4 estricto (la cifra principal, N51), S1 y S4 para todos y para los direccionales, con el win rate manual sobre
+    los mismos análisis (N35, RF-21);
   - cada Overlap con su primer toque y su B (N36, N37);
   - los Mark Price que no caen en sus velas (RF-3, RF-3b);
   - en los retroactivos con `saved_at`, cuánto después se cargaron (N33, R11).
@@ -28,7 +29,7 @@ from sqlalchemy import text
 
 from config.auto_resolution import ANCHOR_FALLBACK_MIN, MARK_PRICE_TOLERANCE, REAL_ACCOUNTS, S4_WINDOW_H
 from core.candle_resolution import MarkPriceCheck, check_mark_price, check_mark_price_in_period
-from core.outcome_metrics import AnalysisOutcome, WinRate, counted_outcomes, s1, s4
+from core.outcome_metrics import AnalysisOutcome, WinRate, counted_outcomes, s1, s4, s4_strict
 from core.p2_ground_truth import LEVEL_VALIDATION
 from tools.auto_resolution import AccountResolver, AutoProposal, parse_datetime, parse_float
 from tools.p2_backtest import open_readonly_session
@@ -158,6 +159,8 @@ class AccountReport:
     s4_directional: WinRatePair
     overlaps: List[OverlapEntry]
     mark_price_misfits: List[MarkPriceMisfit]
+    s4_strict_all: WinRatePair
+    s4_strict_directional: WinRatePair
     backdated_delays: List[Tuple[str, float]] = field(default_factory=list)
     touch_exceptions: List[TouchExceptionEntry] = field(default_factory=list)
 
@@ -182,10 +185,14 @@ def _compare(proposal: AutoProposal, manual: Optional[ManualAudit]) -> AnalysisC
 
 
 def _pair(outcomes: List[AnalysisOutcome], manual: Mapping[str, ManualAudit], window_h: Optional[float],
-          directional_only: bool) -> WinRatePair:
-    rate = s4(outcomes, directional_only=directional_only, window_h=window_h) if window_h is not None else (
-        s1(outcomes, directional_only=directional_only))
-    same = counted_outcomes(outcomes, window_h=window_h, directional_only=directional_only)
+          directional_only: bool, strict: bool = False) -> WinRatePair:
+    if strict:
+        rate = s4_strict(outcomes, directional_only=directional_only, window_h=window_h)
+    elif window_h is not None:
+        rate = s4(outcomes, directional_only=directional_only, window_h=window_h)
+    else:
+        rate = s1(outcomes, directional_only=directional_only)
+    same = counted_outcomes(outcomes, window_h=window_h, directional_only=directional_only, strict=strict)
     valid = sum(1 for item in same
                 if manual.get(item.analysis_id) and manual[item.analysis_id].specific_bias_compliance == "Valid")
     return WinRatePair(rate, valid)
@@ -244,6 +251,8 @@ def build_account_report(account: str, db_path: str, bank_root: str,
         s1_all=_pair(outcomes, manual, None, False), s4_all=_pair(outcomes, manual, S4_WINDOW_H, False),
         s1_directional=_pair(outcomes, manual, None, True), s4_directional=_pair(outcomes, manual, S4_WINDOW_H, True),
         overlaps=overlaps, mark_price_misfits=misfits, backdated_delays=backdated, touch_exceptions=exceptions,
+        s4_strict_all=_pair(outcomes, manual, S4_WINDOW_H, False, strict=True),
+        s4_strict_directional=_pair(outcomes, manual, S4_WINDOW_H, True, strict=True),
     )
 
 
@@ -307,15 +316,21 @@ def _account_markdown(report: AccountReport) -> List[str]:
     lines.append("")
 
     lines += ["### Win rate", "",
-              "S1: first touch, no time limit. S4: first touch within 48 h. Manual: the analyses marked `Valid` in "
-              "`specific_bias_compliance`, over the same analyses. Backdated analyses are excluded and counted.", ""]
+              "Strict S4 (the headline): a win is touching the target first within 48 h; touching the invalidation "
+              "first, touching anything only later, or touching nothing for 48 h is a loss, so nothing is left out. "
+              "S1: first touch, no time limit. S4: first touch within 48 h, the later ones left out. Manual: the "
+              "analyses marked `Valid` in `specific_bias_compliance`, over the same analyses. Backdated analyses are "
+              "excluded and counted, except the ones recovered after the 2026-07-27 database drop.", ""]
     rows = []
-    for criterion, scope, pair in (("S1", "All", report.s1_all), ("S4", "All", report.s4_all),
+    for criterion, scope, pair in (("Strict S4", "All", report.s4_strict_all), ("S1", "All", report.s1_all),
+                                   ("S4", "All", report.s4_all),
+                                   ("Strict S4", "Directional", report.s4_strict_directional),
                                    ("S1", "Directional", report.s1_directional),
                                    ("S4", "Directional", report.s4_directional)):
         rows.append((criterion, scope, _rate(pair.candles.wins, pair.candles.n), _rate(pair.manual_wins, pair.candles.n),
-                     pair.candles.outside, pair.candles.excluded_backdated))
-    lines += _table(("Criterion", "Scope", "Candles", "Manual (Valid)", "Outside 48 h", "Backdated excluded"), rows)
+                     pair.candles.outside, pair.candles.late, pair.candles.excluded_backdated))
+    lines += _table(("Criterion", "Scope", "Candles", "Manual (Valid)", "Outside 48 h", "Late, counted as loss",
+                     "Backdated excluded"), rows)
     lines.append("")
 
     lines += ["### Agreement with the manual audit", "",

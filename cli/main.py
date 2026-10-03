@@ -1366,10 +1366,10 @@ def resolution_report_command(ctx, output_dir, accounts):
         handle.write(render_markdown(reports, generated_at=now))
 
     for report in reports:
-        directional = report.s1_directional
+        directional = report.s4_strict_directional
         console.print(
             f"{report.account} {report.db_name}: {report.resolved}/{report.total} resolved, "
-            f"{len(report.differences)} with differences, S1 directional {directional.candles.wins}/"
+            f"{len(report.differences)} with differences, strict S4 directional {directional.candles.wins}/"
             f"{directional.candles.n} (manual {directional.manual_wins}/{directional.candles.n})",
             markup=False, highlight=False, soft_wrap=True,
         )

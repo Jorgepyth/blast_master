@@ -3,21 +3,24 @@ T29 (spec 002): `core/outcome_metrics.py`, las métricas de acierto S1 y S4 y la
 N11, N22, N35, N36; plan.md §3.3 y §3.10; docs/criterios-de-acierto.md). Funciones puras: reciben resultados del
 resolvedor, no saben de DBs ni de velas.
 """
+import dataclasses
 from datetime import datetime, timedelta
 
 import pytest
 
 from core.candle_resolution import OUTCOME_CONFIRMED, OUTCOME_INVALIDATED, OUTCOME_OPEN
-from config.auto_resolution import REASON_AMBIGUOUS, REASON_PENDING_CANDLES
+from config.auto_resolution import REASON_AMBIGUOUS, REASON_NO_LEVELS, REASON_PENDING_CANDLES
 from core.outcome_metrics import (
     DIRECTIONAL_BIASES,
     AnalysisOutcome,
     OverlapLabel,
     WinRate,
     analysis_anchor,
+    counted_outcomes,
     overlap_labels,
     s1,
     s4,
+    s4_strict,
 )
 
 T0 = datetime(2026, 8, 1, 10, 0)
@@ -181,3 +184,48 @@ def test_the_48h_counts_of_the_21_candidates_are_reproduced():
     assert s4(a_rows, include_backdated=True) == WinRate(wins=6, n=12, outside=9, excluded_backdated=0)
     assert s4(a_rows) == WinRate(wins=6, n=12, outside=8, excluded_backdated=1)
     assert s1(a_rows) == WinRate(wins=9, n=20, outside=0, excluded_backdated=1)
+
+
+# --- S4 estricto (N51: la cifra principal desde el 2026-10-03) ----------------------------------------------------
+
+def _pending(analysis_id, anchor_h, observed_h, **kwargs):
+    """Sin toque todavía: el banco llega `observed_h` horas después del ancla."""
+    outcome = _outcome(analysis_id, anchor_h, REASON_PENDING_CANDLES, **kwargs)
+    return dataclasses.replace(outcome, path_end=outcome.anchor + timedelta(hours=observed_h))
+
+
+STRICT_CASES = [
+    _outcome("win", 0, OUTCOME_CONFIRMED, 48.0),          # el objetivo justo a las 48 h: gana
+    _outcome("loss", 1, OUTCOME_INVALIDATED, 3),           # la invalidación dentro de 48 h: pierde
+    _outcome("late_win", 2, OUTCOME_CONFIRMED, 99),        # el objetivo a las 99 h: pierde (tarde)
+    _outcome("late_loss", 3, OUTCOME_INVALIDATED, 75),     # la invalidación a las 75 h: pierde (tarde)
+    _outcome("open", 4, OUTCOME_OPEN),                     # sin toque en todo el horizonte: pierde
+    _pending("quiet", 5, observed_h=48),                   # sin toque y 48 h de velas: pierde
+    _pending("young", 6, observed_h=47.9),                 # sin toque y menos de 48 h de velas: todavía no cuenta
+    _outcome("amb", 7, REASON_AMBIGUOUS),                  # no cuenta, como en S1
+    _outcome("nolev", 8, REASON_NO_LEVELS),                # sin resultado: no cuenta
+]
+
+
+def test_strict_s4_wins_only_with_the_target_within_48h_and_leaves_nothing_out():
+    rate = s4_strict(STRICT_CASES)
+    assert rate == WinRate(wins=1, n=6, outside=0, excluded_backdated=0, late=4)
+    assert [o.analysis_id for o in counted_outcomes(STRICT_CASES, strict=True)] == [
+        "win", "loss", "late_win", "late_loss", "open", "quiet"]
+
+
+def test_strict_s4_has_the_wins_of_s4_and_the_late_ones_of_s1_as_losses():
+    outcomes = [_outcome("a", 0, OUTCOME_CONFIRMED, 10), _outcome("b", 1, OUTCOME_INVALIDATED, 10),
+                _outcome("c", 2, OUTCOME_CONFIRMED, 60), _outcome("d", 3, OUTCOME_INVALIDATED, 60)]
+    assert (s4(outcomes).wins, s4(outcomes).n) == (1, 2)       # S4 deja fuera c y d: 50%
+    assert (s1(outcomes).wins, s1(outcomes).n) == (2, 4)       # S1 cuenta c como ganado: 50%
+    assert s4_strict(outcomes) == WinRate(wins=1, n=4, outside=0, excluded_backdated=0, late=2)  # 25%
+
+
+def test_strict_s4_leaves_backdated_out_by_default_counts_them_and_keeps_the_directional_cut():
+    outcomes = [_outcome("a", 0, OUTCOME_CONFIRMED, 5), _outcome("b", 1, OUTCOME_CONFIRMED, 5, backdated=True),
+                _outcome("c", 2, OUTCOME_INVALIDATED, 5, bias="Choppy / Neutral"),
+                _outcome("d", 3, REASON_AMBIGUOUS, backdated=True)]   # sin resultado: ni se cuenta como excluido
+    assert s4_strict(outcomes) == WinRate(wins=1, n=2, outside=0, excluded_backdated=1)
+    assert s4_strict(outcomes, include_backdated=True) == WinRate(wins=2, n=3, outside=0, excluded_backdated=0)
+    assert s4_strict(outcomes, directional_only=True) == WinRate(wins=1, n=1, outside=0, excluded_backdated=1)

@@ -98,6 +98,19 @@ TOUCH_EXCEPTIONS = {
     ),
 }
 
+# Retroactivos recuperados (N50): análisis hechos en su momento y vueltos a cargar después del DROP del 2026-07-27
+# (todos de XAU, del 2026-06-23 al 2026-07-14). El usuario confirmó que son correctos, así que cuentan en el win rate.
+# Los retroactivos nuevos siguen fuera por defecto (R11): se cargan con el resultado a la vista.
+RECOVERED_BACKDATED = frozenset({
+    "9fb9e581-95fc-4539-9d2f-407eab042bbc",
+    "45c7ffc0-4523-48e5-a542-b6dce424532f",
+    "f24b9653-ad3b-4eb0-9a78-badb9a64a09f",
+    "7ae2bfe8-eccf-4bf7-ab12-a7e1532ec32e",
+    "b867b660-07f5-4197-ab3a-da76d1f4d70b",
+    "79a818c1-d199-4d3f-a481-9587c3784e23",
+    "5e8fc526-d7a0-4029-9764-7e772371f355",
+})
+
 # --------------------------------------------------------------------------
 # Registro prospectivo del P2 sistemático (N38, N42)
 # --------------------------------------------------------------------------

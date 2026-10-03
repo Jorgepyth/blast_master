@@ -5,13 +5,16 @@ La definición en palabras vive en `docs/criterios-de-acierto.md` (decidida por 
 Este módulo es la única implementación: la usan el reporte (`tools/resolution_report.py`) y cualquier cuaderno de
 `jupyter/` que mida acierto.
 
-- **S1** (principal): de los análisis con primer toque, la proporción que tocó primero el objetivo, sin límite de
-  tiempo dentro del horizonte.
-- **S4** (secundario): lo mismo, pero solo con los toques dentro de las 48 h desde el ancla; se informa cuántos quedan
-  fuera.
+- **S4 estricto** (la cifra principal desde el 2026-10-03, N51): gana el análisis que tocó primero el objetivo dentro de
+  las 48 h desde el ancla; todo lo demás con resultado conocido a 48 h pierde, también los toques tardíos y los que no
+  tocaron nada en 48 h. No deja a nadie fuera.
+- **S1**: de los análisis con primer toque, la proporción que tocó primero el objetivo, sin límite de tiempo dentro del
+  horizonte.
+- **S4**: lo mismo que S1, pero solo con los toques dentro de las 48 h desde el ancla; se informa cuántos quedan fuera.
 - **Overlap**: otro análisis de la misma cuenta empezó después del ancla y antes del primer toque. Es solo una etiqueta:
   nunca saca a un análisis de S1 ni de S4 (N36).
-- Los retroactivos quedan fuera de toda cifra por defecto, y se cuentan (R11, RF-17).
+- Los retroactivos quedan fuera de toda cifra por defecto, y se cuentan (R11, RF-17). Los 7 recuperados después del
+  DROP del 2026-07-27 cuentan (N50): el servicio los marca como no retroactivos (`tools/auto_resolution.py`).
 
 Funciones puras: reciben resultados ya calculados (`AnalysisOutcome`), sin DB ni velas.
 """
@@ -21,8 +24,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Sequence
 
-from config.auto_resolution import ANCHOR_FALLBACK_MIN, S4_WINDOW_H
-from core.candle_resolution import OUTCOME_CONFIRMED, OUTCOME_INVALIDATED
+from config.auto_resolution import ANCHOR_FALLBACK_MIN, REASON_PENDING_CANDLES, S4_WINDOW_H
+from core.candle_resolution import OUTCOME_CONFIRMED, OUTCOME_INVALIDATED, OUTCOME_OPEN
 
 # El corte "direccionales" de los reportes: los análisis Bullish o Bearish, sin los "Choppy / Neutral".
 DIRECTIONAL_BIASES = ("Bullish", "Bearish")
@@ -48,7 +51,8 @@ class AnalysisOutcome:
     Lo que las métricas necesitan de un análisis. `outcome` es el código del resolvedor (`confirmed`, `invalidated`,
     `open`, o un motivo). `touch_time` es la hora del primer toque cuando lo hubo. `overlap_limit` es hasta cuándo un
     análisis nuevo de la cuenta lo vuelve Overlap: el primer toque (o la vela ambigua) o, sin toque, el fin de la
-    cobertura del banco. Si es `None`, no se sabe y no se etiqueta.
+    cobertura del banco. Si es `None`, no se sabe y no se etiqueta. `path_end` es hasta dónde se miraron las velas sin
+    un toque (lo usa S4 estricto para saber si ya pasaron las 48 h).
     """
     analysis_id: str
     account: str
@@ -58,6 +62,7 @@ class AnalysisOutcome:
     outcome: str
     touch_time: Optional[datetime] = None
     overlap_limit: Optional[datetime] = None
+    path_end: Optional[datetime] = None
 
     @property
     def hours_to_touch(self) -> Optional[float]:
@@ -69,11 +74,13 @@ class AnalysisOutcome:
 @dataclass(frozen=True)
 class WinRate:
     """`wins` de `n`. `outside` son los toques que quedaron fuera de la ventana (solo S4); `excluded_backdated`, los
-    retroactivos con toque que se dejaron fuera (RF-17)."""
+    retroactivos con resultado que se dejaron fuera (RF-17); `late`, las pérdidas de S4 estricto por no tocar el objetivo
+    dentro de la ventana (tocaron algo después, o nada)."""
     wins: int
     n: int
     outside: int
     excluded_backdated: int
+    late: int = 0
 
     @property
     def rate(self) -> Optional[float]:
@@ -114,10 +121,65 @@ def _win_rate(
 
 
 def counted_outcomes(outcomes: Sequence[AnalysisOutcome], window_h: Optional[float] = None,
-                     include_backdated: bool = False, directional_only: bool = False) -> List[AnalysisOutcome]:
-    """Los análisis que entran en la cifra (S1 con `window_h=None`, S4 con 48): para medir otra cosa sobre los mismos,
-    por ejemplo el win rate manual del reporte (RF-6)."""
+                     include_backdated: bool = False, directional_only: bool = False,
+                     strict: bool = False) -> List[AnalysisOutcome]:
+    """Los análisis que entran en la cifra (S1 con `window_h=None`, S4 con 48, S4 estricto con `strict=True`): para
+    medir otra cosa sobre los mismos, por ejemplo el win rate manual del reporte (RF-6)."""
+    if strict:
+        return _classify_strict(outcomes, S4_WINDOW_H if window_h is None else window_h, include_backdated,
+                                directional_only)[0]
     return _classify(outcomes, window_h, include_backdated, directional_only)[0]
+
+
+_WIN, _LOSS, _LATE = "win", "loss", "late"
+
+
+def _strict_result(item: AnalysisOutcome, window_h: float) -> Optional[str]:
+    """S4 estricto (N51): `win`, `loss`, `late` (pierde por no tocar el objetivo a tiempo) o `None` si no cuenta."""
+    if item.outcome in _TOUCHED:
+        if item.hours_to_touch <= window_h:
+            return _WIN if item.outcome == OUTCOME_CONFIRMED else _LOSS
+        return _LATE
+    if item.outcome == OUTCOME_OPEN:
+        return _LATE  # sin toque en todo el horizonte, que es mucho más largo que la ventana
+    if (item.outcome == REASON_PENDING_CANDLES and item.path_end is not None
+            and item.path_end - item.anchor >= timedelta(hours=window_h)):
+        return _LATE  # sin toque todavía, pero las velas ya cubren la ventana entera
+    return None  # ambiguo, sin velas suficientes o sin resultado (sin niveles, sin reloj, sin símbolo)
+
+
+def _classify_strict(
+    outcomes: Sequence[AnalysisOutcome],
+    window_h: float,
+    include_backdated: bool,
+    directional_only: bool,
+):
+    counted, wins, late, excluded = [], 0, 0, 0
+    for item in outcomes:
+        if directional_only and item.market_bias not in DIRECTIONAL_BIASES:
+            continue
+        result = _strict_result(item, window_h)
+        if result is None:
+            continue
+        if item.is_backdated and not include_backdated:
+            excluded += 1
+            continue
+        counted.append(item)
+        wins += result == _WIN
+        late += result == _LATE
+    return counted, wins, late, excluded
+
+
+def s4_strict(outcomes: Sequence[AnalysisOutcome], include_backdated: bool = False, directional_only: bool = False,
+              window_h: float = S4_WINDOW_H) -> WinRate:
+    """
+    S4 estricto (N51), la cifra principal: gana el que tocó primero el objetivo dentro de `window_h` horas del ancla.
+    Pierde el que tocó primero la invalidación dentro de la ventana, y también (`late`) el que tocó algo después o no
+    tocó nada con las velas cubriendo la ventana entera. No cuentan los ambiguos, los que todavía no tienen la ventana
+    cubierta y los que no tienen resultado. A diferencia de S4, no deja a nadie fuera (`outside` es siempre 0).
+    """
+    counted, wins, late, excluded = _classify_strict(outcomes, window_h, include_backdated, directional_only)
+    return WinRate(wins, len(counted), 0, excluded, late)
 
 
 def s1(outcomes: Sequence[AnalysisOutcome], include_backdated: bool = False,

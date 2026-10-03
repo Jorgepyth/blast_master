@@ -72,9 +72,12 @@ def test_counts_and_missing_reasons(markdown):
 
 
 def test_win_rate_table_with_the_manual_rate_on_the_same_analyses(markdown):
-    assert "| S1 | Directional | 2/2 = 100% | 1/2 = 50% | 0 | 1 |" in markdown
-    assert "| S4 | All | 2/2 = 100% | 1/2 = 50% | 0 | 1 |" in markdown
-    assert "| S1 | All | 0/0 = n/a | 0/0 = n/a | 0 | 0 |" in markdown  # US100: nada resuelto
+    header = "| Criterion | Scope | Candles | Manual (Valid) | Outside 48 h | Late, counted as loss | Backdated excluded |"
+    table = markdown.split(header, 1)[1].split("\n")
+    assert table[2] == "| Strict S4 | All | 2/2 = 100% | 1/2 = 50% | 0 | 0 | 1 |"  # la cifra principal, primera (N51)
+    assert "| S1 | Directional | 2/2 = 100% | 1/2 = 50% | 0 | 0 | 1 |" in markdown
+    assert "| S4 | All | 2/2 = 100% | 1/2 = 50% | 0 | 0 | 1 |" in markdown
+    assert "| S1 | All | 0/0 = n/a | 0/0 = n/a | 0 | 0 | 0 |" in markdown  # US100: nada resuelto
 
 
 def test_agreement_per_field_and_one_row_per_difference_with_compliance(markdown):
@@ -99,9 +102,11 @@ def test_each_criterion_has_its_own_row_and_only_fields_that_differ_are_listed(a
     a3 = next(c for c in xau.comparisons if c.trade_id == "a3")
     a3 = dataclasses.replace(a3, agreement=dict(a3.agreement, structural_mae=None))  # MAE sin comparar
     xau = dataclasses.replace(xau, comparisons=[a3],
-                              s4_directional=WinRatePair(WinRate(wins=1, n=1, outside=1, excluded_backdated=0), 1))
+                              s4_directional=WinRatePair(WinRate(wins=1, n=1, outside=1, excluded_backdated=0), 1),
+                              s4_strict_directional=WinRatePair(WinRate(1, 2, 0, 0, late=1), 1))
     markdown = render_markdown([xau], generated_at=datetime(2026, 10, 2))
-    assert "| S4 | Directional | 1/1 = 100% | 1/1 = 100% | 1 | 0 |" in markdown
+    assert "| S4 | Directional | 1/1 = 100% | 1/1 = 100% | 1 | 0 | 0 |" in markdown
+    assert "| Strict S4 | Directional | 1/2 = 50% | 1/2 = 50% | 0 | 1 | 0 |" in markdown
     assert "| a3 | resolution_type |" in markdown and "| a3 | structural_mae |" not in markdown
 
 

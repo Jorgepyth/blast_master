@@ -747,12 +747,24 @@
       con su B y sus horas, y los conteos de la tabla en 48 h: 6 VALIDATION, 6 INVALIDATION y 9 sin toque. Mutación:
       9 cambios, todos detectados.
       SUITE: `861 passed, 3 skipped, 97 warnings in 31.14s`; sin `.data/`.
-- [ ] T29b. *(Agregada el 2026-10-03, N50 y N51.)* `core/outcome_metrics.py`: S4 estricto como cifra principal y los 7
+- [x] T29b. *(Agregada el 2026-10-03, N50 y N51.)* `core/outcome_metrics.py`: S4 estricto como cifra principal y los 7
       retroactivos recuperados (`RECOVERED_BACKDATED`) dentro de las cifras. El reporte, `docs/criterios-de-acierto.md`
       y su ejemplo pasan a mostrar S4 estricto primero, con S1 y S4 al lado. (RF-5, RF-17, RF-21)
       Hecho cuando: los tests cubren cada caso de N51 (gana en 48 h, invalidación en 48 h, toque después de 48 h, sin
       toque con 48 h cubiertas, pending antes de 48 h, ambiguo) y que un retroactivo recuperado cuenta y uno nuevo no.
       SUITE en verde.
+      Evidencia (2026-10-03):
+      - **`s4_strict()`** en `core/outcome_metrics.py`. `WinRate` ganó `late` (las pérdidas tardías) y
+        `AnalysisOutcome` ganó `path_end`, que dice si las velas ya cubren 48 h sin toque. También
+        `counted_outcomes(strict=True)`.
+      - **`RECOVERED_BACKDATED`** en la configuración: los 7 ids completos. `AccountResolver.outcomes()` los marca como
+        no retroactivos y les deja el ancla tipeada.
+      - **Reporte:** S4 estricto primero, con S1 y S4 al lado y una columna "Late, counted as loss". El resumen en
+        consola usa S4 estricto. `docs/criterios-de-acierto.md` y su ejemplo, actualizados.
+      - **Mutación:** 17 de 17 muertos; 3 sobrevivieron al principio y se agregaron 2 tests.
+      - **Datos reales, en solo lectura:** XAU S4 estricto todos 43/75, direccional 28/45 (4 tardíos); BTC 9/22 y
+        8/16. Los recuperados ya no quedan fuera.
+      SUITE: `1005 passed, 3 skipped, 97 warnings in 45.73s`; sin `.data/`.
 - [x] T30. `tools/auto_resolution.py`: lectura con columnas explícitas (`mode=ro` o engine), mapa
       `asset → símbolo` (`no_mt5_symbol`), estado del reloj (`clock_unverified`/`clock_misaligned`) y armado de la
       propuesta. (RF-4e, RF-4h, RF-6b)

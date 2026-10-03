@@ -40,8 +40,9 @@ def test_the_notebook_example_runs_on_the_fixture(tmp_path, monkeypatch, capsys)
     exec(compile(_notebook_example(), str(DOC), "exec"), {})
 
     lines = capsys.readouterr().out.splitlines()
-    assert "S1: 2/2 = 100%, outside 48 h 0, backdated excluded 1" in lines
-    assert "S4: 2/2 = 100%, outside 48 h 0, backdated excluded 1" in lines
+    assert lines[0] == "Strict S4: 2/2 = 100%, outside 48 h 0, late 0, backdated excluded 1"  # la principal, primero
+    assert "S1: 2/2 = 100%, outside 48 h 0, late 0, backdated excluded 1" in lines
+    assert "S4: 2/2 = 100%, outside 48 h 0, late 0, backdated excluded 1" in lines
     assert "a1 Overlap: B = a3, first touch 2026-06-01 01:00:00" in lines
     assert "a3 Overlap: B = a6, first touch 2026-06-01 01:00:00" in lines
 

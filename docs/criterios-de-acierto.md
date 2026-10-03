@@ -1,10 +1,11 @@
 # Criterios de acierto (win rate) de blast_master
 
-- **Decididos:** 2026-09-27, por el usuario.
-- **Origen:** spec 002, F3 [2][5], decisiones N35, N36 y N37.
+- **Decididos:** 2026-09-27, por el usuario. **Actualizados el 2026-10-03:** la cifra principal pasa a ser S4 estricto
+  (N51) y los 7 retroactivos recuperados después del DROP cuentan (N50).
+- **Origen:** spec 002, F3 [2][5], decisiones N35, N36, N37, N50 y N51.
 - **Evidencia:** `specs/002-auto-resolucion-velas/analisis-overlap-2d.md`.
 - **Implementación:** `core/outcome_metrics.py` (RF-21 de la spec 002), la única. La usan el reporte
-  `python cli/main.py resolution-report` y cualquier cuaderno (ver "Uso desde un cuaderno"). El script
+  `python -m cli.main resolution-report` y cualquier cuaderno (ver "Uso desde un cuaderno"). El script
   `specs/002-auto-resolucion-velas/analisis/overlap_2d.py` queda solo como la evidencia de la decisión.
 
 **Todo análisis de acierto de este proyecto, sea en un cuaderno, un reporte o una auditoría, usa estos criterios.** Si
@@ -26,28 +27,48 @@ un análisis usa otro criterio, tiene que decirlo explícitamente y explicar por
 - **Horizonte:** 2160 velas de 1H desde el ancla (`MAX_HORIZON`). Si no hay ningún toque dentro del horizonte, el
   análisis queda abierto (`open`) y no cuenta.
 - **Retroactivos** (`is_backdated = 1`): **fuera de toda cifra de acierto por defecto** (R11), y se informa cuántos se
-  excluyeron. Se cargaron conociendo el resultado: en la auditoría del 2026-09-24 acertaron 6 de 6.
+  excluyeron. Se cargan con el resultado a la vista. **Excepción (N50):** los 7 de XAU del 2026-06-23 al 2026-07-14
+  (`RECOVERED_BACKDATED` en `config/auto_resolution.py`) cuentan, porque son análisis hechos en su momento y vueltos a
+  cargar después del DROP del 2026-07-27. Su ancla sigue siendo la hora tipeada.
 - **Direccionales contra Choppy:** hay que reportar por separado los análisis Bullish/Bearish y los
   `Choppy / Neutral`, o al menos informar cuáles entran.
 
-## S1: win rate principal
+## S4 estricto: win rate principal (desde el 2026-10-03, N51)
+
+**Definición:** de los análisis cuyo resultado a 48 h ya se conoce, la proporción que tocó primero el objetivo **dentro
+de las 48 h** desde el ancla.
+- **Gana:** tocó primero el objetivo dentro de las 48 h.
+- **Pierde:** tocó primero la invalidación dentro de las 48 h, o no tocó el objetivo en 48 h. Eso incluye tocar algo
+  después y no tocar nada con las velas cubriendo las 48 h. El reporte cuenta aparte estas pérdidas "tardías".
+- **No cuenta:** el que todavía no tiene 48 h de velas sin toque, el ambiguo (como en S1) y el que no tiene resultado
+  (sin niveles, sin reloj verificado, sin símbolo MT5).
+
+**Ejemplo:** `f24b9653` (XAU, Bearish, 2026-07-09) tocó su objetivo a las 99 h: en S4 estricto **pierde**, porque no
+llegó en 2 días. En S1 gana y en S4 queda fuera.
+
+**Por qué es el principal:** mide el horizonte de 2 días del operador sin dejar a nadie fuera. S4, en cambio, saca del
+cálculo los que tardan más de 48 h, y en estos datos casi todos los lentos son pérdidas (en XAU direccional, 3 de 4).
+Por eso S4 sale siempre igual o más alto que S4 estricto: las mismas victorias divididas por menos análisis.
+
+## S1: sin límite de tiempo
 
 **Definición:** de todos los análisis con primer toque, la proporción que **ganó**. **Sin límite de tiempo**, dentro del
 horizonte.
 
 **Ejemplo:** `d62ab4d1` (BTC, Bullish, 2026-08-27) tocó su objetivo 176.9 h después (7 días). Cuenta como ganado.
 
-**Por qué es el principal:** es la muestra más grande, no esconde pérdidas y no depende de ningún corte arbitrario.
+**Para qué va al lado:** es la muestra más grande y dice cómo terminan las tesis aunque tarden. Fue la cifra principal
+del 2026-09-27 al 2026-10-03.
 
-## S4: win rate secundario ("win rate en 2 días")
+## S4: 48 h, dejando fuera los tardíos
 
 **Definición:** igual que S1, pero un análisis cuenta **solo si** el primer toque ocurrió dentro de las **48 h** desde
 el ancla. Los demás quedan fuera, y **siempre se informa cuántos quedaron fuera**.
 
 **Ejemplo:** el mismo `d62ab4d1` (176.9 h) queda fuera de S4.
 
-**Por qué va al lado de S1:** aplica la misma regla a todos los análisis y mide si las tesis se resuelven rápido. Si S1
-y S4 se separan mucho, los análisis empezaron a tardar más en resolverse.
+**Para qué va al lado:** si S1 y S4 se separan mucho, los análisis empezaron a tardar más en resolverse. **No sirve como
+cifra principal:** sale más alto que S4 estricto solo porque deja fuera a los lentos.
 
 ## Overlap: solo una etiqueta
 
@@ -91,16 +112,17 @@ cualquier carpeta de trabajo. `"000"` es la cuenta de XAU en `REAL_ACCOUNTS`.
 import os
 
 from config.auto_resolution import ACCOUNTS_DATA_DIR, CANDLE_BANK_DIR, REAL_ACCOUNTS
-from core.outcome_metrics import s1, s4
+from core.outcome_metrics import s1, s4, s4_strict
 from tools.auto_resolution import AccountResolver
 
 resolver = AccountResolver(os.path.join(ACCOUNTS_DATA_DIR, REAL_ACCOUNTS["000"]), CANDLE_BANK_DIR, account="000")
 proposals = resolver.propose_all()   # el primer toque de cada análisis, según las velas
 outcomes = resolver.outcomes(proposals)
 
-for name, rate in (("S1", s1(outcomes, directional_only=True)), ("S4", s4(outcomes, directional_only=True))):
+for name, rate in (("Strict S4", s4_strict(outcomes, directional_only=True)),   # la cifra principal
+                   ("S1", s1(outcomes, directional_only=True)), ("S4", s4(outcomes, directional_only=True))):
     pct = f"{rate.rate:.0%}" if rate.n else "n/a"
-    print(f"{name}: {rate.wins}/{rate.n} = {pct}, outside 48 h {rate.outside}, "
+    print(f"{name}: {rate.wins}/{rate.n} = {pct}, outside 48 h {rate.outside}, late {rate.late}, "
           f"backdated excluded {rate.excluded_backdated}")
 
 for p in proposals:   # Overlap: solo una etiqueta, no cambia las cifras de arriba
@@ -109,7 +131,9 @@ for p in proposals:   # Overlap: solo una etiqueta, no cambia las cifras de arri
 ```
 
 - `directional_only=True` deja solo los Bullish/Bearish. Sin ese argumento entran también los `Choppy / Neutral`.
-- `include_backdated=True` mete a los retroactivos. Por defecto quedan fuera y se cuentan en `excluded_backdated`.
+- `include_backdated=True` mete a los retroactivos nuevos. Por defecto quedan fuera y se cuentan en
+  `excluded_backdated`. Los 7 recuperados (N50) ya entran sin ese argumento.
+- En S4 estricto, `late` son las pérdidas por no tocar el objetivo en 48 h, y `outside` es siempre 0.
 - Un análisis sin toque (abierto, ambiguo, sin niveles, sin reloj verificado) no cuenta. El motivo está en
   `proposal.reason`.
 

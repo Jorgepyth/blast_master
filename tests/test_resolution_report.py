@@ -108,6 +108,9 @@ def test_s1_and_s4_for_all_and_directional_with_the_manual_win_rate_on_the_same_
     assert xau.s1_all.manual_wins == 1  # a1 Valid, a3 Invalid
     assert xau.s4_all.candles == WinRate(wins=2, n=2, outside=0, excluded_backdated=1)
     assert xau.s1_directional.candles.n == 2
+    # S4 estricto (N51): a5 todavía no tiene 48 h de velas sin toque, así que no cuenta; a6 es retroactivo.
+    assert xau.s4_strict_all.candles == WinRate(wins=2, n=2, outside=0, excluded_backdated=1, late=0)
+    assert xau.s4_strict_all.manual_wins == 1 and xau.s4_strict_directional.candles.n == 2
 
 
 def test_each_overlap_shows_the_first_level_touched_its_time_and_b(report):
@@ -173,3 +176,19 @@ def test_touch_exceptions_are_listed_with_their_level_time_closest_price_and_not
     assert "No touch exceptions." in render_markdown(
         build_report(str(tmp_path), str(bank_root), real_accounts={"000": "xau.db"}, touch_exceptions={}),
         generated_at=T0)
+
+
+def test_strict_s4_counts_its_own_analyses_also_in_the_manual_column_and_cuts_by_bias(tmp_path):
+    # e1: objetivo 111, nunca tocado, con 49 h 50 min de velas: pérdida tardía en S4 estricto, fuera de S1.
+    # c1: Choppy que toca el objetivo a la 01:00: entra en "All", no en "Directional".
+    bank_root = tmp_path / "bank"
+    bank_root.mkdir()
+    _write_bank(bank_root)
+    _write_db(tmp_path / "xau.db", [{"id": "e1", "created_at": T0 + timedelta(minutes=30), "evp": 111.0},
+                                    {"id": "c1", "created_at": T0 + timedelta(minutes=30),
+                                     "market_bias": "Choppy / Neutral"}])
+    _add_manual_audits(tmp_path / "xau.db", {"e1": dict(resolution_type=CONFIRMED, specific_bias_compliance="Valid")})
+    (xau,) = build_report(str(tmp_path), str(bank_root), real_accounts={"000": "xau.db"})
+    assert xau.s4_strict_all.candles == WinRate(wins=1, n=2, outside=0, excluded_backdated=0, late=1)
+    assert xau.s4_strict_all.manual_wins == 1 and xau.s1_all.manual_wins == 0  # e1 cuenta solo en S4 estricto
+    assert xau.s4_strict_directional.candles == WinRate(wins=0, n=1, outside=0, excluded_backdated=0, late=1)

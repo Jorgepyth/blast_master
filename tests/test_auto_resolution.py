@@ -231,3 +231,40 @@ def test_by_default_the_resolver_uses_the_configured_exceptions(env, monkeypatch
     monkeypatch.setattr(auto_resolution, "TOUCH_EXCEPTIONS", {"a1": ("validation", "note")})
     proposal = _resolver(tmp_path, bank_root, [dict(A, evp=111.0)]).propose("a1")
     assert proposal.resolution_type == ResolutionType.CONFIRMED.value
+
+
+
+# --- Retroactivos recuperados (T29b, N50) ----------------------------------------------------------------------------
+
+def test_recovered_backdated_analyses_count_and_keep_their_typed_anchor(env):
+    tmp_path, bank_root = env
+    _write_bank(bank_root)
+    _write_db(tmp_path / "account.db", [dict(A, is_backdated=True), {"id": "b1", "created_at": A["created_at"],
+                                                                      "is_backdated": True}])
+    resolver = AccountResolver(str(tmp_path / "account.db"), str(bank_root), account="000",
+                               recovered_backdated={"a1"})
+    by_id = {o.analysis_id: o for o in resolver.outcomes()}
+    assert by_id["a1"].is_backdated is False and by_id["b1"].is_backdated is True  # b1 es un retroactivo nuevo
+    assert by_id["a1"].anchor == A["created_at"]  # el ancla sigue siendo la hora tipeada
+
+
+def test_outcomes_carry_how_far_the_candles_were_observed_without_a_touch(env):
+    tmp_path, bank_root = env
+    _write_bank(bank_root)  # 3000 minutos de 1M desde T0; objetivo 111: nunca se toca
+    _write_db(tmp_path / "account.db", [dict(A, evp=111.0)])
+    (outcome,) = AccountResolver(str(tmp_path / "account.db"), str(bank_root), account="000").outcomes()
+    assert outcome.outcome == REASON_PENDING_CANDLES and outcome.path_end == T0 + timedelta(minutes=3000)
+
+
+def test_the_configured_recovered_backdated_are_the_7_full_ids_of_xau():
+    from config.auto_resolution import RECOVERED_BACKDATED
+    assert len(RECOVERED_BACKDATED) == 7 and all(len(trade_id) == 36 for trade_id in RECOVERED_BACKDATED)
+    assert "f24b9653-ad3b-4eb0-9a78-badb9a64a09f" in RECOVERED_BACKDATED
+
+
+def test_by_default_the_resolver_uses_the_configured_recovered_backdated(env, monkeypatch):
+    import tools.auto_resolution as auto_resolution
+    tmp_path, bank_root = env
+    monkeypatch.setattr(auto_resolution, "RECOVERED_BACKDATED", frozenset({"a1"}))
+    (outcome,) = _resolver(tmp_path, bank_root, [dict(A, is_backdated=True)]).outcomes()
+    assert outcome.is_backdated is False
