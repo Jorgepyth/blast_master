@@ -2835,6 +2835,29 @@ def auto_export_in_background(symbols_of):
     return launch
 
 
+def auto_export_and_wait(symbols_of):
+    """Spec 002 (T53, RF-20b, RF-20c, RF-20e): lanza el export de velas y lo espera hasta `AUTO_EXPORT_WAIT_S`, con el
+    progreso en una línea. Si no termina, sigue con las velas que ya tiene el banco y el export continúa de fondo.
+    `symbols_of` como en `auto_export_in_background`. Apagado no hace nada (N31), y nunca levanta (INV-2)."""
+    try:
+        import config.auto_resolution as auto_cfg
+        import tools.auto_export as auto_export
+        if not auto_export.enabled():
+            return []
+        launch = auto_export.start_export(symbols_of(auto_export), wait=True)
+        wait_s = auto_cfg.AUTO_EXPORT_WAIT_S
+        with console.status("Exporting candles...") as status:
+            def progress(pending, elapsed):
+                status.update(f"Exporting candles ({', '.join(pending)}): {elapsed:.0f}s of {wait_s:g}s, "
+                              f"Ctrl+C to stop waiting")
+            lines = auto_export.wait_for_export(launch, wait_s, progress=progress)
+    except Exception as exc:  # noqa: BLE001 -- INV-2: el export nunca frena el CLI
+        lines = [f"Candle export skipped: {type(exc).__name__}: {exc}"]
+    for line in lines:
+        _export_line(line, "dim" if line.startswith("Candle export merged") else "yellow")
+    return lines
+
+
 def efficiency_proposal(trade_id):
     """Spec 002 (RF-7, RF-7f): la propuesta de las velas para el audit de un análisis de la cuenta activa, o `None`
     si no se pudo pedir. Es solo una ayuda: cualquier error se registra y el wizard sigue como siempre."""
@@ -3695,6 +3718,8 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
         except ValueError:
             bias_a = StructuralBias.NO_BIAS_CHOPPY
 
+        # T53 (RF-20b): antes de la propuesta, el export del símbolo, con espera acotada.
+        auto_export_and_wait(lambda auto_export: auto_export.symbols_for_assets([payload.get("asset")]))
         # Spec 002 (T41): la propuesta de las velas se pide una sola vez, antes de los prompts; si no la hay, una línea
         # con el motivo y los prompts quedan como siempre.
         proposal = efficiency_proposal(trade_id)
@@ -3855,6 +3880,8 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
         console.print(Panel("Tactical Audit", style="bold magenta"))
         market_bias_val = payload.get("efficiency", {}).get("Market_Bias", "Unknown")
         console.print(f"[bold cyan]Original Market Bias:[/bold cyan] {market_bias_val}")
+        # T53 (RF-20b): el export del símbolo, con espera acotada, antes de las propuestas de las velas.
+        auto_export_and_wait(lambda auto_export: auto_export.symbols_for_assets([payload.get("asset")]))
         session = AuditSession(trade_id, f"tac:{existing_tactical_row_id or 'new'}")
         tactical_proposals = {}  # T45, T46: propuestas de las velas por datos de la orden, para no recalcular
         while True:

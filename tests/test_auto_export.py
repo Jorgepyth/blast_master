@@ -3,6 +3,7 @@ T52 (spec 002): el export automático en segundo plano al guardar un unified ana
 N31). `subprocess.Popen` está reemplazado: ningún test lanza el exportador ni toca Windows. El único proceso real es
 `candle_sync` sin exportador configurado y con todo en tmp_path, que termina en `exporter_not_configured`.
 """
+import io
 import json
 import os
 import subprocess
@@ -25,6 +26,7 @@ class FakeProcess:
         self.argv, self.kwargs = argv, kwargs
         self.returncode = None
         self.polls = 0
+        self.stdout = io.BytesIO()  # sin salida: con espera, el lector termina enseguida y el proceso sigue "vivo"
 
     def poll(self):
         self.polls += 1

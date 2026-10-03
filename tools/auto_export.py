@@ -20,17 +20,20 @@ Con `AUTO_EXPORT` apagado no se lanza nada ni se lee ninguna DB (N31). Nada de e
 import os
 import subprocess
 import sys
-from dataclasses import dataclass
-from typing import Dict, Iterable, List, Mapping, Optional
+import threading
+import time
+from dataclasses import dataclass, field
+from typing import Callable, Dict, Iterable, List, Mapping, Optional
 
 import config.auto_resolution as cfg
-from tools.candle_bank import bank_lock_held
+from tools.candle_bank import SyncResult, bank_lock_held, read_bank_status
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 Popen = subprocess.Popen  # los tests lo reemplazan acá, sin tocar el `subprocess.Popen` del resto del CLI
+POLL_S = 0.5
 
-# Procesos lanzados por este CLI que todavía no se cosecharon: `poll()` en cada lanzamiento cosecha a los que ya
-# terminaron, para que no queden como zombis mientras el CLI siga abierto.
+# Procesos lanzados por este CLI que todavía no se cosecharon. Guardar la referencia evita que el pipe de un export con
+# espera se cierre antes de que el proceso termine, y `poll()` en cada lanzamiento cosecha a los que ya terminaron.
 _RUNNING: List[subprocess.Popen] = []
 
 
@@ -42,6 +45,8 @@ class ExportLaunch:
     launched: List[str]
     in_progress: List[str]
     launch_error: Optional[str] = None
+    lines: List[str] = field(default_factory=list)  # las líneas del proceso, una por símbolo (solo con espera)
+    reader: Optional[threading.Thread] = None
 
 
 def enabled() -> bool:
@@ -79,11 +84,18 @@ def _bank_dir(symbol: str) -> str:
     return os.path.join(cfg.CANDLE_BANK_DIR, symbol)
 
 
-def start_export(symbols: Iterable[Optional[str]]) -> Optional[ExportLaunch]:
+def _drain(launch: ExportLaunch) -> None:
+    for raw in iter(launch.process.stdout.readline, b""):
+        line = raw.decode("utf-8", errors="replace").strip()
+        if line:
+            launch.lines.append(line)
+
+
+def start_export(symbols: Iterable[Optional[str]], wait: bool = False) -> Optional[ExportLaunch]:
     """
     Lanza el export de `symbols` (símbolos MT5) en un proceso aparte y vuelve enseguida. `None` si `AUTO_EXPORT` está
     apagado o no hay ningún símbolo. Los símbolos con un export en curso no se lanzan (RF-20f); si son todos, no se
-    lanza ningún proceso.
+    lanza ningún proceso. Con `wait=True` la salida del proceso se lee de fondo, para `wait_for_export`.
     """
     if not enabled():
         return None
@@ -104,7 +116,7 @@ def start_export(symbols: Iterable[Optional[str]]) -> Optional[ExportLaunch]:
     try:
         launch.process = Popen(
             export_command(to_launch, log), cwd=ROOT_DIR, env=_child_env(), stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL, stderr=stderr, start_new_session=True)
+            stdout=subprocess.PIPE if wait else subprocess.DEVNULL, stderr=stderr, start_new_session=True)
     except (OSError, ValueError) as exc:
         launch.launch_error = f"sync_not_launched: {exc}"
         launch.launched = []
@@ -113,4 +125,81 @@ def start_export(symbols: Iterable[Optional[str]]) -> Optional[ExportLaunch]:
         if stderr is not subprocess.DEVNULL:
             stderr.close()
     _RUNNING.append(launch.process)
+    if wait:
+        launch.reader = threading.Thread(target=_drain, args=(launch,), daemon=True)
+        launch.reader.start()
     return launch
+
+
+def _pending(launch: ExportLaunch) -> List[str]:
+    pending: List[str] = []
+    if launch.process is not None and (launch.process.poll() is None
+                                       or (launch.reader is not None and launch.reader.is_alive())):
+        pending += launch.launched[len(launch.lines):]
+    pending += [symbol for symbol in launch.in_progress if bank_lock_held(_bank_dir(symbol))]
+    return pending
+
+
+def _status_line(symbol: str) -> str:
+    """Cómo terminó el export de `symbol` que ya estaba en curso, según su `status.json`."""
+    from tools.candle_sync import format_result_line
+
+    try:
+        status = read_bank_status(_bank_dir(symbol)) or {}
+    except (ValueError, OSError):
+        status = {}
+    last = status.get("last_export") or {}
+    if not last.get("result"):
+        return f"Candle export finished for {symbol} (started earlier); see candles status"
+    result = SyncResult(symbol=symbol, result=last["result"], verified_by=status.get("verified_by"),
+                        bars_added=last.get("bars_added") or {}, run_id=last.get("run_id"),
+                        error=status.get("last_error"))
+    return f"{format_result_line(result)} (started earlier)"
+
+
+def _skipped(why: str, pending: List[str]) -> str:
+    return (f"Candle export skipped: {why} ({', '.join(pending)}); continuing with the candles in the bank, the export "
+            f"keeps running in the background")
+
+
+def wait_for_export(launch: Optional[ExportLaunch], wait_s: float,
+                    progress: Optional[Callable[[List[str], float], None]] = None,
+                    clock: Callable[[], float] = time.monotonic,
+                    sleep: Callable[[float], None] = time.sleep) -> List[str]:
+    """
+    Espera a que terminen los exports de `launch`, como mucho `wait_s` segundos, y devuelve las líneas para mostrar:
+    una por símbolo que terminó y, si alguno no terminó, una "Candle export skipped: ..." (RF-20b, RF-20e). `progress`
+    recibe en cada vuelta los símbolos pendientes y los segundos transcurridos. Ctrl+C corta la espera, no el export.
+    """
+    if launch is None:
+        return []
+    if launch.launch_error:
+        return [f"Candle export skipped: {launch.launch_error}"]
+    start = clock()
+    pending = _pending(launch)
+    try:
+        while pending:
+            elapsed = clock() - start
+            if elapsed >= wait_s:
+                break
+            if progress is not None:
+                progress(pending, elapsed)
+            sleep(POLL_S)
+            pending = _pending(launch)
+        interrupted = False
+    except KeyboardInterrupt:
+        interrupted = True
+        pending = _pending(launch)
+    lines = list(launch.lines)
+    process_done = (launch.process is not None and launch.process.poll() is not None
+                    and not (launch.reader is not None and launch.reader.is_alive()))
+    if process_done:
+        missing = launch.launched[len(launch.lines):]
+        if missing:
+            lines.append(f"Candle export skipped: the export process ended without a result "
+                         f"(exit {launch.process.returncode}; see {log_path()}) ({', '.join(missing)})")
+    lines += [_status_line(symbol) for symbol in launch.in_progress if symbol not in pending]
+    if pending:
+        lines.append(_skipped("wait cancelled with Ctrl+C" if interrupted else f"not finished in {wait_s:g}s",
+                              pending))
+    return lines

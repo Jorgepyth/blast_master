@@ -1193,7 +1193,7 @@
         Mark Price. Muestra `Candle export started in the background: XAUUSD` (o `already running`, o `skipped`).
         Con `AUTO_EXPORT` apagado no busca ni el símbolo, y un error inesperado se muestra en una línea y el wizard
         sigue.
-      - **Tests:** `tests/test_auto_export.py` (19). Prueban:
+      - **Tests:** `tests/test_auto_export.py` (17). Prueban:
         - que guardar lanza un proceso, una sola vez, y que nadie lo espera;
         - que con `AUTO_EXPORT` apagado no se lanza nada, ni con un export en curso;
         - que un fallo al lanzar y un error inesperado no frenan el guardado;
@@ -1208,9 +1208,43 @@
         `candle_sync`. Todos quedaron en `tmp_path`, sin exportador configurado. Ahora los tests reemplazan
         `auto_export.Popen`.
       SUITE: `1131 passed, 3 skipped, 144 warnings in 72.52s`; sin `.data/`.
-- [ ] T53. Disparo al abrir un audit, con espera acotada y progreso. (RF-20b, RF-20e)
+- [x] T53. Disparo al abrir un audit, con espera acotada y progreso. (RF-20b, RF-20e)
       Hecho cuando: los tests prueban que la espera termina en `AUTO_EXPORT_WAIT_S` y continúa, y la línea "Candle
       export skipped". SUITE en verde.
+      Evidencia (2026-10-03):
+      - **`tools/auto_export.py`:**
+        - `start_export(symbols, wait=True)` lee la salida del proceso con un hilo, una línea por símbolo.
+        - `wait_for_export(launch, wait_s, progress)` espera hasta `wait_s` y devuelve qué mostrar:
+          - la línea de cada símbolo que terminó;
+          - para un export que ya estaba en curso (candado tomado), espera a que suelte el candado y muestra cómo
+            terminó según su `status.json`, con `(started earlier)`;
+          - si algo no terminó: `Candle export skipped: not finished in 30s (XAUUSD); continuing with the candles in
+            the bank, the export keeps running in the background`.
+        - Ctrl+C corta la espera, no el export (el proceso está en otra sesión y no recibe la señal). Un proceso que
+          termina sin dar su línea se informa con el código y la ruta del log.
+      - **`cli/main.py`:**
+        - `auto_export_and_wait()` muestra el progreso con `console.status`: `Exporting candles (XAUUSD): 12s of 30s,
+          Ctrl+C to stop waiting`.
+        - Se llama al abrir el Efficiency Audit, antes de pedir la propuesta, y al abrir el Tactical, antes de su
+          bucle.
+        - Con `AUTO_EXPORT` apagado no hace nada, y un error inesperado se muestra en una línea y el audit sigue.
+      - **A tener en cuenta:** en "¿alimentar un Tactical Audit ahora?", justo después de guardar el análisis, el
+        export que lanzó el guardado (T52) sigue en curso. El Tactical espera ese mismo export, unos 16 s con MT5
+        abierto según el spike, en vez de lanzar otro. Ctrl+C saltea la espera.
+      - **Tests:** `tests/test_auto_export_wait.py` (16), con reloj falso:
+        - termina a tiempo y deja de esperar;
+        - la espera termina justo en 30 s (60 vueltas de 0.5 s) sin matar el proceso;
+        - los símbolos se informan a medida que terminan;
+        - un export previo se espera por su candado (terminado bien o con error, y sin terminar);
+        - el lector sigue vivo después de que el proceso terminó;
+        - Ctrl+C, un proceso sin salida, nada lanzado y un lanzamiento fallido;
+        - un `candle_sync` real esperado con el reloj real;
+        - en los wizards: el orden exportar → esperar → propuesta en Efficiency y en Tactical, apagado no espera, la
+          espera real de 0.6 s con un export que nunca termina deja guardar el audit, y un error inesperado no lo
+          frena.
+      - **Mutación:** 19 de 19 muertos, entre ellos `>=` contra `>` en el límite de la espera. La mutación que
+        ignora Ctrl+C dejó escapar el `KeyboardInterrupt` y cortó la corrida de pytest.
+      SUITE: `1147 passed, 3 skipped, 153 warnings in 76.99s`; sin `.data/`.
 - [ ] T54. Disparos antes del reporte y del backfill, y al abrir el CLI (`start()`). (RF-20c, RF-20d)
       Hecho cuando: los tests con los disparos mockeados prueban que ocurren y que no bloquean. SUITE en verde.
 
