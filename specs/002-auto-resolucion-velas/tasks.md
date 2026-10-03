@@ -1156,9 +1156,21 @@
         con espacio y otra palabra). En todos los casos sin escritura comprueban los bytes de las DBs.
       - **Mutación:** 8 de 8 muertos; uno sobrevivió al principio y se separó `integrity_check` para testearlo.
       SUITE: `1106 passed, 3 skipped, 144 warnings in 47.96s`; sin `.data/`.
-- [ ] T51. Subcomando `backfill [--apply]` con aceptación de conflictos uno por uno. (RF-11, RF-11e, RF-19)
+- [x] T51. Subcomando `backfill [--apply]` con aceptación de conflictos uno por uno. (RF-11, RF-11e, RF-19)
       Hecho cuando: el test con `CliRunner` sobre fixtures en `tmp_path` cubre el dry-run sin escrituras y un conflicto
       aceptado que se registra como `accepted_conflict`. SUITE en verde.
+      Evidencia (2026-10-03):
+      - **`backfill [--apply] [--account ID ...] [--hide-unchanged]`** en `cli/main.py`. Por cuenta muestra la vista
+        previa (`dry-run`, `HEAD`) y debajo el historial de `backfill_history` (`read_history`). La vista sabe mostrar
+        `accepted_conflict`.
+      - **Con `--apply`:** pregunta cada conflicto con `y`, `n` o `q` (`q` deja todos los que faltan), informa cuántos
+        se aceptaron y pasa por `run_apply`: ensayo, backup de 24 h y `APPLY`.
+      - **Códigos de salida:** 0, 1 (cuenta desconocida), 3, 4 y 5.
+      - **Tests:** `tests/test_cli_backfill.py` (7), con el dry-run sin escrituras (bytes iguales), un conflicto
+        aceptado registrado como `accepted_conflict` y los otros sin tocar, `q`, la cancelación (5), la falta de backup
+        (4), el historial en la vista previa siguiente, en el orden aplicado, y la cuenta desconocida (1).
+      - **Mutación:** 9 de 9 muertos; uno sobrevivió al principio (el orden del historial) y se agregó la verificación.
+      SUITE: `1114 passed, 3 skipped, 144 warnings in 45.63s`; sin `.data/`.
 
 ## Etapa 8 — Export automático (solo si el spike de T22 funcionó)
 

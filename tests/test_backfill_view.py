@@ -66,3 +66,11 @@ def test_numbers_dates_and_empty_values_are_shown_plainly():
 def test_a_run_without_changes_says_so():
     lines = render_runs([ViewRun("abcdef12", RUN_AT, "001", [], dry_run=True)])
     assert lines == [ViewLine("* abcdef1 (001, HEAD, dry-run) 2026-10-03 10:15 · no changes", "bold")]
+
+
+def test_an_accepted_conflict_in_the_history_keeps_the_conflict_mark():
+    from tools.auto_backfill import KIND_ACCEPTED_CONFLICT
+    lines = render_runs([ViewRun("abcdef12", RUN_AT, "000", [_change(KIND_ACCEPTED_CONFLICT, "structural_mae", 95.0,
+                                                                         99.0)], dry_run=False)])
+    assert lines[0].text.endswith("· 1 accepted_conflict")
+    assert lines[1] == ViewLine("| ! 00e2e31b efficiency_audit.structural_mae: 95 → 99 [candles]", "yellow")

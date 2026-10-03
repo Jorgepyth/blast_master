@@ -1443,6 +1443,75 @@ def resolution_report_command(ctx, output_dir, accounts):
     console.print(f"Report written to {path}", style="green", markup=False, soft_wrap=True)
 
 
+# --- Backfill (spec 002, T51) -----------------------------------------------------
+# Solo presentación y preguntas (O2): el plan, las puertas y la escritura viven en
+# tools/auto_backfill.py; la vista, en cli/backfill_view.py. Sin --apply no escribe nada.
+# Códigos de salida (plan.md §4): 0 bien, 1 cuenta desconocida, 3 falló el ensayo,
+# 4 sin backup de las últimas 24 h, 5 cancelado.
+BACKFILL_EXIT_UNKNOWN_ACCOUNT = 1
+
+
+@cli.command("backfill")
+@click.option("--apply", "do_apply", is_flag=True, help="Write the changes, after the gates (rehearsal, backup, APPLY).")
+@click.option("--account", "accounts", multiple=True,
+              help="Account id from REAL_ACCOUNTS, e.g. 000. Repeat it for several (default: all).")
+@click.option("--hide-unchanged", is_flag=True, help="Do not list the fields that would not change.")
+@click.pass_context
+def backfill_command(ctx, do_apply, accounts, hide_unchanged):
+    """Fill the audits with the candle values: a git-style preview, and --apply to write.
+
+    Exit code: 0 done, 1 unknown account, 3 rehearsal failed, 4 no backup from the last 24 h, 5 cancelled.
+    """
+    import uuid as _uuid
+    import config.auto_resolution as auto_cfg
+    from cli.backfill_view import ViewRun, print_runs
+    from tools.auto_backfill import KIND_CONFLICT, build_plan, read_history, run_apply
+
+    unknown = [account for account in accounts if account not in auto_cfg.REAL_ACCOUNTS]
+    if unknown:
+        console.print(f"Unknown account: {', '.join(unknown)} (known: {', '.join(auto_cfg.REAL_ACCOUNTS)})",
+                      style="red", markup=False)
+        ctx.exit(BACKFILL_EXIT_UNKNOWN_ACCOUNT)
+    selected = {account: auto_cfg.REAL_ACCOUNTS[account] for account in (accounts or auto_cfg.REAL_ACCOUNTS)}
+    plans = build_plan(auto_cfg.ACCOUNTS_DATA_DIR, auto_cfg.CANDLE_BANK_DIR, real_accounts=selected)
+    preview_at = datetime.datetime.now()
+    for plan in plans:
+        db_path = os.path.join(auto_cfg.ACCOUNTS_DATA_DIR, plan.db_name)
+        runs = [ViewRun(str(_uuid.uuid4()), preview_at, plan.account, plan.changes, dry_run=True)]
+        runs += [ViewRun(run.run_id, run.run_at, plan.account, run.changes, dry_run=False)
+                 for run in read_history(db_path, plan.account)]
+        console.print(f"{plan.account} {plan.db_name}", style="bold cyan", markup=False)
+        print_runs(console, runs, show_unchanged=not hide_unchanged)
+
+    if not do_apply:
+        console.print("Dry run: nothing was written. Use --apply to write.", markup=False)
+        return
+
+    accepted = {}
+    stop = False
+    for plan in plans:
+        for change in plan.changes:
+            if change.kind != KIND_CONFLICT or stop:
+                continue
+            question = (f"Accept {plan.account} {change.record_id[:8]} {change.table_name}.{change.field}: "
+                        f"{change.old_value} -> {change.new_value}? (y = accept, n = keep, q = keep all the rest)")
+            answer = click.prompt(question, type=click.Choice(["y", "n", "q"]), default="n", show_default=False)
+            if answer == "q":
+                stop = True
+            elif answer == "y":
+                accepted.setdefault(plan.account, set()).add((change.table_name, change.record_id, change.field))
+    total_accepted = sum(len(keys) for keys in accepted.values())
+    console.print(f"{total_accepted} conflict{'s' if total_accepted != 1 else ''} accepted.", markup=False)
+
+    code, _ = run_apply(
+        plans, auto_cfg.ACCOUNTS_DATA_DIR, auto_cfg.CANDLE_BANK_DIR,
+        os.path.join(auto_cfg.ACCOUNTS_DATA_DIR, "backups"),
+        confirm=lambda: click.prompt("Type APPLY to write", default="", show_default=False),
+        accepted=accepted, report=lambda message: console.print(message, markup=False, soft_wrap=True))
+    if code:
+        ctx.exit(code)
+
+
 # --- Banco de velas (spec 002, T21) ---------------------------------------------
 # Solo presentación: la lógica vive en tools/candle_bank.py y tools/candle_sync.py
 # (constitución, principio 3). Todo lo que se muestra va en inglés (N30). Los códigos

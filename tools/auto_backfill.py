@@ -208,6 +208,26 @@ def plan_account(account: str, db_path: str, bank_root: str,
     return plan
 
 
+@dataclass(frozen=True)
+class HistoryRun:
+    """Una corrida ya aplicada, leída de `backfill_history`. Los valores son el texto guardado."""
+    run_id: str
+    run_at: datetime
+    changes: List[PlannedChange]
+
+
+def read_history(db_path: str, account: str) -> List[HistoryRun]:
+    """Las corridas de `backfill_history` de una cuenta, en solo lectura (para la vista de RF-19)."""
+    columns = ("id", "run_id", "run_at", "kind", "table_name", "record_id", "field", "old_value", "new_value",
+               "source")
+    runs: Dict[str, HistoryRun] = {}
+    for row in sorted(_read_rows(db_path, "backfill_history", columns), key=lambda r: r["id"]):
+        run = runs.setdefault(row["run_id"], HistoryRun(row["run_id"], parse_datetime(row["run_at"]), []))
+        run.changes.append(PlannedChange(account, row["table_name"], row["record_id"], row["record_id"], row["field"],
+                                         row["kind"], row["old_value"], row["new_value"], row["source"]))
+    return list(runs.values())
+
+
 def build_plan(accounts_data_dir: str, bank_root: str,
                real_accounts: Optional[Mapping[str, str]] = None) -> List[AccountPlan]:
     """Un `AccountPlan` por cuenta de `real_accounts` (por defecto `REAL_ACCOUNTS`) cuyo archivo exista."""

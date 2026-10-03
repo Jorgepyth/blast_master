@@ -14,12 +14,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, List, NamedTuple, Sequence
 
-from tools.auto_backfill import KIND_CONFLICT, KIND_FILL, KIND_LEGACY_MOVE, KIND_UNCHANGED
+from tools.auto_backfill import KIND_ACCEPTED_CONFLICT, KIND_CONFLICT, KIND_FILL, KIND_LEGACY_MOVE, KIND_UNCHANGED
 
 EMPTY = "—"
-_MARK = {KIND_FILL: "+", KIND_CONFLICT: "!", KIND_UNCHANGED: "=", KIND_LEGACY_MOVE: ">"}
-_STYLE = {KIND_FILL: "green", KIND_CONFLICT: "yellow", KIND_UNCHANGED: "dim", KIND_LEGACY_MOVE: "green"}
-_KIND_ORDER = (KIND_FILL, KIND_CONFLICT, KIND_UNCHANGED, KIND_LEGACY_MOVE)
+# Un conflicto aceptado (en el historial) se sigue marcando como conflicto: `!` y amarillo.
+_MARK = {KIND_FILL: "+", KIND_CONFLICT: "!", KIND_ACCEPTED_CONFLICT: "!", KIND_UNCHANGED: "=", KIND_LEGACY_MOVE: ">"}
+_STYLE = {KIND_FILL: "green", KIND_CONFLICT: "yellow", KIND_ACCEPTED_CONFLICT: "yellow", KIND_UNCHANGED: "dim",
+          KIND_LEGACY_MOVE: "green"}
+_KIND_ORDER = (KIND_FILL, KIND_CONFLICT, KIND_ACCEPTED_CONFLICT, KIND_UNCHANGED, KIND_LEGACY_MOVE)
 
 
 class ViewLine(NamedTuple):
