@@ -1228,6 +1228,13 @@
       - **Mutación:** 9 de 9 muertos; uno sobrevivió al principio (el orden del historial) y se agregó la verificación.
       SUITE: `1114 passed, 3 skipped, 144 warnings in 45.63s`; sin `.data/`.
 
+- [ ] T51b. *(Agregada el 2026-10-03, N53.)* `backfill --apply --accept CAMPO` (se puede repetir): acepta todos los
+      conflictos de ese campo sin preguntar, y pregunta los demás uno por uno. Sin `--apply`, la vista previa dice
+      cuántos aceptaría. Un campo que no puede tener conflictos sale con 1. (RF-11e)
+      Hecho cuando: los tests con `CliRunner` prueban que los conflictos del campo se aceptan sin preguntarse y quedan
+      como `accepted_conflict`, que los demás se siguen preguntando, que `q` no frena a los del campo, la vista previa
+      sin escrituras y el campo desconocido. SUITE en verde.
+
 ## Etapa 8 — Export automático (solo si el spike de T22 funcionó)
 
 - [x] T52. Disparo en segundo plano al guardar un unified analysis, con `AUTO_EXPORT`. (RF-20, RF-20f)
@@ -1634,7 +1641,7 @@
 | RF-10, RF-10b, RF-10c, RF-10d | T46 |
 | RF-11, RF-11b, RF-11c | T47, T49, T49b, T51, T63 |
 | RF-11d | T50 |
-| RF-11e | T51, T63 |
+| RF-11e | T51, T51b, T63 |
 | RF-12, RF-12c | T55, T56 |
 | RF-12b, RF-12d | T56 |
 | RF-12e | T8, T55 |
