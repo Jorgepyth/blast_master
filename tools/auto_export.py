@@ -25,6 +25,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Mapping, Optional
 
+from sqlalchemy import distinct, select
+
 import config.auto_resolution as cfg
 from tools.candle_bank import SyncResult, bank_lock_held, read_bank_status
 
@@ -61,6 +63,30 @@ def symbols_for_assets(assets: Iterable[Optional[str]], symbol_map: Optional[Map
     """Los símbolos MT5 de `assets`, sin repetir y en orden. Un asset que no está en `MT5_SYMBOL_MAP` no se exporta."""
     symbol_map = cfg.MT5_SYMBOL_MAP if symbol_map is None else symbol_map
     return list(dict.fromkeys(symbol_map[asset] for asset in assets if asset in symbol_map))
+
+
+def account_symbols(accounts: Optional[Mapping[str, str]] = None, accounts_data_dir: Optional[str] = None,
+                    symbol_map: Optional[Mapping[str, str]] = None) -> List[str]:
+    """Los símbolos MT5 de las cuentas (por defecto, `REAL_ACCOUNTS`), en el orden de las cuentas (RF-20c, RF-20d):
+    los `asset` distintos de cada `unified_department`, leídos en `mode=ro` pidiendo solo esa columna. Una DB que no
+    existe se saltea."""
+    from tools.database import UnifiedDepartment
+    from tools.p2_backtest import open_readonly_session
+
+    accounts = cfg.REAL_ACCOUNTS if accounts is None else accounts
+    accounts_data_dir = cfg.ACCOUNTS_DATA_DIR if accounts_data_dir is None else accounts_data_dir
+    assets: List[str] = []
+    for db_name in accounts.values():
+        db_path = os.path.join(accounts_data_dir, db_name)
+        if not os.path.exists(db_path):
+            continue
+        session = open_readonly_session(db_path)
+        try:
+            assets += sorted(row[0] for row in session.execute(select(distinct(UnifiedDepartment.asset))).all()
+                             if row[0] is not None)
+        finally:
+            session.close()
+    return symbols_for_assets(assets, symbol_map)
 
 
 def export_command(symbols: List[str], log: str) -> List[str]:

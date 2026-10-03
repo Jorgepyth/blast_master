@@ -1078,6 +1078,8 @@ def start():
     state.active_session = ACTIVE_SESSION
     state.refresh_metrics(get_active_engine())
     state.active_idx = 0
+    # T54 (RF-20d): al abrir el CLI, el export de los símbolos de las cuentas reales, de fondo.
+    auto_export_in_background(lambda auto_export: auto_export.account_symbols())
     
     layout = build_persistent_layout(state)
     layout["body"].update(build_welcome_body(state))
@@ -1424,6 +1426,8 @@ def resolution_report_command(ctx, output_dir, accounts):
         console.print(f"Missing candle bank: {auto_cfg.CANDLE_BANK_DIR}", style="red", markup=False)
         ctx.exit(RESOLUTION_REPORT_EXIT_MISSING)
 
+    # T54 (RF-20c): antes del reporte, el export de los símbolos de las cuentas, con espera acotada.
+    auto_export_and_wait(lambda auto_export: auto_export.account_symbols(selected))
     reports = build_report(auto_cfg.ACCOUNTS_DATA_DIR, auto_cfg.CANDLE_BANK_DIR, real_accounts=selected)
     now = datetime.datetime.now()
     output_dir = output_dir or os.path.join(auto_cfg.ACCOUNTS_DATA_DIR, "reports")
@@ -1473,6 +1477,8 @@ def backfill_command(ctx, do_apply, accounts, hide_unchanged):
                       style="red", markup=False)
         ctx.exit(BACKFILL_EXIT_UNKNOWN_ACCOUNT)
     selected = {account: auto_cfg.REAL_ACCOUNTS[account] for account in (accounts or auto_cfg.REAL_ACCOUNTS)}
+    # T54 (RF-20c): antes del plan, el export de los símbolos de las cuentas, con espera acotada.
+    auto_export_and_wait(lambda auto_export: auto_export.account_symbols(selected))
     plans = build_plan(auto_cfg.ACCOUNTS_DATA_DIR, auto_cfg.CANDLE_BANK_DIR, real_accounts=selected)
     preview_at = datetime.datetime.now()
     for plan in plans:

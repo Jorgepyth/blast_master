@@ -1245,8 +1245,26 @@
       - **Mutación:** 19 de 19 muertos, entre ellos `>=` contra `>` en el límite de la espera. La mutación que
         ignora Ctrl+C dejó escapar el `KeyboardInterrupt` y cortó la corrida de pytest.
       SUITE: `1147 passed, 3 skipped, 153 warnings in 76.99s`; sin `.data/`.
-- [ ] T54. Disparos antes del reporte y del backfill, y al abrir el CLI (`start()`). (RF-20c, RF-20d)
+- [x] T54. Disparos antes del reporte y del backfill, y al abrir el CLI (`start()`). (RF-20c, RF-20d)
       Hecho cuando: los tests con los disparos mockeados prueban que ocurren y que no bloquean. SUITE en verde.
+      Evidencia (2026-10-03):
+      - **`tools/auto_export.account_symbols(accounts, data_dir)`:** los símbolos MT5 de las cuentas, en su orden. Son
+        los `asset` distintos de cada `unified_department`, leídos en `mode=ro` pidiendo solo esa columna. Un asset
+        sin símbolo MT5 y una DB que no existe se saltean.
+      - **`cli/main.py`:**
+        - `resolution-report` y `backfill` (también con `--apply`) exportan antes, con la espera acotada de T53,
+          solo los símbolos de las cuentas elegidas: con `--account 003`, solo USTEC. Una cuenta desconocida sale con 1
+          antes de exportar nada.
+        - `start()` lanza de fondo los símbolos de las cuentas reales, antes de abrir el menú, y no espera.
+        - Con `AUTO_EXPORT` apagado ninguno de los tres lee las DBs.
+      - **Tests:** `tests/test_auto_export_triggers.py` (12), con los disparos reemplazados:
+        - `account_symbols` con una DB mínima, sin las columnas nuevas, y sin escribirla;
+        - el reporte (las dos cuentas o una), el backfill con y sin `--apply`: el orden exportar → esperar → trabajo,
+          y que el comando termina con 0 aunque el export no termine;
+        - `start()`: un solo lanzamiento de fondo, sin espera, y un error que no impide abrir el menú;
+        - apagado: nada se lanza ni se lee.
+      - **Mutación:** 10 de 10 muertos, entre ellos exportar después del plan del backfill y que `start()` espere.
+      SUITE: `1159 passed, 3 skipped, 153 warnings in 51.08s`; sin `.data/`.
 
 ## Etapa 9 — Registro prospectivo del P2 sistemático (N38, N42)
 
