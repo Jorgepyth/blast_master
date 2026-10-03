@@ -558,21 +558,49 @@ def _base_result_line(result: SyncResult) -> str:
     return f"Candle export not merged for {result.symbol}: {result.result} ({result.error})"
 
 
+def _one_line(text: str) -> str:
+    return " ".join(text.split("\n")).replace("\r", " ")
+
+
+def _emit(line: str, log_path: Optional[str]) -> None:
+    """Una línea por símbolo, a la salida y al log. Nada de esto puede tumbar el export (INV-2): el CLI que esperaba
+    la salida pudo haberse cerrado (pipe roto), y el log puede no poder escribirse."""
+    if log_path:
+        try:
+            with open(log_path, "a", encoding="utf-8") as log:
+                log.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {line}\n")
+        except OSError:
+            pass
+    try:
+        print(line, flush=True)
+    except (BrokenPipeError, OSError):
+        pass
+
+
 def main(argv: Optional[Sequence[str]] = None, **sync_overrides) -> int:
     """`sync_overrides` se pasan tal cual a `sync_symbol` (los tests fijan rutas
-    y el exportador falso; el proceso real no pasa ninguno)."""
-    parser = argparse.ArgumentParser(description="Trae velas nuevas de MT5 al banco (un símbolo).")
-    parser.add_argument("--symbol", required=True, help="Símbolo MT5, p.ej. XAUUSD.")
+    y el exportador falso; el proceso real no pasa ninguno).
+
+    `--symbol` se puede repetir (T54): los símbolos se exportan uno detrás del otro, nunca a la vez, y sale una línea
+    por símbolo, en el mismo orden. El código de salida es el peor de todos (6 > 2 > 0). `--log` agrega cada línea,
+    con la hora, a ese archivo (lo usan los disparos automáticos, que no muestran la salida)."""
+    parser = argparse.ArgumentParser(description="Trae velas nuevas de MT5 al banco (uno o varios símbolos).")
+    parser.add_argument("--symbol", required=True, action="append",
+                        help="Símbolo MT5, p.ej. XAUUSD. Se puede repetir.")
     parser.add_argument(
         "--wait-seconds", type=float, default=None,
         help="Cuánto espera este proceso al exportador antes de rendirse (default: EXPORT_TIMEOUT_S).",
     )
+    parser.add_argument("--log", default=None, help="Archivo al que se agrega una línea con la hora por símbolo.")
     args = parser.parse_args(argv)
     if args.wait_seconds is not None:
         sync_overrides.setdefault("timeout_s", args.wait_seconds)
-    result = sync_symbol(args.symbol, **sync_overrides)
-    print(format_result_line(result))
-    return exit_code_for(result)
+    code = EXIT_MERGED
+    for symbol in args.symbol:
+        result = sync_symbol(symbol, **sync_overrides)
+        _emit(_one_line(format_result_line(result)), args.log)
+        code = max(code, exit_code_for(result))
+    return code
 
 
 if __name__ == "__main__":

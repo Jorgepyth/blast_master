@@ -170,6 +170,34 @@ def _is_pid_alive(pid: int) -> bool:
     return True
 
 
+def _live_lock(lock_path: str, stale_hours: float) -> Optional[Tuple[int, Optional[datetime]]]:
+    """`(pid, started_at)` del candado vigente en `lock_path`, o `None` si no hay o es huérfano (proceso muerto,
+    vencido, o un archivo corrupto/ilegible, igual que `tools.backup.acquire_backup_lock`)."""
+    if not os.path.exists(lock_path):
+        return None
+    pid = None
+    started_at = None
+    try:
+        with open(lock_path, "r", encoding="utf-8") as f:
+            lock_data = json.load(f)
+        pid = lock_data["pid"]
+        started_at = datetime.fromisoformat(lock_data["started_at"])
+    except (json.JSONDecodeError, KeyError, ValueError, OSError):
+        pass  # candado corrupto/ilegible: se trata como huérfano, igual que backup.py
+    if pid is None:
+        return None
+    pid_alive = _is_pid_alive(pid)
+    age = datetime.now(timezone.utc) - started_at if started_at else None
+    is_stale = (not pid_alive) or (age is not None and age > timedelta(hours=stale_hours))
+    return None if is_stale else (pid, started_at)
+
+
+def bank_lock_held(bank_dir: str, stale_hours: float = LOCK_STALE_HOURS) -> bool:
+    """Solo lectura: si otro proceso tiene el candado vigente del símbolo, o sea, si hay un export en curso
+    (RF-20f). Los disparos automáticos lo consultan para no lanzar un segundo export (T52)."""
+    return _live_lock(_lock_path(bank_dir), stale_hours) is not None
+
+
 @contextmanager
 def acquire_bank_lock(bank_dir: str, stale_hours: float = LOCK_STALE_HOURS):
     """
@@ -184,26 +212,13 @@ def acquire_bank_lock(bank_dir: str, stale_hours: float = LOCK_STALE_HOURS):
     `tools.backup.acquire_backup_lock`.
     """
     lock_path = _lock_path(bank_dir)
-    if os.path.exists(lock_path):
-        pid = None
-        started_at = None
-        try:
-            with open(lock_path, "r", encoding="utf-8") as f:
-                lock_data = json.load(f)
-            pid = lock_data["pid"]
-            started_at = datetime.fromisoformat(lock_data["started_at"])
-        except (json.JSONDecodeError, KeyError, ValueError, OSError):
-            pass  # candado corrupto/ilegible: se trata como huérfano, igual que backup.py
-
-        if pid is not None:
-            pid_alive = _is_pid_alive(pid)
-            age = datetime.now(timezone.utc) - started_at if started_at else None
-            is_stale = (not pid_alive) or (age is not None and age > timedelta(hours=stale_hours))
-            if not is_stale:
-                raise CandleBankLockedError(
-                    f"El banco en {bank_dir!r} ya tiene una fusión en curso "
-                    f"(pid={pid}, started_at={started_at}). Se cancela sin tocar el banco."
-                )
+    live = _live_lock(lock_path, stale_hours)
+    if live is not None:
+        pid, started_at = live
+        raise CandleBankLockedError(
+            f"El banco en {bank_dir!r} ya tiene una fusión en curso "
+            f"(pid={pid}, started_at={started_at}). Se cancela sin tocar el banco."
+        )
 
     os.makedirs(bank_dir, exist_ok=True)
     with open(lock_path, "w", encoding="utf-8") as f:

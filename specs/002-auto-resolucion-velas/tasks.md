@@ -1174,9 +1174,40 @@
 
 ## Etapa 8 — Export automático (solo si el spike de T22 funcionó)
 
-- [ ] T52. Disparo en segundo plano al guardar un unified analysis, con `AUTO_EXPORT`. (RF-20, RF-20f)
+- [x] T52. Disparo en segundo plano al guardar un unified analysis, con `AUTO_EXPORT`. (RF-20, RF-20f)
       Hecho cuando: los tests, con `Popen` mockeado, prueban que se lanza una vez, que el guardado no espera, y que no
       se lanza con `AUTO_EXPORT` desactivado. SUITE en verde.
+      Evidencia (2026-10-03):
+      - **`tools/auto_export.py`** (nuevo): `start_export(symbols)` lanza `python -m tools.candle_sync --symbol S ...
+        --log <ACCOUNTS_DATA_DIR>/candle_export.log` con `start_new_session` (sigue vivo aunque se cierre el CLI), sin
+        stdin ni stdout, y con stderr al mismo log. Le pasa al proceso las rutas del CLI y el `PYTHONPATH` del repo.
+        Con `AUTO_EXPORT` apagado no lanza nada. Un símbolo con un export en curso no se vuelve a lanzar (RF-20f), y
+        los procesos que terminaron se cosechan en el lanzamiento siguiente. Si no se puede lanzar, vuelve
+        `sync_not_launched: <motivo>`, sin levantar.
+      - **`tools/candle_bank.py`:** `bank_lock_held(bank_dir)`, de solo lectura. Sale de la misma regla que
+        `acquire_bank_lock` (`_live_lock`): un candado de un proceso muerto, vencido o ilegible no cuenta.
+      - **`tools/candle_sync.py`:** `--symbol` se puede repetir. Los símbolos se exportan uno detrás del otro, para no
+        abrirle a MT5 varias sesiones a la vez, con una línea por símbolo y el peor código de salida. `--log` agrega
+        cada línea con la hora. Un pipe cerrado o un log que no se puede escribir no tumban el export.
+      - **`cli/main.py`:** `auto_export_in_background()`, llamada después de guardar el análisis, junto al aviso del
+        Mark Price. Muestra `Candle export started in the background: XAUUSD` (o `already running`, o `skipped`).
+        Con `AUTO_EXPORT` apagado no busca ni el símbolo, y un error inesperado se muestra en una línea y el wizard
+        sigue.
+      - **Tests:** `tests/test_auto_export.py` (19). Prueban:
+        - que guardar lanza un proceso, una sola vez, y que nadie lo espera;
+        - que con `AUTO_EXPORT` apagado no se lanza nada, ni con un export en curso;
+        - que un fallo al lanzar y un error inesperado no frenan el guardado;
+        - los candados muertos o ilegibles, la cosecha, el log ausente y el entorno del proceso;
+        - `candle_sync` con tres símbolos (orden, líneas, log y código 6);
+        - un proceso real de `candle_sync`, sin exportador configurado y con todo en `tmp_path`, que termina en
+          `exporter_not_configured` y lo deja en el log y en `status.json`.
+      - **Mutación:** 23 de 23 muertos. Dos sobrevivieron al principio (el chequeo de `AUTO_EXPORT` dentro de
+        `start_export` y el `except` del CLI) y se sumó un test para cada uno.
+      - **Lo que paró el aislamiento:** la primera versión de los tests reemplazaba `subprocess.Popen` para todo el
+        CLI, pero `start_export` había tomado el original al importarse, así que lanzó procesos reales de
+        `candle_sync`. Todos quedaron en `tmp_path`, sin exportador configurado. Ahora los tests reemplazan
+        `auto_export.Popen`.
+      SUITE: `1131 passed, 3 skipped, 144 warnings in 72.52s`; sin `.data/`.
 - [ ] T53. Disparo al abrir un audit, con espera acotada y progreso. (RF-20b, RF-20e)
       Hecho cuando: los tests prueban que la espera termina en `AUTO_EXPORT_WAIT_S` y continúa, y la línea "Candle
       export skipped". SUITE en verde.

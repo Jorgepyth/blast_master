@@ -178,6 +178,10 @@ MT5_INCOMING_DIR = os.path.abspath(
 # Corridas de `_incoming` que se conservan por símbolo; las más viejas se borran al final de cada export (N47).
 INCOMING_RUNS_KEEP = 3
 
+# Log de los exports automáticos (T52 a T54), dentro de ACCOUNTS_DATA_DIR: una línea con la hora por símbolo y lo que
+# el proceso de fondo diga por stderr. Los disparos no muestran la salida del proceso; ahí se ve qué pasó.
+AUTO_EXPORT_LOG_NAME = "candle_export.log"
+
 # CSV que ya existían antes de esta spec, `{LEGACY_EXPORTS_DIR}/{SIMBOLO}/{TF}.csv`
 # (los que lee el cuaderno; INV-6: nunca se tocan). Solo los lee
 # `candles import-legacy` (RF-2c). Por defecto, la carpeta que contiene a

@@ -2808,6 +2808,33 @@ def warn_if_mark_price_off(asset, mark_price, mark_price_time):
         )
 
 
+def _export_line(text, style):
+    console.print(text, style=style, markup=False, highlight=False, soft_wrap=True)
+
+
+def auto_export_in_background(symbols_of):
+    """Spec 002 (T52, RF-20, RF-20d): lanza el export de velas en un proceso aparte y sigue sin esperar. `symbols_of`
+    recibe el módulo `tools.auto_export` y devuelve los símbolos MT5; solo se llama con `AUTO_EXPORT` prendido, así que
+    apagado no hace nada, ni lee ninguna DB (N31). Nunca levanta (INV-2)."""
+    try:
+        import tools.auto_export as auto_export
+        if not auto_export.enabled():
+            return None
+        launch = auto_export.start_export(symbols_of(auto_export))
+    except Exception as exc:  # noqa: BLE001 -- INV-2: el export nunca frena el CLI
+        _export_line(f"Candle export skipped: {type(exc).__name__}: {exc}", "yellow")
+        return None
+    if launch is None:
+        return None
+    if launch.launch_error:
+        _export_line(f"Candle export skipped: {launch.launch_error}", "yellow")
+    elif launch.launched:
+        _export_line(f"Candle export started in the background: {', '.join(launch.launched)}", "dim")
+    if launch.in_progress:
+        _export_line(f"Candle export already running: {', '.join(launch.in_progress)}", "dim")
+    return launch
+
+
 def efficiency_proposal(trade_id):
     """Spec 002 (RF-7, RF-7f): la propuesta de las velas para el audit de un análisis de la cuenta activa, o `None`
     si no se pudo pedir. Es solo una ayuda: cualquier error se registra y el wizard sigue como siempre."""
@@ -3423,6 +3450,8 @@ def flow_new_analysis(backdated_timestamp=None, cloned_state: dict = None, start
 
                     # Fuera del bloque de la transacción: el análisis ya está guardado y el aviso nunca lo deshace.
                     warn_if_mark_price_off(asset, *saved_mark_price)
+                    # T52 (RF-20): el export del símbolo, de fondo; el wizard sigue sin esperarlo.
+                    auto_export_in_background(lambda auto_export: auto_export.symbols_for_assets([asset]))
 
                     feed_now = inquirer.select(
                         message="¿Deseas alimentar un Tactical Audit ahora para este análisis?",
