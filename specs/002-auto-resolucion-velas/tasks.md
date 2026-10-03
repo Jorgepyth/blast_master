@@ -1148,6 +1148,9 @@
       La SUITE de la rama justo antes dio `997 passed, 3 skipped`, sin `.data/`. Ningún archivo del usuario entre los
       cambiados, y los 30 quedaron byte a byte iguales. Un `tools/backup.py backup --dry-run` desde el checkout
       principal detecta el banco (20.8 MB) y B2; el USB no está montado.
+      **6.ª integración 2026-10-03 (aprobada por el usuario: "add the commits"):** avance rápido de `21f9cb5` a
+      `1fbdf58`, 7 commits: T29b, T33b, CLAUDE.md, T40, T41, T42 y T43. La SUITE de la rama dio `1039 passed, 3
+      skipped`, sin `.data/`. Ningún archivo del usuario entre los cambiados, y los 30 quedaron byte a byte iguales.
 - [x] T58a. *(Agregada el 2026-10-03, N48.)* El banco de velas en el backup 3-2-1: artefacto `candle_bank.tar.gz` en
       local, USB y B2, y su restore en `<destino>/candle_bank/`. (NFR-1)
       Hecho cuando: los tests prueban el archivo (solo los CSV y `status.json` del banco, rutas relativas), la subida
