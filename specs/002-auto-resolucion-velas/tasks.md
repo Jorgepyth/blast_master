@@ -1136,12 +1136,24 @@
 - [ ] T61. 🖐 Demo en una Flight Session descartable: un Efficiency Audit con propuestas aceptadas y una corregida,
       más un Tactical con MAE/MFE y `Could hit TP?` propuestos. (RF-7, RF-9, RF-10)
       Hecho cuando: queda documentado en `validation.md` con la salida, y la Flight Session se borra al terminar.
-- [ ] T62a. *(Agregada el 2026-10-03, N47.)* Retención de `_incoming`: al final de cada export se conservan las 3
+- [x] T62a. *(Agregada el 2026-10-03, N47.)* Retención de `_incoming`: al final de cada export se conservan las 3
       corridas más recientes del símbolo y se borran las demás, solo si son carpetas de corrida con CSV de
       temporalidades. (RF-1, RF-20)
       Hecho cuando: los tests prueban que se borran solo las corridas viejas y que quedan intactos los nombres que no
       son `run_id`, los enlaces, las carpetas con otro contenido, los otros símbolos y la corrida recién exportada.
       SUITE en verde.
+      Evidencia (2026-10-03):
+      - **`prune_incoming_runs()`** (`tools/candle_sync.py`) con `INCOMING_RUNS_KEEP = 3`, que no acepta menos de 1.
+        Ordena por hora y después por el sufijo `-N` como número.
+      - **Qué borra:** archivo por archivo y después la carpeta vacía, nunca con `rmtree`.
+      - **Qué no toca:** enlaces (la carpeta del símbolo, la corrida o un CSV), nombres que no son `run_id`, corridas
+        con otra cosa adentro (se informan), otros símbolos y la corrida recién exportada.
+      - **Cuándo corre:** `sync_symbol` la llama con el candado tomado, después de `status.json`. Un error de la
+        limpieza nunca cambia el resultado del export. La línea del resultado dice qué se borró.
+      - **Tests:** `tests/test_incoming_retention.py`, 14 tests. Mutación: 13 de 13 muertos; uno sobrevivió al
+        principio (el orden de `-2` contra `-10`) y se corrigió el test.
+      - **Con las corridas reales de hoy** (XAU 3, USTEC 2, US500 2, BTC 1) no se borraría nada.
+      SUITE: `982 passed, 3 skipped, 97 warnings in 58.90s`; sin `.data/`.
 - [ ] T62. 🖐 Demo del export automático con MT5 abierto y con MT5 cerrado. Solo si T22 funcionó. (RF-20 a RF-20e)
       Hecho cuando: las dos salidas quedan en `validation.md`.
       **Decisión pendiente antes de activar `AUTO_EXPORT` (postergada por el usuario el 2026-09-29): retención de

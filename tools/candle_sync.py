@@ -334,6 +334,69 @@ def _now_gt() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=_GT_OFFSET_HOURS)
 
 
+# --------------------------------------------------------------------------
+# Retención de `_incoming` (N47)
+# --------------------------------------------------------------------------
+
+# Nombre de una carpeta de corrida del exportador: `YYYYmmddTHHMMSS`, con `-N` si ya existía
+# (windows_export/export_p2_ohlc.py).
+_RUN_DIR_NAME = re.compile(r"^(\d{8}T\d{6})(?:-(\d+))?$")
+# Lo único que puede haber adentro de una corrida para borrarla: los CSV de las temporalidades.
+_RUN_FILE_NAME = re.compile(r"^\d+[MHDW]\.csv$")
+
+
+@dataclass
+class PruneResult:
+    removed: List[str]
+    skipped: List[str]  # corridas viejas que se dejaron porque tienen algo más que CSV de temporalidades
+
+
+def _run_sort_key(name: str):
+    stem, suffix = _RUN_DIR_NAME.match(name).groups()
+    return stem, int(suffix or 0)
+
+
+def _only_timeframe_csvs(run_dir: str) -> bool:
+    for entry in os.listdir(run_dir):
+        path = os.path.join(run_dir, entry)
+        if not _RUN_FILE_NAME.match(entry) or os.path.islink(path) or not os.path.isfile(path):
+            return False
+    return True
+
+
+def prune_incoming_runs(incoming_root: str, mt5_symbol: str, keep: Optional[int] = None,
+                        protect: Optional[str] = None) -> PruneResult:
+    """
+    N47: deja las `keep` corridas más recientes de `{incoming_root}/{mt5_symbol}/` y borra las más viejas. Solo cuenta
+    y solo borra carpetas reales (no enlaces) cuyo nombre es un `run_id` y que contienen únicamente CSV de
+    temporalidades; las borra archivo por archivo y después la carpeta vacía, nunca en forma recursiva. Una corrida vieja
+    con cualquier otra cosa adentro se deja y se informa. `protect` (la corrida recién exportada) nunca se borra. No toca
+    nada fuera de la carpeta del símbolo, ni la carpeta del símbolo si es un enlace.
+    """
+    keep = cfg.INCOMING_RUNS_KEEP if keep is None else keep
+    if keep < 1:
+        raise ValueError(f"keep must be at least 1, got {keep}")
+    symbol_dir = os.path.join(incoming_root, mt5_symbol)
+    if os.path.islink(symbol_dir) or not os.path.isdir(symbol_dir):
+        return PruneResult([], [])
+    runs = sorted((name for name in os.listdir(symbol_dir)
+                   if _RUN_DIR_NAME.match(name) and not os.path.islink(os.path.join(symbol_dir, name))
+                   and os.path.isdir(os.path.join(symbol_dir, name))), key=_run_sort_key)
+    removed, skipped = [], []
+    for name in runs[:-keep]:
+        if name == protect:
+            continue
+        run_dir = os.path.join(symbol_dir, name)
+        if not _only_timeframe_csvs(run_dir):
+            skipped.append(name)
+            continue
+        for entry in os.listdir(run_dir):
+            os.remove(os.path.join(run_dir, entry))
+        os.rmdir(run_dir)
+        removed.append(name)
+    return PruneResult(removed, skipped)
+
+
 def _launch_and_merge(
     mt5_symbol: str,
     bank_dir: str,
@@ -445,6 +508,11 @@ def sync_symbol(
                 write_sync_status(bank_dir, result)
             except Exception as exc:  # noqa: BLE001
                 result.error = f"{result.error or ''} (status.json not written: {exc})".strip()
+            try:  # N47: con el candado del símbolo tomado; nunca cambia el resultado del export
+                pruned = prune_incoming_runs(incoming_root, mt5_symbol, protect=result.run_id)
+                result.pruned_runs, result.prune_skipped = pruned.removed, pruned.skipped
+            except Exception as exc:  # noqa: BLE001
+                result.prune_error = f"{type(exc).__name__}: {exc}"
             return result
     except CandleBankLockedError as exc:
         return SyncResult(symbol=mt5_symbol, result=SYNC_RESULT_LOCKED, error=f"export_in_progress: {exc}")
@@ -464,7 +532,18 @@ def exit_code_for(result: SyncResult) -> int:
 
 def format_result_line(result: SyncResult) -> str:
     """Una línea en inglés (N30). `export_failed` y `locked` son los "skipped"
-    de RF-20e/RF-20f."""
+    de RF-20e/RF-20f. Al final, lo que hizo la retención de `_incoming` (N47)."""
+    line = _base_result_line(result)
+    if result.pruned_runs:
+        line += f"; removed old export runs: {', '.join(result.pruned_runs)}"
+    if result.prune_skipped:
+        line += f"; kept old export runs with other files inside: {', '.join(result.prune_skipped)}"
+    if result.prune_error:
+        line += f"; could not remove old export runs ({result.prune_error})"
+    return line
+
+
+def _base_result_line(result: SyncResult) -> str:
     if result.result == SYNC_RESULT_MERGED:
         added = ", ".join(f"{tf}: +{n}" for tf, n in result.bars_added.items()) or "no new candles"
         verified_by = result.verified_by or ""

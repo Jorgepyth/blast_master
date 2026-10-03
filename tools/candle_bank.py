@@ -935,6 +935,11 @@ class SyncResult:
     error: Optional[str] = None
     # Solo en `merged` (N43): cómo se verificó y con qué servidor, desfase base y regla se convirtió.
     verified_export: Optional[dict] = None
+    # Retención de `_incoming` (N47): corridas viejas borradas, las que se dejaron por tener otra cosa adentro, y el
+    # error si la limpieza falló (nunca cambia `result`).
+    pruned_runs: List[str] = field(default_factory=list)
+    prune_skipped: List[str] = field(default_factory=list)
+    prune_error: Optional[str] = None
 
 
 def merge_incoming_run(

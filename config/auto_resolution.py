@@ -162,6 +162,9 @@ MT5_INCOMING_DIR = os.path.abspath(
     os.getenv("MT5_INCOMING_DIR", "/mnt/c/Users/jcifu/MT5Exports/_incoming")
 )
 
+# Corridas de `_incoming` que se conservan por símbolo; las más viejas se borran al final de cada export (N47).
+INCOMING_RUNS_KEEP = 3
+
 # CSV que ya existían antes de esta spec, `{LEGACY_EXPORTS_DIR}/{SIMBOLO}/{TF}.csv`
 # (los que lee el cuaderno; INV-6: nunca se tocan). Solo los lee
 # `candles import-legacy` (RF-2c). Por defecto, la carpeta que contiene a
