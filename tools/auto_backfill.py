@@ -12,22 +12,29 @@ cambios, sin escribir nada:
 Campos: en `efficiency_audit`, `resolution_type`, `structural_resolution`, `failure_reason`, `structural_mae`,
 `structural_mfe`, `resolution_time` y su `resolution_time_source`; en `tactical_audit`, de las órdenes llenadas,
 `mae_adverse`, `mfe_favorable` y `could_hit_tp`. Los campos manuales de INV-8 nunca entran. Las DBs se leen en
-`mode=ro` y con columnas explícitas (RF-6b). Aplicar el plan es T49, con las puertas de T50.
+`mode=ro` y con columnas explícitas (RF-6b).
+
+`apply_plan` (T49, RF-11b, RF-18) aplica los `fill`, los `legacy_move` y los conflictos aceptados uno por uno (como
+`accepted_conflict`), en una transacción por cuenta, e inserta una fila de `backfill_history` por cambio. Nunca
+modifica ni borra filas del historial. Las puertas de R9 (ensayo, backup y confirmación) son de T50.
 """
 from __future__ import annotations
 
+import dataclasses
 import os
+import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Mapping, Optional
 
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 
 from config.auto_resolution import MARK_PRICE_TOLERANCE, REAL_ACCOUNTS
 from tools.auto_resolution import AccountResolver, AutoProposal, parse_datetime, parse_float, tactical_from_candles
 from tools.p2_backtest import open_readonly_session
 
 KIND_FILL, KIND_UNCHANGED, KIND_CONFLICT, KIND_LEGACY_MOVE = "fill", "unchanged", "conflict", "legacy_move"
+KIND_ACCEPTED_CONFLICT = "accepted_conflict"  # un conflicto que el usuario aceptó, ya aplicado (RF-11e)
 SOURCE_CANDLES, SOURCE_LEGACY = "candles", "legacy"
 PRICE_TOLERANCE = MARK_PRICE_TOLERANCE  # 0.1% del precio, la misma que usa el reporte para MAE/MFE
 R_TOLERANCE = 0.1                       # en R, para el MAE/MFE táctico
@@ -139,7 +146,9 @@ def _resolution_time_changes(account: str, row: Dict[str, Any], proposal: AutoPr
     def change(field_name, kind, old, new, origin):
         return PlannedChange(account, "efficiency_audit", trade_id, trade_id, field_name, kind, old, new, origin)
 
-    if current is not None and registered is None:  # la hora vieja del guardado (N2)
+    # La hora vieja del guardado (N2): con hora, sin `audit_registration_time` y sin origen. Una hora que ya puso el
+    # wizard (T43) o un backfill anterior siempre tiene origen, así que nunca se vuelve a mover (idempotencia).
+    if current is not None and registered is None and row["resolution_time_source"] is None:
         changes = [change("audit_registration_time", KIND_LEGACY_MOVE, None, current, SOURCE_LEGACY),
                    change("resolution_time", KIND_FILL, current, proposed, source)]
         if source is not None:
@@ -203,3 +212,80 @@ def build_plan(accounts_data_dir: str, bank_root: str,
         if os.path.exists(db_path):
             plans.append(plan_account(account, db_path, bank_root))
     return plans
+
+
+# --- Aplicación (T49; RF-11b, RF-11c, RF-18) ---------------------------------------------------------------------------
+
+# Lo único que el backfill puede escribir. Los campos manuales de INV-8 nunca están acá.
+WRITABLE_FIELDS = {
+    "efficiency_audit": {"resolution_type", "structural_resolution", "failure_reason", "structural_mae",
+                         "structural_mfe", "resolution_time", "resolution_time_source", "audit_registration_time"},
+    "tactical_audit": {"mae_adverse", "mfe_favorable", "could_hit_tp"},
+}
+# El formato en que SQLAlchemy guarda un DateTime en SQLite; el historial guarda el valor legible.
+_DB_DATETIME = "%Y-%m-%d %H:%M:%S.%f"
+
+
+def _now_gt() -> datetime:
+    return datetime.now(timezone(timedelta(hours=-6))).replace(tzinfo=None)
+
+
+def _db_value(value: Any) -> Any:
+    return value.strftime(_DB_DATETIME) if isinstance(value, datetime) else value
+
+
+def _history_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    return str(value)
+
+
+def changes_to_apply(plan: AccountPlan, accepted=()) -> List[PlannedChange]:
+    """Los cambios que se escriben: los `fill`, los `legacy_move` y los conflictos aceptados (marcados
+    `accepted_conflict`). `accepted` son tuplas `(tabla, record_id, campo)`."""
+    accepted = set(accepted)
+    result = []
+    for change in plan.changes:
+        if change.kind in (KIND_FILL, KIND_LEGACY_MOVE):
+            result.append(change)
+        elif change.kind == KIND_CONFLICT and (change.table_name, change.record_id, change.field) in accepted:
+            result.append(dataclasses.replace(change, kind=KIND_ACCEPTED_CONFLICT))
+    for change in result:
+        if change.field not in WRITABLE_FIELDS.get(change.table_name, ()):
+            raise ValueError(f"the backfill cannot write {change.table_name}.{change.field}")
+    return result
+
+
+def apply_plan(db_path: str, plan: AccountPlan, accepted=(), run_id: Optional[str] = None,
+               run_at: Optional[datetime] = None) -> List[PlannedChange]:
+    """
+    Aplica el plan de una cuenta en una sola transacción: un `UPDATE` por campo (sobre una fila que tiene que existir)
+    y un `INSERT` en `backfill_history` por cambio. Si algo falla, no queda nada escrito. Sin cambios para aplicar, ni
+    abre la DB. Devuelve los cambios aplicados.
+    """
+    to_apply = changes_to_apply(plan, accepted)
+    if not to_apply:
+        return []
+    run_id = run_id or str(uuid.uuid4())
+    run_at = run_at or _now_gt()
+    engine = create_engine(f"sqlite:///{db_path}")
+    try:
+        with engine.begin() as conn:
+            for change in to_apply:
+                result = conn.execute(text(f"UPDATE {change.table_name} SET {change.field} = :value WHERE id = :id"),
+                                      {"value": _db_value(change.new_value), "id": change.record_id})
+                if result.rowcount != 1:
+                    raise ValueError(f"{change.table_name} {change.record_id} not found")
+                conn.execute(text(
+                    "INSERT INTO backfill_history (run_id, run_at, kind, table_name, record_id, field, old_value, "
+                    "new_value, source) VALUES (:run_id, :run_at, :kind, :table_name, :record_id, :field, :old_value, "
+                    ":new_value, :source)"),
+                    {"run_id": run_id, "run_at": run_at.strftime(_DB_DATETIME), "kind": change.kind,
+                     "table_name": change.table_name, "record_id": change.record_id, "field": change.field,
+                     "old_value": _history_text(change.old_value), "new_value": _history_text(change.new_value),
+                     "source": change.source})
+    finally:
+        engine.dispose()
+    return to_apply

@@ -145,3 +145,12 @@ def test_with_the_clock_not_verified_no_tactical_change_is_proposed(tmp_path):
                  entry_price=100.0, stop_loss=95.0, take_profit=110.0)
     db, bank = _account(tmp_path, clock="clock_unverified", tactical=[trade])
     assert [c for c in plan_account("000", db, bank).changes if c.table_name == "tactical_audit"] == []
+
+
+def test_a_time_with_a_source_is_never_taken_for_an_old_save_time(tmp_path):
+    # Un audit nunca hecho que un backfill anterior ya llenó: hora del toque, origen `candles`, sin registro.
+    db, bank = _account(tmp_path, efficiency=dict(resolution_type=CONFIRMED, real_bias_b=None, resolution_time=TOUCH,
+                                                  resolution_time_source="candles"))
+    changes = _by_field(plan_account("000", db, bank))
+    assert ("efficiency_audit", "audit_registration_time") not in changes
+    assert changes[("efficiency_audit", "resolution_time")].kind == KIND_UNCHANGED

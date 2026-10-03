@@ -1126,9 +1126,22 @@
       - **Tests:** `tests/test_backfill_view.py` (5). Mutación: 10 de 10 muertos.
       - **Muestra con datos reales**, en solo lectura, para `887dbdc1`: 2 `fill`, 5 `unchanged` y 1 `legacy_move`.
       SUITE: `1083 passed, 3 skipped, 144 warnings in 44.85s`; sin `.data/`.
-- [ ] T49. Aplicación transaccional, inserciones en `backfill_history` e idempotencia. (RF-11b, RF-11c, RF-18)
+- [x] T49. Aplicación transaccional, inserciones en `backfill_history` e idempotencia. (RF-11b, RF-11c, RF-18)
       Hecho cuando: los tests prueban que la segunda corrida no cambia nada, que el historial tiene una fila por
       cambio, y que el código nunca hace `UPDATE` ni `DELETE` sobre `backfill_history`. SUITE en verde.
+      Evidencia (2026-10-03):
+      - **`apply_plan()`** en `tools/auto_backfill.py`: una transacción por cuenta. Por cambio, un `UPDATE` que tiene
+        que tocar exactamente una fila y un `INSERT` en `backfill_history`. Escribe los `fill`, los `legacy_move` y
+        los conflictos aceptados, que quedan como `accepted_conflict`.
+      - **Seguridad:** solo escribe los campos de `WRITABLE_FIELDS`, así que nunca los de INV-8. Si no hay nada que
+        aplicar, ni abre la DB.
+      - **Defecto encontrado por el test de idempotencia:** en un audit nunca hecho, la segunda corrida tomaba la
+        hora del toque por la hora vieja del guardado y la movía. El `legacy_move` ahora exige también
+        `resolution_time_source` vacío (aclaración en el plan §3.11). Las 80 filas viejas de XAU siguen entrando
+        igual.
+      - **Tests:** `tests/test_backfill_apply.py` (10) y uno más en `tests/test_auto_backfill.py`. Mutación: 9 de 9
+        muertos; 2 sobrevivieron al principio y se agregaron sus tests.
+      SUITE: `1093 passed, 3 skipped, 144 warnings in 45.61s`; sin `.data/`.
 - [ ] T50. Puertas: ensayo sobre una copia temporal con `init_db`, backup de las últimas 24 h, confirmación
       escribiendo `APPLY`, y sus códigos de salida. (RF-11d, R9)
       Hecho cuando: los tests prueban los códigos 3, 4 y 5 y que en esos casos no se escribe nada. SUITE en verde.

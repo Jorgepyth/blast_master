@@ -418,6 +418,10 @@ cambio se inserta en `backfill_history`.
 - **`Could hit TP?`** se propone aunque la salida sea igual a la entrada, porque RF-9b solo frena el MAE/MFE. En las
   DBs reales esas filas tienen `order_filled = 0`, así que no entran.
 - Una fila de `efficiency_audit` que no existe no se crea: el backfill solo llena filas existentes.
+- **Aclaración de T49 (encontrada por el test de idempotencia):** el `legacy_move` exige además
+  `resolution_time_source` vacío. Un audit nunca hecho al que el backfill le llenó `resolution_time` queda con hora y
+  sin `audit_registration_time`. Sin esta condición, la segunda corrida tomaría la hora del toque por la del guardado
+  y la movería. Las filas viejas nunca tienen origen; el wizard (T43) y el backfill siempre lo llenan.
 
 ---
 
