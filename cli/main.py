@@ -11,6 +11,13 @@ from pathlib import Path
 from typing import Optional
 from decimal import Decimal, getcontext
 from sqlalchemy import text
+# `python cli/main.py ...` pone `cli/` en sys.path, no la raíz del repo, y los imports de abajo fallan con "No module
+# named 'core'". `python -m cli.main` (la función `trading`) sí la pone. Con esto funcionan las dos formas (spec 002, T33b).
+import sys
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 from core.math_engine import calculate_probabilities, calculate_algebraic_metrics, calculate_structural_entry, calculate_edge_score
 
 getcontext().prec = 18

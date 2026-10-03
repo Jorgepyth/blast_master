@@ -893,12 +893,16 @@
 
 ## Etapa 4 — Esquema y horas del análisis
 
-- [ ] T33b. *(Agregada el 2026-10-03.)* `python cli/main.py ...` falla con `No module named 'core'`: correr el
+- [x] T33b. *(Agregada el 2026-10-03.)* `python cli/main.py ...` falla con `No module named 'core'`: correr el
       archivo pone `cli/` en `sys.path`, no la raíz del repo. Solo funcionaba `python -m cli.main` (la función
       `trading` del usuario). Los comandos documentados en el plan §4 y en `CLAUDE.md` usan la primera forma.
       `cli/main.py` agrega la raíz del repo a `sys.path` antes de sus imports. (—)
       Hecho cuando: un test corre `python cli/main.py --help` en un subproceso, desde una carpeta temporal, con código
       0. SUITE en verde.
+      Evidencia (2026-10-03): `cli/main.py` agrega la raíz del repo a `sys.path` antes de importar `core`. El test
+      `tests/test_cli_entrypoint.py` corre el archivo sin PYTHONPATH, desde una carpeta temporal. Antes del arreglo
+      fallaba con el mismo error que vio el usuario; después pasa, y el `--help` del grupo no crea `.data/`.
+      SUITE: `1006 passed, 3 skipped, 97 warnings in 55.71s`; sin `.data/`.
 - [x] T35. `tools/database.py`: columnas nuevas, ORM de `backfill_history` y shim de `init_db`. (RF-13d, RF-13e,
       RF-14, RF-14b, RF-18, NFR-1)
       Hecho cuando: los tests prueban que `init_db` sobre una DB de archivo en `tmp_path`, creada con el esquema
