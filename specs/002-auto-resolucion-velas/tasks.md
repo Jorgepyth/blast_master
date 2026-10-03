@@ -1142,9 +1142,20 @@
       - **Tests:** `tests/test_backfill_apply.py` (10) y uno más en `tests/test_auto_backfill.py`. Mutación: 9 de 9
         muertos; 2 sobrevivieron al principio y se agregaron sus tests.
       SUITE: `1093 passed, 3 skipped, 144 warnings in 45.61s`; sin `.data/`.
-- [ ] T50. Puertas: ensayo sobre una copia temporal con `init_db`, backup de las últimas 24 h, confirmación
+- [x] T50. Puertas: ensayo sobre una copia temporal con `init_db`, backup de las últimas 24 h, confirmación
       escribiendo `APPLY`, y sus códigos de salida. (RF-11d, R9)
       Hecho cuando: los tests prueban los códigos 3, 4 y 5 y que en esos casos no se escribe nada. SUITE en verde.
+      Evidencia (2026-10-03):
+      - **`run_apply()`** en `tools/auto_backfill.py`, con `rehearse()`, `recent_backup()` e `integrity_check()`.
+      - **Ensayo:** copia con la API de backup de SQLite en una carpeta temporal que siempre se borra, `init_db`,
+        aplicación del plan, `integrity_check` y un segundo plan que ya no tiene nada para llenar. Ensaya todas las
+        cuentas antes de escribir la primera (RF-11d).
+      - **Mensajes:** cada paso informa con una línea en inglés. Orden de las puertas aclarado en el plan §3.11.
+      - **Tests:** `tests/test_backfill_gates.py` (13), que prueban 0, 3 (incluida una copia que falla
+        `integrity_check`), 4 (sin backups, uno de 24 h y 1 s, sin la DB y archivo vacío) y 5 (vacío, minúsculas,
+        con espacio y otra palabra). En todos los casos sin escritura comprueban los bytes de las DBs.
+      - **Mutación:** 8 de 8 muertos; uno sobrevivió al principio y se separó `integrity_check` para testearlo.
+      SUITE: `1106 passed, 3 skipped, 144 warnings in 47.96s`; sin `.data/`.
 - [ ] T51. Subcomando `backfill [--apply]` con aceptación de conflictos uno por uno. (RF-11, RF-11e, RF-19)
       Hecho cuando: el test con `CliRunner` sobre fixtures en `tmp_path` cubre el dry-run sin escrituras y un conflicto
       aceptado que se registra como `accepted_conflict`. SUITE en verde.

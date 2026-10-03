@@ -16,16 +16,22 @@ Campos: en `efficiency_audit`, `resolution_type`, `structural_resolution`, `fail
 
 `apply_plan` (T49, RF-11b, RF-18) aplica los `fill`, los `legacy_move` y los conflictos aceptados uno por uno (como
 `accepted_conflict`), en una transacción por cuenta, e inserta una fila de `backfill_history` por cambio. Nunca
-modifica ni borra filas del historial. Las puertas de R9 (ensayo, backup y confirmación) son de T50.
+modifica ni borra filas del historial.
+
+`run_apply` (T50, RF-11d, R9) pone las puertas antes de escribir: el ensayo de todas las cuentas sobre copias
+temporales (código 3), un backup local de las últimas 24 h de cada DB (código 4) y la confirmación escribiendo
+`APPLY` (código 5). Si una puerta falla, no se escribe en ninguna DB real.
 """
 from __future__ import annotations
 
 import dataclasses
 import os
+import sqlite3
+import tempfile
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from sqlalchemy import create_engine, text
 
@@ -289,3 +295,111 @@ def apply_plan(db_path: str, plan: AccountPlan, accepted=(), run_id: Optional[st
     finally:
         engine.dispose()
     return to_apply
+
+
+# --- Puertas (T50; RF-11d, R9; plan.md §4) ------------------------------------------------------------------------------
+
+EXIT_APPLIED, EXIT_REHEARSAL_FAILED, EXIT_NO_BACKUP, EXIT_CANCELLED = 0, 3, 4, 5
+CONFIRM_WORD = "APPLY"
+BACKUP_MAX_AGE_H = 24
+_BACKUP_RUN_FORMAT = "%Y%m%d_%H%M%S"  # las carpetas de `tools/backup.py` en `.data/backups/`, en hora local
+
+
+class RehearsalError(Exception):
+    """El ensayo sobre la copia de una DB falló."""
+
+
+def integrity_check(db_path: str) -> str:
+    """El resultado de `PRAGMA integrity_check` ("ok" si la DB está sana)."""
+    with sqlite3.connect(db_path) as conn:
+        return conn.execute("PRAGMA integrity_check").fetchone()[0]
+
+
+def rehearse(db_path: str, plan: AccountPlan, bank_root: str, accepted=()) -> None:
+    """
+    El ensayo de una cuenta (RF-11d): copia la DB a una carpeta temporal con la API de backup de SQLite (solo lee el
+    original), corre `init_db` sobre la copia, aplica el plan, y comprueba `integrity_check` y que un plan nuevo sobre
+    la copia ya no tenga nada para llenar. La carpeta temporal se borra siempre. Levanta `RehearsalError`.
+    """
+    from tools.database import init_db
+    with tempfile.TemporaryDirectory() as tmp:
+        copy = os.path.join(tmp, os.path.basename(db_path))
+        source = sqlite3.connect(f"file:{os.path.abspath(db_path)}?mode=ro", uri=True)
+        target = sqlite3.connect(copy)
+        try:
+            source.backup(target)
+        finally:
+            source.close()
+            target.close()
+        try:
+            init_db(f"sqlite:///{copy}").dispose()
+            apply_plan(copy, plan, accepted)
+            integrity = integrity_check(copy)
+            if integrity != "ok":
+                raise RehearsalError(f"integrity_check: {integrity}")
+            again = plan_account(plan.account, copy, bank_root)
+            if again.count(KIND_FILL) or again.count(KIND_LEGACY_MOVE):
+                raise RehearsalError("a second plan on the copy still has changes")
+        except RehearsalError:
+            raise
+        except Exception as exc:
+            raise RehearsalError(f"{type(exc).__name__}: {exc}") from exc
+
+
+def recent_backup(db_name: str, backups_root: str, now: datetime,
+                  max_age_h: float = BACKUP_MAX_AGE_H) -> Optional[str]:
+    """La copia más nueva de `db_name` en las carpetas de `tools/backup.py` de las últimas `max_age_h` horas, o `None`.
+    Un archivo vacío no cuenta."""
+    if not os.path.isdir(backups_root):
+        return None
+    best: Optional[Tuple[datetime, str]] = None
+    for name in os.listdir(backups_root):
+        try:
+            stamp = datetime.strptime(name, _BACKUP_RUN_FORMAT)
+        except ValueError:
+            continue
+        if not now - timedelta(hours=max_age_h) <= stamp <= now:
+            continue
+        path = os.path.join(backups_root, name, db_name)
+        if os.path.isfile(path) and os.path.getsize(path) > 0 and (best is None or stamp > best[0]):
+            best = (stamp, path)
+    return best[1] if best else None
+
+
+def run_apply(plans: List[AccountPlan], accounts_data_dir: str, bank_root: str, backups_root: str,
+              confirm: Callable[[], str], accepted: Optional[Mapping[str, Any]] = None,
+              now: Optional[datetime] = None,
+              report: Callable[[str], None] = lambda message: None) -> Tuple[int, Dict[str, List[PlannedChange]]]:
+    """
+    Las puertas y la escritura (plan.md §4). `accepted` es, por cuenta, el conjunto de conflictos aceptados (RF-11e);
+    `confirm` devuelve lo que tipeó el usuario; `report` recibe una línea por paso. Devuelve el código de salida y,
+    si escribió, los cambios aplicados por cuenta. Sin nada para aplicar, devuelve 0 sin pasar por las puertas.
+    """
+    accepted = accepted or {}
+    now = now or datetime.now()
+    if not any(changes_to_apply(plan, accepted.get(plan.account, ())) for plan in plans):
+        report("Nothing to apply.")
+        return EXIT_APPLIED, {}
+    for plan in plans:
+        try:
+            rehearse(os.path.join(accounts_data_dir, plan.db_name), plan, bank_root, accepted.get(plan.account, ()))
+        except RehearsalError as exc:
+            report(f"Rehearsal failed for {plan.account} {plan.db_name}: {exc}. No database was written.")
+            return EXIT_REHEARSAL_FAILED, {}
+    report("Rehearsal on temporary copies: OK.")
+    for plan in plans:
+        if recent_backup(plan.db_name, backups_root, now) is None:
+            report(f"No backup of {plan.db_name} from the last {BACKUP_MAX_AGE_H} h in {backups_root}. Run "
+                   "tools/backup.py backup first. No database was written.")
+            return EXIT_NO_BACKUP, {}
+    report(f"Backups from the last {BACKUP_MAX_AGE_H} h: OK.")
+    if confirm() != CONFIRM_WORD:
+        report("Cancelled. No database was written.")
+        return EXIT_CANCELLED, {}
+    run_id, run_at = str(uuid.uuid4()), _now_gt()
+    applied = {}
+    for plan in plans:
+        applied[plan.account] = apply_plan(os.path.join(accounts_data_dir, plan.db_name), plan,
+                                           accepted.get(plan.account, ()), run_id=run_id, run_at=run_at)
+        report(f"{plan.account} {plan.db_name}: {len(applied[plan.account])} changes written.")
+    return EXIT_APPLIED, applied

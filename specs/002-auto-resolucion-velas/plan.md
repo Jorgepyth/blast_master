@@ -422,6 +422,11 @@ cambio se inserta en `backfill_history`.
   `resolution_time_source` vacío. Un audit nunca hecho al que el backfill le llenó `resolution_time` queda con hora y
   sin `audit_registration_time`. Sin esta condición, la segunda corrida tomaría la hora del toque por la del guardado
   y la movería. Las filas viejas nunca tienen origen; el wizard (T43) y el backfill siempre lo llenan.
+- **Aclaración de T50 (orden de las puertas):** la aceptación de conflictos (paso 3 del §4) va antes del ensayo, así
+  el ensayo prueba exactamente lo que se va a escribir. El orden queda así: vista previa, aceptación uno por uno,
+  ensayo de todas las cuentas sobre copias temporales, backup de las últimas 24 h, confirmación con `APPLY` y
+  escritura. El backup que cuenta es una carpeta `YYYYmmdd_HHMMSS` de `tools/backup.py` en `.data/backups/` que tenga
+  esa DB y no esté vacía.
 
 ---
 
