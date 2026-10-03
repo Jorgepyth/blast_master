@@ -1397,6 +1397,11 @@
       avance rápido de `de7f47c` a `a7c38e9`, 7 commits: T44, T45 y T46, T47, T48, T49, T50 y T51. La SUITE de la rama
       dio `1114 passed, 3 skipped`, sin `.data/`. Ningún archivo del usuario entre los cambiados, y los 30 quedaron
       byte a byte iguales.
+      **8.ª integración 2026-10-03 (aprobada por el usuario: "sí, integra T52-T56"):** avance rápido de `89bcd61` a
+      `45e39af`, 5 commits: T52 a T56. La SUITE de la rama dio `1198 passed, 3 skipped`, sin `.data/`. Ningún archivo
+      del usuario entre los cambiados, y los 30 quedaron byte a byte iguales. El usuario ya había puesto
+      `AUTO_EXPORT=true` en el `.env` del principal (verificado leyendo solo esa clave), así que desde esta integración
+      abrir el CLI lanza los exports de fondo.
 - [x] T58a. *(Agregada el 2026-10-03, N48.)* El banco de velas en el backup 3-2-1: artefacto `candle_bank.tar.gz` en
       local, USB y B2, y su restore en `<destino>/candle_bank/`. (NFR-1)
       Hecho cuando: los tests prueban el archivo (solo los CSV y `status.json` del banco, rutas relativas), la subida
