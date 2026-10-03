@@ -863,10 +863,17 @@
         mismo SHA-256 antes y después.
       - **Esto todavía no es T58:** las DBs reales no se tocaron.
       SUITE: `922 passed, 3 skipped, 97 warnings in 33.70s`; sin `.data/`.
-- [ ] T36. `cli/schemas/audit_efficiency.py`: `resolution_time` opcional, `audit_registration_time` y
+- [x] T36. `cli/schemas/audit_efficiency.py`: `resolution_time` opcional, `audit_registration_time` y
       `resolution_time_source`. (RF-7g, RF-14, RF-14b)
       Hecho cuando: los tests del schema (existentes y nuevos) pasan y el guardado persiste los campos nuevos vía
       `update_record_state`. SUITE en verde.
+      Evidencia (2026-10-02): `RESOLUTION_TIME_SOURCES` usa los códigos de `config/auto_resolution.py` y
+      `OUTCOME_OPEN`, así que no hay copias. Un validador rechaza valores desconocidos y otro rechaza `candles` o
+      `corrected` sin hora (aclaración en el plan §2.1). `update_record_state` no cambió: ya filtra por las columnas
+      del ORM, y las nuevas pasan solas. `tests/test_audit_efficiency_spec002.py` (17); los 6 tests viejos del schema
+      siguen en verde. Mutación: 5 de 5 muertos. El wizard todavía guarda `resolution_time = now()` y nada en las
+      columnas nuevas; eso lo cambia T43.
+      SUITE: `939 passed, 3 skipped, 97 warnings in 33.07s`; sin `.data/`.
 - [ ] T37. `flow_new_analysis`: `analysis_start_time` al confirmar P0 por primera vez, sin cambiar con
       `RestartFlowException`; hora tipeada en retroactivo y clon [2] (RF-13b gana); hora de elección en clon [1].
       (RF-13, RF-13b, RF-13c)

@@ -68,6 +68,10 @@ Son cambios aditivos, vía `Base.metadata.create_all` y el shim de `ALTER TABLE 
 Valores de `resolution_time_source`: `candles`, `corrected`, `pending_candles`, `no_history`, `clock_unverified`,
 `clock_misaligned`, `ambiguous`, `no_levels`, `no_mt5_symbol`, `open`.
 
+**Aclaración de T36 (2026-10-02):** el schema pydantic rechaza cualquier otro valor. También rechaza `candles` o
+`corrected` sin `resolution_time`, porque se contradicen. No restringe un código de motivo con una hora tipeada: ese
+caso, "no hay propuesta pero el operador escribe una hora", lo define T43.
+
 ### 2.2 Tabla nueva `backfill_history`, en cada DB de cuenta
 
 ```sql
