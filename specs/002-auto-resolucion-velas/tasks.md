@@ -714,10 +714,19 @@
         corrida 1 h: son las de invierno del CSV viejo, las mismas que N44 quitó del banco;
       - en 1H, 0.
       SUITE: `846 passed, 3 skipped, 97 warnings in 25.97s`; sin `.data/`.
-- [ ] T28b. *(Agregada el 2026-10-03, N45.)* Structural Resolution: gana lo que pasa primero, la vuelta al Mark
+- [x] T28b. *(Agregada el 2026-10-03, N45.)* Structural Resolution: gana lo que pasa primero, la vuelta al Mark
       Price o la expansión; en la misma vela, "revertido". (RF-8)
       Hecho cuando: los tests cubren expansión antes de la vuelta, vuelta antes de la expansión, las dos en la misma
       vela, y siguen en verde los de T28. SUITE en verde.
+      Evidencia (2026-10-03):
+      - **Regla:** `_confirmed_proposal` recorre vela por vela y decide con el primer evento. Una expansión ya ocurrida
+        es definitiva, así que no queda `pending_candles` aunque falten velas para cerrar las 24 h. El test viejo
+        `test_reverted_wins_over_expansion` pasó a `test_whichever_happens_first_wins`: 3 casos, cada uno también
+        en espejo short. Hay un test nuevo para una expansión con menos de 24 h de velas.
+      - **Mutación:** 7 de 7 muertos.
+      - **Datos reales, en solo lectura:** en XAU, los Confirmed sin Overlap coinciden con lo manual en 26 de 38
+        (antes 19), y Structural Resolution difiere en 23 de 74 (antes 30). En BTC, 3 de 7, sin cambios.
+      SUITE: `958 passed, 3 skipped, 97 warnings in 48.39s`; sin `.data/`.
 - [x] T29. `core/outcome_metrics.py`: etiqueta Overlap (N11, N22), S1, S4, exclusión de retroactivos con conteo, y
       corte direccional. (RF-5, RF-17, RF-21)
       Hecho cuando: los tests prueban que Overlap nunca excluye, S1 y S4 con "fuera", los retroactivos contados, y que

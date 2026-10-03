@@ -430,13 +430,15 @@ def propose_structural(
     """
     RF-8 a RF-8d (plan.md §3.5). Las ventanas se recorren con el mismo camino de T25, desde la vela del toque:
     - Overlap (RF-8c, lo decide T29) → `n/a` y `overlap`, sea cual sea el toque;
-    - Confirmed (RF-8), por prioridad:
+    - Confirmed (RF-8): gana lo que pasa primero, recorriendo vela por vela desde la del toque (N45):
       1. `reverted`: después de la vela del toque y antes de `REVERT_H` horas desde ella, el precio vuelve al Mark
          Price (en un long, `low <= mark_price`). Sin Mark Price, al precio de partida (RF-8d). La vela del toque no
-         cuenta: su extremo pudo ser anterior al toque;
+         cuenta: su extremo pudo ser anterior al toque. Si la vuelta y la expansión caen en la misma vela, gana
+         `reverted`, porque no se sabe el orden;
       2. `expansion`: el precio va `EXPANSION_R` R o más allá del objetivo, desde la vela del toque (incluida) hasta lo
          primero que ocurra: `EXPANSION_H` horas o el toque de la invalidación, cuya vela no cuenta (N14, N20);
-      3. `minimal`, en cualquier otro caso. Las tres con Failure Reason `n/a`;
+      3. `minimal`, si no pasa ninguna de las dos. Las tres con Failure Reason `n/a`. Lo que ya pasó es definitivo, así
+         que solo falta (`pending_candles`) si el banco no cubre las ventanas y todavía no pasó nada;
     - Invalidated (RF-8b) → `n/a`, y `liquidity_sweep` si el precio toca el objetivo antes de `SWEEP_H` horas desde
       el toque de la invalidación, y lo más lejos que fue más allá de la invalidación en ese tramo, contando la vela
       del objetivo, es `SWEEP_R` R o menos (N15, N21). Si no, no se propone Failure Reason;
@@ -465,25 +467,30 @@ def _confirmed_proposal(
     revert_end = touch.touch_time + timedelta(hours=REVERT_H)
     expansion_end = touch.touch_time + timedelta(hours=EXPANSION_H)
     window_end = max(revert_end, expansion_end)  # hoy las dos son de 24 h, pero son reglas distintas (N13, N14)
-    furthest, expanding, reached = evp, True, touch.touch_time
+    threshold = EXPANSION_R * resolution.r
+    expanding, reached = True, touch.touch_time
     for bar in forward_path(touch.touch_time, candles_by_timeframe):
         if bar.time >= window_end:
             reached = window_end
             break
         reached = bar.end
         touch_candle = bar.time == touch.touch_time and bar.timeframe == touch.timeframe
-        if bar.time < revert_end and not touch_candle and (bar.low <= reference if long else bar.high >= reference):
-            return StructuralProposal(STRUCTURAL_REVERTED, FAILURE_NA)
+        reverted = (bar.time < revert_end and not touch_candle
+                    and (bar.low <= reference if long else bar.high >= reference))
+        expanded = False
         if expanding and bar.time < expansion_end:
             if bar.low <= si if long else bar.high >= si:
                 expanding = False
             else:
-                furthest = max(furthest, bar.high) if long else min(furthest, bar.low)
+                expanded = (bar.high - evp if long else evp - bar.low) >= threshold
+        # N45: gana lo que pasa primero. Si las dos cosas pasan en la misma vela no se sabe el orden: "revertido".
+        if reverted:
+            return StructuralProposal(STRUCTURAL_REVERTED, FAILURE_NA)
+        if expanded:
+            return StructuralProposal(STRUCTURAL_EXPANSION, FAILURE_NA)
     if reached < window_end:
         return StructuralProposal(missing_reason=REASON_PENDING_CANDLES)
-    excess = furthest - evp if long else evp - furthest
-    return StructuralProposal(STRUCTURAL_EXPANSION if excess >= EXPANSION_R * resolution.r else STRUCTURAL_MINIMAL,
-                              FAILURE_NA)
+    return StructuralProposal(STRUCTURAL_MINIMAL, FAILURE_NA)
 
 
 def _invalidated_proposal(

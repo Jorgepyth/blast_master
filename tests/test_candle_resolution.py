@@ -595,9 +595,23 @@ def test_the_expansion_window_and_the_revert_window_have_their_own_lengths(monke
     assert _propose(late_revert)[1].structural_resolution == STRUCTURAL_MINIMAL
 
 
-def test_reverted_wins_over_expansion():
-    bank = _scenario("confirmed", {60: (120.0, 104.5), 300: (105.5, 100.9)})  # se expande y después vuelve
-    assert _propose(bank)[1].structural_resolution == STRUCTURAL_REVERTED
+# N45 (decidido por el usuario el 2026-10-03): gana lo que pasa primero; en la misma vela, "revertido".
+@pytest.mark.parametrize("specials, expected", [
+    ({60: (120.0, 104.5), 300: (105.5, 100.9)}, STRUCTURAL_EXPANSION),  # se expande y después vuelve
+    ({60: (105.5, 100.9), 300: (120.0, 104.5)}, STRUCTURAL_REVERTED),   # vuelve y después se expande
+    ({60: (120.0, 100.9)}, STRUCTURAL_REVERTED),                         # las dos en la misma vela
+])
+def test_whichever_happens_first_wins(specials, expected):
+    bank = _scenario("confirmed", specials)
+    assert _propose(bank)[1] == StructuralProposal(expected, FAILURE_NA)
+    assert _propose(_mirror(bank), mark_price=99.0, evp=90.0, si=110.0)[1] == StructuralProposal(expected, FAILURE_NA)
+
+
+def test_an_expansion_before_the_end_of_the_candles_is_final():
+    # Con menos de 24 h de velas: una expansión ya ocurrida no la cambia una vuelta posterior (N45), así que no es
+    # pending_candles. Sin expansión ni vuelta todavía, sí lo es.
+    assert _propose(_scenario("confirmed", {60: (120.0, 104.5)}, minutes_after=600))[1] == StructuralProposal(
+        STRUCTURAL_EXPANSION, FAILURE_NA)
 
 
 def test_the_expansion_window_closes_at_the_invalidation_touch():
