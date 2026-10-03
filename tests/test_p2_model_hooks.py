@@ -94,7 +94,10 @@ def test_saving_without_candles_logs_nothing_and_shows_the_same(real, clock, cap
     shutil.rmtree(bank_root)
     without = run("without.db")
     assert not (data / "p2_model_log.jsonl").exists()
-    assert with_candles == without
+    # El panel de revisión muestra "Created:" con la hora real al segundo: es lo único que puede variar entre las dos.
+    import re
+    now = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
+    assert now.sub("<now>", with_candles) == now.sub("<now>", without)
 
 
 def test_a_flight_session_is_never_logged(real, clock, capsys, monkeypatch):
