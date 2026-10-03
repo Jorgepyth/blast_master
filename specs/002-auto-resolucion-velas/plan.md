@@ -409,6 +409,16 @@ Para cada análisis de cada cuenta de `REAL_ACCOUNTS` y cada campo propuesto:
 La salida es un plan en memoria. Con `--apply` y las puertas de R9 se aplica en una transacción por cuenta, y cada
 cambio se inserta en `backfill_history`.
 
+**Aclaraciones de T47 (2026-10-03):**
+- **"Igual a la propuesta"** usa las tolerancias del reporte: los precios (MAE/MFE estructurales) a 0.1%, los valores
+  en R (MAE/MFE tácticos) a 0.1R, y `resolution_time` al minuto. Así una diferencia de tipeo no aparece como
+  conflicto.
+- **`resolution_time_source`** se llena junto con `resolution_time`: `candles` si hay hora del toque, o el motivo si
+  queda vacía. Si un audit nunca hecho no tiene hora ni propuesta, se llena solo el motivo.
+- **`Could hit TP?`** se propone aunque la salida sea igual a la entrada, porque RF-9b solo frena el MAE/MFE. En las
+  DBs reales esas filas tienen `order_filled = 0`, así que no entran.
+- Una fila de `efficiency_audit` que no existe no se crea: el backfill solo llena filas existentes.
+
 ---
 
 ## 4. Contrato de interfaz

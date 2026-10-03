@@ -241,7 +241,15 @@ def propose_tactical(asset: Optional[str], entry_time: Optional[datetime], exit_
     clock_reason = bank_clock_reason(bank_dir)
     if clock_reason:
         return TacticalProposal(symbol, clock_reason)
-    candles = load_bank_candles(bank_dir)
+    excursion, tp = tactical_from_candles(load_bank_candles(bank_dir), entry_time, exit_time, entry_price, stop_loss,
+                                          take_profit)
+    return TacticalProposal(symbol, None, excursion, tp)
+
+
+def tactical_from_candles(candles: Mapping[str, List[Candle]], entry_time: Optional[datetime],
+                          exit_time: Optional[datetime], entry_price: float, stop_loss: float,
+                          take_profit: Optional[float]):
+    """`(TradeExcursion | None, TpCheck | None)` de una orden con velas ya cargadas (también lo usa el backfill)."""
     direction = "long" if entry_price > stop_loss else "short"
     excursion = None
     if entry_time is not None and exit_time is not None:
@@ -249,7 +257,7 @@ def propose_tactical(asset: Optional[str], entry_time: Optional[datetime], exit_
     tp = None
     if entry_time is not None and take_profit is not None:
         tp = could_hit_tp(direction, entry_time, entry_price, stop_loss, take_profit, candles)
-    return TacticalProposal(symbol, None, excursion, tp)
+    return excursion, tp
 
 
 def propose_for_trade(db_path: str, trade_id: str, bank_root: str) -> AutoProposal:

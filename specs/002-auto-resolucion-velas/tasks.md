@@ -1095,10 +1095,25 @@
 
 ## Etapa 7 — Backfill
 
-- [ ] T47. `tools/auto_backfill.py`: plan de cambios (`fill`, `unchanged`, `conflict`), "Open" con `real_bias_b` NULL
+- [x] T47. `tools/auto_backfill.py`: plan de cambios (`fill`, `unchanged`, `conflict`), "Open" con `real_bias_b` NULL
       como vacío, audits nunca hechos incluidos, y la regla `legacy_move` solo con `audit_registration_time` vacío.
       (RF-11, RF-11b, RF-11c)
       Hecho cuando: los tests sobre DBs de fixture verifican cada tipo de cambio. SUITE en verde.
+      Evidencia (2026-10-03):
+      - **Funciones:** `plan_account()` y `build_plan()` en `tools/auto_backfill.py`. Cada cambio es un
+        `PlannedChange` (`fill`, `unchanged`, `conflict` o `legacy_move`) con su valor viejo, el nuevo y el origen.
+        Tolerancias y reglas finas en el plan §3.11.
+      - **Reuso:** el táctico usa `tactical_from_candles()` (sale de `propose_tactical`, T46) con las velas que ya
+        cargó el resolvedor.
+      - **Tests:** `tests/test_auto_backfill.py` (9). Mutación: 12 de 13 muertos; el que sobrevive es equivalente,
+        porque con el reloj sin verificar `bank_for()` no carga velas.
+      - **Datos reales, en solo lectura (12.5 s, DBs intactas):**
+        - XAU: 168 `fill`, 180 `conflict`, 267 `unchanged` y 80 `legacy_move`. Los conflictos son sobre todo MAE/MFE
+          estructurales (41 y 48) y tácticos (25 y 19), Structural Resolution (22) y el tipo (11).
+        - BTC: 62 `fill`, 56 `conflict` y 24 `legacy_move`.
+        - US500: 10 `fill`, solo el motivo `clock_unverified`.
+        - US100: 13 `fill` y 5 `legacy_move`.
+      SUITE: `1078 passed, 3 skipped, 144 warnings in 38.85s`; sin `.data/`.
 - [ ] T48. `cli/backfill_view.py`: vista estilo `git log --decorate --oneline --graph`. (RF-19)
       Hecho cuando: los tests verifican el texto: una línea por corrida con las decoraciones, `!` en los conflictos y
       `—` en los vacíos. SUITE en verde.
