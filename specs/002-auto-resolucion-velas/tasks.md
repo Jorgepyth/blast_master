@@ -1458,6 +1458,11 @@
       del usuario entre los cambiados, y los 30 quedaron byte a byte iguales. El usuario ya había puesto
       `AUTO_EXPORT=true` en el `.env` del principal (verificado leyendo solo esa clave), así que desde esta integración
       abrir el CLI lanza los exports de fondo.
+      **9.ª integración 2026-10-03 (aprobada por el usuario: "sí, integra N52, T30c y T49b"):** avance rápido de
+      `1054a3e` a `6a2937a`, 3 commits: N52, T30c y T49b. La SUITE de la rama dio `1210 passed, 3 skipped`, sin
+      `.data/`. Ningún archivo del usuario entre los cambiados, y los 30 quedaron byte a byte iguales. Desde acá el
+      wizard ya no propone "Overlap Invalidation", y el backfill vuelve a intentar las horas vacías por motivos
+      temporales.
 - [x] T58a. *(Agregada el 2026-10-03, N48.)* El banco de velas en el backup 3-2-1: artefacto `candle_bank.tar.gz` en
       local, USB y B2, y su restore en `<destino>/candle_bank/`. (NFR-1)
       Hecho cuando: los tests prueban el archivo (solo los CSV y `status.json` del banco, rutas relativas), la subida
