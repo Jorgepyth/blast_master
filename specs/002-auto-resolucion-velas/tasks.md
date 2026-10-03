@@ -747,6 +747,12 @@
       con su B y sus horas, y los conteos de la tabla en 48 h: 6 VALIDATION, 6 INVALIDATION y 9 sin toque. Mutación:
       9 cambios, todos detectados.
       SUITE: `861 passed, 3 skipped, 97 warnings in 31.14s`; sin `.data/`.
+- [ ] T29b. *(Agregada el 2026-10-03, N50 y N51.)* `core/outcome_metrics.py`: S4 estricto como cifra principal y los 7
+      retroactivos recuperados (`RECOVERED_BACKDATED`) dentro de las cifras. El reporte, `docs/criterios-de-acierto.md`
+      y su ejemplo pasan a mostrar S4 estricto primero, con S1 y S4 al lado. (RF-5, RF-17, RF-21)
+      Hecho cuando: los tests cubren cada caso de N51 (gana en 48 h, invalidación en 48 h, toque después de 48 h, sin
+      toque con 48 h cubiertas, pending antes de 48 h, ambiguo) y que un retroactivo recuperado cuenta y uno nuevo no.
+      SUITE en verde.
 - [x] T30. `tools/auto_resolution.py`: lectura con columnas explícitas (`mode=ro` o engine), mapa
       `asset → símbolo` (`no_mt5_symbol`), estado del reloj (`clock_unverified`/`clock_misaligned`) y armado de la
       propuesta. (RF-4e, RF-4h, RF-6b)
@@ -875,6 +881,12 @@
 
 ## Etapa 4 — Esquema y horas del análisis
 
+- [ ] T33b. *(Agregada el 2026-10-03.)* `python cli/main.py ...` falla con `No module named 'core'`: correr el
+      archivo pone `cli/` en `sys.path`, no la raíz del repo. Solo funcionaba `python -m cli.main` (la función
+      `trading` del usuario). Los comandos documentados en el plan §4 y en `CLAUDE.md` usan la primera forma.
+      `cli/main.py` agrega la raíz del repo a `sys.path` antes de sus imports. (—)
+      Hecho cuando: un test corre `python cli/main.py --help` en un subproceso, desde una carpeta temporal, con código
+      0. SUITE en verde.
 - [x] T35. `tools/database.py`: columnas nuevas, ORM de `backfill_history` y shim de `init_db`. (RF-13d, RF-13e,
       RF-14, RF-14b, RF-18, NFR-1)
       Hecho cuando: los tests prueban que `init_db` sobre una DB de archivo en `tmp_path`, creada con el esquema
