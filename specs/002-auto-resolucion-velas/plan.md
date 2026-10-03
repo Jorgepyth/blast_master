@@ -183,6 +183,20 @@ test lo verifica (RF-18).
   `null`. Una línea `pending_candles` se **reemplaza** por la definitiva en el catch-up. Para que el archivo siga
   siendo de solo agregar, la línea nueva lleva `supersedes: <n.º de línea>`, y el lector se queda con la última
   línea de cada par (`trade_id`, `model`).
+**Aclaraciones de T55 (2026-10-03):**
+- **Ancla:** `analysis_start_time`. Solo entran análisis que la tienen, así que no hace falta el respaldo de N4.
+- **Cobertura:** el exportador descarta la vela en formación, así que el banco solo guarda velas cerradas. El ancla está
+  cubierta si alguna TF del modelo tiene una vela que cierra en el ancla o después. Ese export se hizo después del
+  ancla y trae todas las velas que ya habían cerrado. Si no, `pending_candles`.
+- **Qué se reintenta:** `pending_candles` y también un reloj sin verificar (`clock_unverified`, `clock_misaligned`).
+  Se reintenta porque el reloj se verifica con un export posterior y las velas no cambian. Un reintento que da el
+  mismo motivo no se vuelve a escribir. `insufficient_history:<TF>` y `no_mt5_symbol` son definitivos.
+- **`by_tf`:** además de los campos del ejemplo, `price` (el cierre de la última vela cerrada) y `bars` (las velas
+  cerradas en el ancla). `bias` es el que usó el modelo, después del filtro de DI si el modelo lo pide.
+- **Concurrencia:** el guardado y el catch-up pueden escribir a la vez. El archivo se toma con `fcntl.flock` mientras
+  se lee y se agrega, para no duplicar líneas. Si una escritura anterior quedó cortada, se termina esa línea antes de
+  agregar la nueva.
+
 - **Cómo se suma un modelo H más adelante** (fuera de esta spec): se define `MODEL_H` en `tools/p2_backtest.py` con
   su test, se agrega a `MODELS`, y se suma `"H": "<fecha del día>"` a `P2_LOG_MODELS`. No hace falta tocar
   `tools/p2_model_feedback.py`. Si H usa indicadores que hoy no se calculan (EMA 50, RSI, ATR), antes hay que

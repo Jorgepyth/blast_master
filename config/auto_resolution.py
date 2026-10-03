@@ -124,6 +124,9 @@ P2_LOG_MODELS = {
     "D": "2026-09-27",
 }
 
+# El registro, dentro de ACCOUNTS_DATA_DIR: una línea JSON por análisis y modelo, solo se agregan líneas (plan.md §2.5).
+P2_MODEL_LOG_NAME = "p2_model_log.jsonl"
+
 # --------------------------------------------------------------------------
 # Export automático (N31, RF-20 a RF-20f)
 # --------------------------------------------------------------------------

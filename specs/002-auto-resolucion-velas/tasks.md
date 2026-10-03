@@ -1268,7 +1268,7 @@
 
 ## Etapa 9 — Registro prospectivo del P2 sistemático (N38, N42)
 
-- [ ] T55. `tools/p2_model_feedback.py`: para cada modelo de `P2_LOG_MODELS` (N42), calcular su P2 con velas
+- [x] T55. `tools/p2_model_feedback.py`: para cada modelo de `P2_LOG_MODELS` (N42), calcular su P2 con velas
       cerradas en el ancla (receta de `MODELS_BY_NAME`, sin modificarla) y registrar una línea por análisis y modelo en
       `p2_model_log.jsonl`, con `model_spec`, `model_hash`, motivos (`insufficient_history:<TF>`, `pending_candles`) y
       `supersedes` para reemplazar una línea pendiente. Incluye los chequeos de RF-12e. (RF-12, RF-12c, RF-12e)
@@ -1284,6 +1284,37 @@
         (`unknown_model`, `timeframe_not_in_bank`, `model_recipe_changed`) sin frenar el registro de D.
 
       SUITE en verde.
+      Evidencia (2026-10-03):
+      - **`tools/p2_model_feedback.py`** (nuevo):
+        - `log_account(db_path, account, ...)` registra los análisis nuevos de una cuenta. Se puede limitar a unos
+          `trade_ids` (el guardado, T56) o a un símbolo (el catch-up, T56).
+        - `model_p2(model, symbol, anchor, bank_root)` calcula el P2 de un modelo con `CsvOHLCProvider` sobre el banco
+          del símbolo: velas cerradas en el ancla, y la receta de `MODELS_BY_NAME` leída en el momento, sin copiarla.
+        - `check_models()` hace los chequeos de RF-12e.
+        - `model_recipe()` y `model_hash()` dan la receta y su huella; la de D es `20315fe7bfe2`.
+        - `read_log()` y `latest_lines()` leen el registro y se quedan con la última línea de cada par.
+      - **Reglas:** las aclaraciones de T55 en `plan.md` §2.5 (ancla, cobertura, qué se reintenta, `by_tf` y el candado
+        del archivo). `P2_MODEL_LOG_NAME` en `config/auto_resolution.py`.
+      - **Tests:** `tests/test_p2_model_feedback.py` (19), con un banco sintético en tendencia limpia, donde todo modelo
+        da 1.0 y reescalado 2:
+        - la línea completa (P2 del operador, receta, huella, detalle por TF);
+        - que se usan solo velas cerradas: el precio de 30M es el cierre de la vela 09:30, no el de la de las 10:00;
+        - sin segunda línea para el mismo par;
+        - retroactivos, clones [2], históricos y anteriores a la fecha de alta no se registran, y la DB queda byte a
+          byte igual;
+        - `pending_candles` y un reloj sin verificar se reemplazan con `supersedes`, y `insufficient_history` no;
+        - los bordes: una vela que cierra justo en el ancla la cubre, y 800 velas alcanzan pero 799 no;
+        - D más `H_TEST` (agregado al registro solo en el test): una línea por modelo, y `H_TEST` solo desde su fecha;
+        - `unknown_model`, `timeframe_not_in_bank` y `model_recipe_changed`, con D que se sigue registrando;
+        - el filtro por símbolo, una línea cortada, una DB sin la columna nueva, y que sin análisis nuevos no se crea
+          el archivo.
+      - **Mutación:** 22 de 22 muertos. Las dos de los bordes sobrevivían hasta que se agregó el test de 800 contra
+        799 velas.
+      - **Con datos reales, en solo lectura:** las 4 DBs todavía no tienen ningún análisis nuevo (`analysis_start_time`
+        se llena desde la integración de hoy), así que el registro arranca vacío. `model_p2` con D sobre el banco real
+        de XAU, en el ancla de los 3 últimos análisis de XAU, da `ok` en 0.1 s, con 1480 velas de 1W y P2 crudos de
+        0.0, 0.16 y −0.37 (reescalados 0, 0 y −1).
+      SUITE: `1178 passed, 3 skipped, 311 warnings in 63.22s`; sin `.data/`.
 - [ ] T56. Hooks: registrar al guardar un análisis (si hay velas), catch-up en `candle_sync` después de cada fusión,
       y el comando `p2-model --trade-id ID [--model NAME]`. (RF-12, RF-12b, RF-12d)
       Hecho cuando: los tests prueban:
