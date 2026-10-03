@@ -817,6 +817,13 @@
       - **Datos reales, en solo lectura:** `4b17b903` pasa a Confirmed a las 08:06 (4369.62 contra 4370). XAU S1
         todos 38/68 → 39/68; con retroactivos, 45/75 → 46/75. Los direccionales no cambian, porque es Choppy.
       SUITE: `968 passed, 3 skipped, 97 warnings in 57.50s`; sin `.data/`.
+- [ ] T30c. *(Agregada el 2026-10-03, N52.)* El Overlap deja de decidir las propuestas: el tipo sale del primer toque
+      y la Structural Resolution y el Failure Reason, de RF-8 y RF-8b. La etiqueta sigue en `AutoProposal.overlap` y en
+      el reporte. (RF-5, RF-8c)
+      Hecho cuando: los tests prueban que un análisis con Overlap propone Confirmed o Invalidated según su toque, con la
+      Structural Resolution y el Failure Reason de cualquier otro análisis, y conserva la etiqueta; que un Overlap sin
+      toque no propone tipo; que el reporte sigue listando los Overlap; y que el backfill ya no propone "Overlap
+      Invalidation". SUITE en verde.
 - [x] T31. Chequeo del Mark Price: escalera 1M → 5M → 15M con ±0.1% y versión por período. (RF-3, RF-3b)
       Hecho cuando: los tests prueban que coincide en 1M, que coincide recién en 15M, y que queda fuera (advertencia),
       más la versión por período para filas sin `mark_price_time`. SUITE en verde.
@@ -1142,6 +1149,15 @@
       - **Tests:** `tests/test_backfill_apply.py` (10) y uno más en `tests/test_auto_backfill.py`. Mutación: 9 de 9
         muertos; 2 sobrevivieron al principio y se agregaron sus tests.
       SUITE: `1093 passed, 3 skipped, 144 warnings in 45.61s`; sin `.data/`.
+- [ ] T49b. *(Agregada el 2026-10-03: bug encontrado al medir el backfill sobre copias de las DBs reales.)* Una
+      `resolution_time` vacía con un motivo temporal (`pending_candles`, `clock_unverified`, `clock_misaligned`) se
+      vuelve a intentar en la corrida siguiente. Hoy queda trabada: el backfill solo llena filas sin motivo. Afecta a
+      los audits viejos de US100 y US500, cuyo reloj todavía no está verificado, y a los audits guardados con
+      `pending_candles` desde T43. (RF-11, RF-11c, RF-14b)
+      Hecho cuando: los tests prueban que una fila con motivo temporal se llena cuando las velas ya tienen el toque
+      (con `resolution_time_source = candles`), que cambia de motivo si cambió, que no se repite si sigue igual, y que
+      los motivos definitivos (`no_levels`, `no_history`, `ambiguous`, `open`, `no_mt5_symbol`) no se tocan. SUITE en
+      verde.
 - [x] T50. Puertas: ensayo sobre una copia temporal con `init_db`, backup de las últimas 24 h, confirmación
       escribiendo `APPLY`, y sus códigos de salida. (RF-11d, R9)
       Hecho cuando: los tests prueban los códigos 3, 4 y 5 y que en esos casos no se escribe nada. SUITE en verde.
@@ -1562,16 +1578,16 @@
 | RF-4d | T27 |
 | RF-4e, RF-4h | T30 |
 | RF-4f | T9, T10, T23 |
-| RF-5, RF-5b | T26, T29, T41 |
+| RF-5, RF-5b | T26, T29, T41, T30c |
 | RF-6 | T32, T33, T60 |
 | RF-6b | T30 |
 | RF-7, RF-7e | T40, T42, T44, T61 |
 | RF-7f | T41 |
 | RF-7g | T36, T43 |
-| RF-8, RF-8b, RF-8c, RF-8d | T28, T42 |
+| RF-8, RF-8b, RF-8c, RF-8d | T28, T42, T30c |
 | RF-9, RF-9b, RF-9c, RF-9d | T45 |
 | RF-10, RF-10b, RF-10c, RF-10d | T46 |
-| RF-11, RF-11b, RF-11c | T47, T49, T51, T63 |
+| RF-11, RF-11b, RF-11c | T47, T49, T49b, T51, T63 |
 | RF-11d | T50 |
 | RF-11e | T51, T63 |
 | RF-12, RF-12c | T55, T56 |

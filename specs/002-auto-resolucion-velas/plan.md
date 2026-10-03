@@ -281,6 +281,8 @@ test lo verifica (RF-18).
    toque, el fin de la cobertura del banco.
 4. La etiqueta no modifica el primer toque ni `resolution_time` (N37).
 5. Si Overlap se sabe pero el toque sigue pendiente → etiqueta Overlap y `pending_candles`.
+6. **N52 (2026-10-03):** la etiqueta no cambia el tipo, la Structural Resolution ni el Failure Reason propuestos:
+   salen del primer toque, como en cualquier otro análisis.
 
 ### 3.4 MAE/MFE estructurales (RF-4, N3 del baseline)
 
@@ -324,8 +326,8 @@ Se usa R = |precio de partida − SI|.
 - **Ventana sin velas suficientes:** si el banco todavía no cubre la ventana que decide (24 h después del toque del
   objetivo, o 48 h después del de la invalidación), el resultado es `pending_candles`. La excepción es que ya se
   sepa: el precio ya volvió al Mark Price (que tiene prioridad), o ya tocó el objetivo después de la invalidación.
-- **Códigos neutros:** `reverted`, `expansion`, `minimal`, `n/a`, `liquidity_sweep` y `overlap`. Pasarlos a los
-  valores de `StructuralResolution` y `FailureReason` del wizard les toca a T30 y T40.
+- **Códigos neutros:** `reverted`, `expansion`, `minimal`, `n/a` y `liquidity_sweep`. Pasarlos a los valores de
+  `StructuralResolution` y `FailureReason` del wizard les toca a T30 y T40. El código `overlap` se quitó con N52.
 
 ### 3.6 MAE/MFE táctico y `could_hit_tp` (RF-9, RF-10)
 

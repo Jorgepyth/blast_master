@@ -59,7 +59,7 @@ El sistema propone y el operador confirma (D4). Nada del modelo de trading cambi
 | N8 | El MAE/MFE táctico y `could_hit_tp` usan la TF más fina validada: 1M, si no 5M, si no 15M. Cuentan las mechas (máximo y mínimo de cada vela). *Reemplaza la versión anterior, "15M ahora, 5M después" (F3 [1][9]).* | RF-9, RF-10 |
 | N9 | Un `resolution_type = "Open"` en un audit nunca hecho (`real_bias_b` NULL) cuenta como vacío | RF-5, RF-7, RF-11 |
 | N10 | Sin reloj verificado (`aligned` distinto de `True`) no se resuelve ni se propone nada para ese símbolo | RF-2, RF-4 |
-| N11 | **Overlap:** A queda "Overlap Invalidation" si se inicia otro análisis B de la misma cuenta después del inicio de A y antes de que el precio toque un nivel de A, cualquiera sea la dirección de B | RF-5 |
+| N11 | **Overlap:** A queda "Overlap Invalidation" si se inicia otro análisis B de la misma cuenta después del inicio de A y antes de que el precio toque un nivel de A, cualquiera sea la dirección de B *(La parte que proponía "Overlap Invalidation" como tipo se reemplazó por N52, el 2026-10-03: el Overlap es solo una etiqueta.)* | RF-5 |
 | N12 | `could_hit_tp` se evalúa desde la entrada hasta que el precio toca el SL, con tope `MAX_HORIZON` | RF-10 |
 | N13 | "Confirmed pero inmediatamente revertido": el precio toca el objetivo y vuelve **hasta el Mark Price** dentro de 24 h | RF-8 |
 | N14 | "Expansión significativa" si el precio corre ≥ 0.5R más allá del objetivo en las 24 h siguientes al toque; si no, "mínima" | RF-8 |
@@ -99,6 +99,7 @@ El sistema propone y el operador confirma (D4). Nada del modelo de trading cambi
 | N49 | **MAE y MFE estructurales: del ancla al primer toque, confirmado** (decidido por el usuario el 2026-10-03). Antes, a mano, se medían sin una ventana fija ("hasta el próximo análisis o el día siguiente"). Se mantiene la definición de RF-4: lo que pasa después del toque ya lo mide Structural Resolution. Consecuencia: el MFE medio en R del cuaderno baja (en XAU, de 2.38 a 1.92) porque corta en el objetivo. El win rate no cambia, porque no depende del MAE/MFE | RF-4, RF-7 |
 | N50 | **Los 7 retroactivos de XAU cargados después del DROP del 2026-07-27 cuentan en el win rate** (decidido por el usuario el 2026-10-03). Son análisis hechos en su momento y reconstruidos después del incidente, del 2026-06-23 al 2026-07-14, y el usuario confirmó que son correctos. Van en una lista en `config/auto_resolution.py` (`RECOVERED_BACKDATED`). Los retroactivos que se carguen en el futuro siguen fuera por defecto (R11), porque se cargan con el resultado a la vista. Su ancla sigue siendo la hora tipeada | RF-17, RF-21 |
 | N51 | **La cifra principal pasa a ser S4 estricto** (decidido por el usuario el 2026-10-03). Reemplaza la parte de N35 que hacía de S1 la cifra principal; S1 y S4 se siguen mostrando al lado. **S4 estricto:** de los análisis cuyo resultado a 48 h ya se conoce, la proporción que tocó primero el objetivo dentro de las 48 h desde el ancla. **Pierde** el que tocó primero la invalidación dentro de 48 h, y también el que no tocó el objetivo en 48 h: lo tocó después, tocó la invalidación después, o no tocó nada con el banco cubriendo las 48 h. **No cuentan** los que todavía no tienen 48 h de velas sin toque, los ambiguos (como en S1) y los que no tienen resultado (sin niveles, sin reloj verificado, sin símbolo MT5). A diferencia de S4, no deja a nadie fuera: S4 excluye los toques después de 48 h, que en XAU direccional son 4 y 3 de ellos pérdidas | RF-5, RF-6, RF-21 |
+| N52 | **El Overlap ya no decide las propuestas del audit** (decidido por el usuario el 2026-10-03). Reemplaza la parte de N11 que proponía "Overlap Invalidation" como tipo, y RF-8c. El tipo propuesto sigue al primer toque: Confirmed o Invalidated, con Structural Resolution y Failure Reason según RF-8 y RF-8b, como en cualquier otro análisis. La etiqueta Overlap (N11, N22, N36) se sigue calculando y el reporte la muestra. "Overlap Invalidation" y el Failure Reason "Overlap" siguen en el wizard para elegirlos a mano, pero nunca se proponen. Motivo: el operador decidió que lo que vale es si el precio tocó el nivel (N36). Con la regla anterior, los 11 conflictos de tipo del backfill de XAU eran todos Overlap, y en 6 de ellos el operador y las velas coincidían en el toque: el conflicto era solo la etiqueta | RF-5, RF-8c |
 | N30 | Todo lo que el sistema muestra o guarda va en inglés, incluidos los códigos de motivo y las claves de configuración. Las specs, la documentación, los cuadernos y la conversación van en español (F3 [4][1]) | Todos |
 
 Definición usada en N13–N15:
@@ -252,17 +253,19 @@ análisis exploratorio en solo lectura, sobre velas 15M/1H de XAU y BTC.
 
 ### Tipo de resolución
 
-- **RF-5:** EL SISTEMA derivará el `resolution_type` propuesto con este orden de prioridad:
-  1. **Overlap Invalidation:** existe otro análisis B de la misma cuenta cuya ancla es posterior a la de A y
-     anterior al primer toque de A, o anterior al fin del horizonte si A no tocó nada (N11). B puede ser
-     retroactivo; en ese caso su ancla es la hora tipeada (N22).
-     - La etiqueta es **informativa** (N36). `resolution_time` sigue siendo la hora del primer toque de A (N37), y
-       el primer toque cuenta en las cifras de acierto igual que en cualquier otro análisis (N35).
-     - Si el Overlap ya se sabe dentro del tramo con velas pero el primer toque de A todavía no llegó, se propone la
-       etiqueta, y `resolution_time` queda vacío con `pending_candles` (F3 [2][6]).
-  2. **Confirmed:** el primer nivel tocado es `edge_validation_price`.
-  3. **Invalidated:** el primer nivel tocado es `structural_invalidation`.
-  4. **Open:** ningún nivel tocado dentro de `MAX_HORIZON`, con el banco cubriendo todo el horizonte.
+- **RF-5:** EL SISTEMA derivará el `resolution_type` propuesto del primer toque (N52):
+  1. **Confirmed:** el primer nivel tocado es `edge_validation_price`.
+  2. **Invalidated:** el primer nivel tocado es `structural_invalidation`.
+  3. **Open:** ningún nivel tocado dentro de `MAX_HORIZON`, con el banco cubriendo todo el horizonte.
+
+  Aparte, EL SISTEMA calculará la etiqueta **Overlap** (N11), que no cambia el tipo propuesto (N52). Un análisis A es
+  Overlap si existe otro análisis B de la misma cuenta cuya ancla es posterior a la de A y anterior al primer toque de
+  A, o anterior al fin del horizonte si A no tocó nada. B puede ser retroactivo; en ese caso su ancla es la hora
+  tipeada (N22).
+  - La etiqueta es **informativa** (N36). `resolution_time` sigue siendo la hora del primer toque de A (N37), y el
+    primer toque cuenta en las cifras de acierto igual que en cualquier otro análisis (N35).
+  - El reporte la muestra con el nivel que tocó primero el precio y cuál es el B. Si el primer toque de A todavía no
+    llegó, no se propone tipo y `resolution_time` queda vacío con `pending_candles` (F3 [2][6]).
 - **RF-5b:** SI el resultado es `Open`, ENTONCES EL SISTEMA no propondrá `resolution_type`, porque el wizard no
   permite elegir `Open` (baseline H2). Mostrará en una línea "Still open according to candles".
 
@@ -303,8 +306,9 @@ análisis exploratorio en solo lectura, sobre velas 15M/1H de XAU y BTC.
   dentro de las 48 h siguientes (N15). El exceso se mide entre el primer cruce de la invalidación y el toque del
   objetivo (N21). En cualquier otro caso no propone `Failure Reason`: Reversal, Regime Decay y
   Range Expansion siguen manuales.
-- **RF-8c:** DONDE el tipo propuesto sea Overlap Invalidation, EL SISTEMA propondrá `Structural Resolution` = "N/A"
-  y `Failure Reason` = "Overlap -- nuevo bias antes de resolucion".
+- **RF-8c:** *(Reemplazado por N52 el 2026-10-03.)* La etiqueta Overlap no cambia `Structural Resolution` ni
+  `Failure Reason`: se proponen según RF-8 y RF-8b. Antes proponía "N/A" y "Overlap -- nuevo bias antes de
+  resolucion".
 - **RF-8d:** SI el análisis no tiene Mark Price, ENTONCES EL SISTEMA usará el precio de partida de RF-4 para la regla
   de RF-8.
 
