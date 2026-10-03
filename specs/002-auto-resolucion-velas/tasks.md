@@ -1246,6 +1246,10 @@
       **6.ª integración 2026-10-03 (aprobada por el usuario: "add the commits"):** avance rápido de `21f9cb5` a
       `1fbdf58`, 7 commits: T29b, T33b, CLAUDE.md, T40, T41, T42 y T43. La SUITE de la rama dio `1039 passed, 3
       skipped`, sin `.data/`. Ningún archivo del usuario entre los cambiados, y los 30 quedaron byte a byte iguales.
+      **7.ª integración 2026-10-03 (el usuario corrió `backfill` en el checkout principal y le dio "No such command"):**
+      avance rápido de `de7f47c` a `a7c38e9`, 7 commits: T44, T45 y T46, T47, T48, T49, T50 y T51. La SUITE de la rama
+      dio `1114 passed, 3 skipped`, sin `.data/`. Ningún archivo del usuario entre los cambiados, y los 30 quedaron
+      byte a byte iguales.
 - [x] T58a. *(Agregada el 2026-10-03, N48.)* El banco de velas en el backup 3-2-1: artefacto `candle_bank.tar.gz` en
       local, USB y B2, y su restore en `<destino>/candle_bank/`. (NFR-1)
       Hecho cuando: los tests prueban el archivo (solo los CSV y `status.json` del banco, rutas relativas), la subida
