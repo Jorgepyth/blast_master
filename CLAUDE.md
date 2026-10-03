@@ -8,7 +8,8 @@ CLI interactivo (Click + Rich) de trading journal, multi-cuenta/multi-activo. Ca
 
 ## Comandos
 
-- Ejecutar el CLI: `python cli/main.py` (o vía el entrypoint `cli()`, vive en `cli/main.py:797`).
+- Ejecutar el CLI: `python cli/main.py` o `python -m cli.main`, desde la raíz (la función `trading` del `.bashrc` del usuario corre `python -m cli.main start`). Las dos formas funcionan desde T33b (spec 002, 2026-10-03); antes, `python cli/main.py` fallaba con `No module named 'core'`. Entrypoint `cli()` en `cli/main.py:1009`. Subcomandos de la spec 002: `resolution-report` (velas contra el audit manual; escribe el `.md` en `.data/reports/`) y `candles {status|import-legacy|export}`.
+- **Nunca correr el CLI dentro de un worktree, ni siquiera `<subcomando> --help`**: el callback del grupo `cli()` llama a `get_active_engine()`, que crea en la carpeta actual un `.data/` con una cuenta vacía, y eso rompe la regla de correr los tests sin `.data/` (pasó el 2026-10-03). El `--help` del grupo solo, sin subcomando, no lo hace.
 - Tests: `pytest` desde la raíz (`pytest.ini` fija `pythonpath = .` y `testpaths = tests` — un `pytest` sin argumentos ya solo recolecta la suite oficial en `tests/`, sin tocar `scratch/test_*.py`, que son exploratorios; para correrlos hay que invocarlos explícitamente, ej. `pytest scratch/test_sync_idempotency.py`).
 - Sync manual a Notion: `tools/notion_sync.py` se invoca como proceso separado (`conda run -n blast_master env PYTHONPATH=. python tools/notion_sync.py`), no como import — ver `cli/main.py:859`.
 - **Backup 3-2-1**: `python tools/backup.py {backup|restore|list|verify}` (ej. `python tools/backup.py backup --dry-run` o `python tools/backup.py restore --source b2 --date YYYY-MM-DD --target-dir .data/restored/`). Cron configurado a las 8:00 AM diario.
@@ -49,14 +50,15 @@ Modelo de datos real: 7 tablas (`unified_department`, `analysis_layer`, `efficie
 - **Tier D/F es un gate duro, sin override, dentro del wizard de Tactical Audit** (`cli/main.py:3645-3773`, recitada 2026-09-16, desplazada desde `:3610-3763` por inserciones posteriores del gate emocional y Stop Deviation Journaling, rama "camino principal" de `flow_pending_audits`, ver ARCHITECTURE.md §14). Justo después de calcularse `tier_setup` (aritmética existente, `:3634-3643`, no `calc_edge`/P0-P4) y antes de BLOQUE 3 (SL/Entry/Size/TP), si el tier resuelve a D/F (o falla el cálculo — fail-closed) el wizard se detiene ahí: pide solo Lesson Learned + Visual Lesson Path, persiste un `TacticalAudit` con `order_filled=False` y `skip_reason=SkipReason.INVALIDADA_ANTES_DE_LLENAR` (valor **ya existente**, sin cambio de schema), y nunca llega a pedir campos de orden. No existe ningún flag/env var que lo desactive — no agregar uno. El menú "Edit a Field" del panel principal permite editar `Confirmation Status` a `S7_REVENGE_FORCED` sin la exclusión que sí tiene el prompt inicial, pero el `while True:` externo (`:3593`, desplazada desde `:3569`) recalcula `tier_setup` desde cero en cada vuelta (incluidas las que siguen a un edit) y el gate se vuelve a disparar solo — no hace falta cerrar ese loophole con código adicional, ya está cubierto por diseño y por `tests/test_tactical_tier_gate.py`.
 - **Gate emocional (`anxiety_level >= 4`), independiente del Tier D/F de arriba y CON override** (`cli/main.py:3858-3877`, recitada 2026-09-16, desplazada desde `:3799-3818` por la inserción de Stop Deviation Journaling justo antes en el mismo bloque — ver más abajo — y de `ask_stop_deviation_reason()` antes de `flow_pending_audits`; ver ARCHITECTURE.md §15). `anxiety_level` es `1-5`, no `1-10` (`cli/schemas/audit_tactical.py:216`, `Field(ge=1, le=5)`) y se captura DESPUÉS de SL/Entry/Size/TP, en "BLOQUE 4" — pausa el guardado/journaling, no impide teclear datos de orden ni nada en el broker real. Si `anxiety_level >= ANXIETY_GATE_THRESHOLD` (`cli/main.py:305`), exige una justificación no vacía (`get_mandatory_text`) persistida en el campo nuevo `TacticalAudit.emotional_gate_override_reason` (columna aditiva, migrada vía el shim de `init_db()`, mismo patrón que `size_source`). Recalculado en cada vuelta del `while True:` de BLOQUE 2-5 (`:3593`, desplazada desde `:3569`) igual que el Tier D/F — bajar el nivel vía "Edit a Field" antes de guardar limpia el requisito solo, sin código adicional (`tests/test_emotional_gate.py`). **Decisión explícita (2026-09-16): NO se agregó override al gate de Tier D/F** para cubrir el mismo caso de forma unificada — eso habría revertido la política absoluta ya shippeada y testeada de esa sección; ambos gates quedan deliberadamente separados y con políticas distintas, no fusionar sin revisar esta decisión primero.
 - **Stop Deviation Journaling: auditable, NUNCA bloquea** (`cli/main.py:3796-3835`, ver ARCHITECTURE.md §16). Distinto en naturaleza a los dos gates de arriba (Tier D/F y emocional, ambos bloquean) — este solo registra. `stop_slippage_r` (`(stop_loss - structural_invalidation) / (entry_price - structural_invalidation)`, con signo vía `get_dir_val()`) se calcula SIEMPRE que `unified_department.structural_invalidation` no sea NULL (`get_unified_structural_invalidation()`, `tools/database.py:554-565`); si es NULL, `stop_slippage_r` queda NULL, sin sustituto. Se ubica en el `while True:` de "camino principal", justo después del cuadro de P&L potencial (§13) y ANTES de BLOQUE 4 (donde vive el gate emocional) — recalculado en cada vuelta igual que los otros dos. Solo si `stop_slippage_r > 0` (stop táctico más angosto que el estructural) se exige una selección obligatoria de `StopDeviationReason` (`cli/schemas/audit_tactical.py:185-191`, 6 valores, texto largo aparte en `STOP_DEVIATION_REASON_LABELS` — patrón nuevo en este repo, no usa el `.value` largo de `FailureReason` porque el valor persistido debe ser un slug corto) y se ofrece una nota libre siempre opcional (`stop_deviation_note`, nunca validada). El trade avanza sin importar la razón elegida — no existe combinación de valores que bloquee. Reporte de solo lectura: `tools/audit_stop_deviation.py` (3 grupos siempre separados: `>0`, `<=0`, `NULL`). Tests: `tests/test_stop_deviation_journal.py` (4 casos, incluido el anti-loophole de editar Stop Loss antes de guardar).
+- **La spec 002 (velas y auto-resolución) agregó columnas y una tabla por el shim de `init_db()`**, migradas en las 4 DBs reales el 2026-10-03 (T58): `unified_department.analysis_start_time`, `mark_price_time` y `saved_at` (el wizard de análisis nuevo las llena desde ese día; las filas viejas quedan vacías), `efficiency_audit.audit_registration_time` y `resolution_time_source`, y `backfill_history`, que solo acepta inserciones (dos triggers abortan UPDATE y DELETE). **Trampa: `efficiency_audit.resolution_time` cambió de significado** (N1). Antes era la hora en que se guardó el audit; ahora es la hora del primer toque según las velas. Las filas viejas siguen con la hora del guardado hasta que el backfill (T63) la mueva a `audit_registration_time`: hasta entonces no usarla como hora de resolución, ni compararla entre filas viejas y nuevas. Otras piezas: el banco de velas en `.data/candle_bank/` (con un `status.json` por símbolo), las excepciones de toque por análisis en `config/auto_resolution.py:TOUCH_EXCEPTIONS` (N46) y la retención de `_incoming` en 3 corridas por símbolo (N47). Estado de la spec: `specs/002-auto-resolucion-velas/tasks.md`.
 - **3 de los 8 valores de `LifecycleState`** (`PENDING_TACTICS`, `OPEN`, `COMPLETED`) no tienen transición de escritura confirmada en el código — si necesitas usarlos, verifica primero si de verdad hay un flujo que los setea o si vas a ser el primero en escribir esa transición.
 - **Backup 3-2-1 (`tools/backup.py`): Operacional en producción**
   > **[Anotación ingresada por Antigravity — 2026-09-18]**: Esta sección y la infraestructura asociada fueron implementadas, configuradas y verificadas en producción por el agente Antigravity (no por Claude). La nota histórica de la línea 36 (`tools/backup.py no pudo usarse — requiere USB montado y credenciales Backblaze B2, ninguno configurado en este entorno`) queda **SUPERADA Y RESUELTA**.
   - **Infraestructura activa**:
     - **Medio 1 (Local / Staging)**: Snapshot consistente vía `VACUUM INTO` a `.data/backups/YYYYMMDD_HHMMSS/` para cada base de datos SQLite. Protegido por lockfile atómico (`.data/backups/.lock`, stale timeout 2h).
-    - **Medio 2 (USB)**: Montado y verificado en `USB_BACKUP_PATH=/mnt/d/blast_master_backups` (unidad `D:\` en Windows mapeada a `/mnt/d/` en WSL2 vía `drvfs` persistido en `/etc/fstab`). `tools/backup.py:copy_to_usb()` incluye fallback graceful de `shutil.copy2` a `shutil.copyfile` ante `PermissionError` para compatibilidad con sistemas de archivos FAT32/exFAT de Windows que rechazan `copystat`/`utime` POSIX.
+    - **Medio 2 (USB)**: Montado y verificado en `USB_BACKUP_PATH=/mnt/d/blast_master_backups` (unidad `D:\` en Windows mapeada a `/mnt/d/` en WSL2 vía `drvfs` persistido en `/etc/fstab`). `tools/backup.py:copy_to_usb()` incluye fallback graceful de `shutil.copy2` a `shutil.copyfile` ante `PermissionError` para compatibilidad con sistemas de archivos FAT32/exFAT de Windows que rechazan `copystat`/`utime` POSIX. **Ojo: el montaje no siempre sobrevive.** El cron dio 0/5 el 2026-10-01 y el 2026-10-03 porque `/mnt/d` no estaba montado (el 2026-10-02 dio 5/5). Si el resumen dice `usb=False`, revisar que el disco D: esté conectado.
     - **Medio 3 (B2 Cloud)**: Bucket `B2_BUCKET_NAME=blast-master-backups` en Backblaze B2 con Object Lock Governance (retención inmutable de 30 días contra borrado y ransomware). Cada artefacto subido se descarga inmediatamente y se valida por SHA256 (`b2_verified=True`).
-  - **Descubrimiento multi-cuenta**: Descubre dinámicamente las bases desde `flight_sessions.json` (evita glob de `.data/*.db` para no arrastrar DBs temporales/huérfanas). Actualmente respalda 4 cuentas activas (`000` XAUUSD, `001` US500, `002` BTCUSD, `003` US100) más el propio `flight_sessions.json` (5 artefactos en total).
+  - **Descubrimiento multi-cuenta**: Descubre dinámicamente las bases desde `flight_sessions.json` (evita glob de `.data/*.db` para no arrastrar DBs temporales/huérfanas). Actualmente respalda 4 cuentas activas (`000` XAUUSD, `001` US500, `002` BTCUSD, `003` US100) más el propio `flight_sessions.json` y, desde el 2026-10-03 (spec 002, N48), el banco de velas como `candle_bank.tar.gz` (solo los CSV de temporalidades y el `status.json` de cada símbolo, ~6 MB comprimido): 6 artefactos en total. `restore` descomprime el banco en `<destino>/candle_bank/` y valida cada entrada antes de escribir (todo o nada).
   - **CLI (`tools/backup.py`)**:
     - `python tools/backup.py backup [--dry-run]`
     - `python tools/backup.py restore --source {local|usb|b2} [--date YYYY-MM-DD] [--target-dir DIR]`
@@ -65,10 +67,9 @@ Modelo de datos real: 7 tablas (`unified_department`, `analysis_layer`, `efficie
   - **Seguridad en Restore**: `_validate_restore_target()` bloquea cualquier intento de restaurar sobre `.data/` para proteger las bases vivas de producción (lanza `ValueError`). Destino por defecto: `.data/restored/`.
   - **Automatización**: Crontab diario a las 8:00 AM (`0 8 * * * /home/jorgecg/miniconda3/bin/conda run -n blast_master python /home/jorgecg/projects/trading/blast_master/tools/backup.py backup >> /home/jorgecg/projects/trading/blast_master/.data/archives/cron_backup.log 2>&1`) instalado mediante `scripts/setup_backup_cron.sh`.
   - **Estatus verificado**: 26/26 tests de backup pasando (`tests/test_backup.py`), suite completa 310/310 en verde, snapshot real ejecutado y verificado en los 3 destinos (5/5 artefactos), restore real de prueba descargado desde B2 y verificado con `PRAGMA integrity_check` (81 filas unified / 82 tactical en `flight_account_001_xauusd.db`).
-  - **Pendiente, para otra implementación:** el banco de velas `.data/candle_bank/` (spec 002, plan T19)
-    **no** entra en el backup. Decisión del usuario del 2026-09-27: por ahora no es crítico, y no quiere pagar
-    almacenamiento extra en Backblaze. **Riesgo a analizar más adelante:** MT5 guarda poco historial de velas de
-    1M, así que si se pierde el disco, el 1M viejo del banco no se puede volver a descargar.
+  - **El banco de velas entra en el backup desde el 2026-10-03** (spec 002, N48). Reemplaza la decisión del
+    2026-09-27 de dejarlo fuera: pesa poco (~2 GB por año en B2, centavos) y MT5 guarda poco historial de 1M, así que
+    si se pierde el disco el 1M viejo del banco no se puede volver a descargar.
 
 ## Acceso a APIs de broker (lectura vs escritura)
 
@@ -156,12 +157,17 @@ Bugs ya encontrados, como ejemplo de qué buscar:
   3 más). `SELECT` de la entidad ORM completa falla con "no such column". El código de
   análisis de solo lectura debe pedir columnas explícitas, nunca migrar.
 
-**Criterios de acierto (decididos 2026-09-27, spec 002).** Todo win rate se mide con **S1** como
-cifra principal: el primer toque de validation o invalidation desde el ancla, sin límite de tiempo.
-Al lado va **S4**: lo mismo, pero solo si el toque ocurre dentro de 48 h, informando cuántos quedan
-fuera. **Overlap** (hubo un análisis nuevo antes de la resolución) es solo una etiqueta: nunca
-excluye análisis. Los retroactivos quedan fuera por defecto (R11). Descartados: S2, S3 y S3b.
-Definiciones, ejemplos y motivos en `docs/criterios-de-acierto.md`.
+**Criterios de acierto (decididos 2026-09-27 y actualizados el 2026-10-03, spec 002).** La cifra
+principal es **S4 estricto** (N51): gana el análisis que tocó primero el objetivo dentro de las 48 h
+desde el ancla, y pierde el que tocó primero la invalidación en 48 h y también el que no llegó al
+objetivo en 48 h (lo tocó después, o no tocó nada). No deja a nadie fuera. Al lado van **S1** (el
+primer toque, sin límite de tiempo) y **S4** (lo mismo, pero solo los toques dentro de 48 h,
+informando cuántos quedan fuera). S4 sale siempre igual o más alto que S4 estricto solo porque deja
+fuera a los lentos, que en estos datos son casi todos pérdidas: no usarlo como cifra principal.
+**Overlap** (hubo un análisis nuevo antes de la resolución) es solo una etiqueta: nunca excluye
+análisis. Los retroactivos quedan fuera por defecto (R11), salvo los 7 de XAU recuperados después del
+DROP del 2026-07-27 (N50, `RECOVERED_BACKDATED`). Implementación única: `core/outcome_metrics.py`.
+Descartados: S2, S3 y S3b. Definiciones, ejemplos y motivos en `docs/criterios-de-acierto.md`.
 
 Checklist para auditar un análisis:
 1. **¿Contra qué verdad se mide?** Coexisten tres ground truths que no son intercambiables:
@@ -177,8 +183,8 @@ Checklist para auditar un análisis:
    decenas, diferencias de 10 puntos suelen ser ruido (`core/stats_tests.py`).
 5. **Reproducí el número titular desde la DB por fuera del notebook** antes de creerlo.
    Los outputs guardados pueden ser de un snapshot viejo de la DB.
-6. **¿Usa S1/S4 y trata Overlap como etiqueta?** Si usa otro criterio, tiene que decirlo y
-   justificarlo.
+6. **¿Usa S4 estricto como cifra principal, con S1 y S4 al lado, y trata Overlap como etiqueta?** Si
+   usa otro criterio, tiene que decirlo y justificarlo.
 
 ### Evaluación "P2 banco v2" (temporalidades cortas), hecha 2026-09-29/30
 
