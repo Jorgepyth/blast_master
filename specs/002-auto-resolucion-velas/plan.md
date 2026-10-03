@@ -133,7 +133,8 @@ test lo verifica (RF-18).
 - **Ubicación:** `${MT5_INCOMING_DIR}/{MT5_SYMBOL}/{run_id}/{TF}.csv`, por defecto
   `/mnt/c/Users/jcifu/MT5Exports/_incoming/`. Cada corrida escribe en un directorio **nuevo**, así que nunca
   sobrescribe nada.
-- Se conservan las últimas 5 corridas por símbolo, para poder auditarlas.
+- Se conservan las últimas 3 corridas por símbolo, para poder auditarlas; las demás las borra `tools/candle_sync.py`
+  al final de cada export, solo si son carpetas de corrida con CSV de temporalidades (N47).
 - Además de `RUN_ID:` y `RUN_DIR:`, el exportador imprime `SERVER:` (el servidor de la cuenta, de
   `mt5.account_info()`, que es de solo lectura) y `BASE_UTC_OFFSET:` (el desfase de invierno del servidor).
   `tools/candle_sync.py` los pasa a la fusión, para la herencia del reloj (N43).
@@ -446,7 +447,7 @@ cambio se inserta en `backfill_history`.
 | T16 | Constantes de reglas en `config/auto_resolution.py` y rutas de la máquina en `.env` | (a) Todo en `.env`. (b) Todo fijo en el código | (a) Las reglas (48 h, 0.5R) son decisiones del proyecto y deben quedar versionadas. (b) Las rutas cambian de una máquina a otra |
 | T17 | El import inicial solo trae velas de la estación de horario actual mientras `BROKER_DST_RULE` no esté verificado, en **todas** las TF (T16 y T16b lo aplicaron solo a 1H y menores; corregido en T16c, N44) | (a) Importar todo con un solo offset. (b) Reetiquetar según una regla supuesta | (a) Las velas de invierno tendrían 1 h de error. (b) Sería inventar la regla. Los análisis de mayo a septiembre caen todos en la estación actual |
 | T18 | Las propuestas del Tactical se calculan cuando se llega a cada prompt, con los valores ya cargados en `session.state` | Precalcularlas al abrir el wizard | `entry_time`, `exit_time` y los precios se cargan en el mismo wizard, antes de esos prompts |
-| T19 | El banco **no** entra en `tools/backup.py` en esta spec. **Decidido por el usuario el 2026-09-27**: no es crítico por ahora, y no quiere pagar almacenamiento extra en Backblaze. Queda como pendiente en `CLAUDE.md` (sección Backup 3-2-1) | Agregarlo al backup | El riesgo (MT5 guarda poco historial de 1M) queda anotado para analizarlo en otra implementación |
+| T19 | ~~El banco **no** entra en `tools/backup.py` en esta spec (decidido por el usuario el 2026-09-27)~~. **Reemplazada por N48 (2026-10-03):** el banco entra en el backup como `candle_bank.tar.gz` | Dejarlo fuera | Pesa 5.7 MB comprimido y MT5 guarda poco historial de 1M: si se pierde el disco, el 1M viejo no se puede volver a descargar |
 | T20 | En la superposición, las velas se comparan con una tolerancia relativa de 1e-9 | Compararlas como texto exacto | El formato de los números en el CSV puede cambiar entre versiones de pandas sin que cambie el precio |
 | T21 | El P2 sistemático se registra en un JSONL aparte, al que solo se le agregan líneas | Una columna en `unified_department` | D3 pide explícitamente que no vaya a la DB, y así el registro no se mezcla con los datos del operador ni con el edge |
 | T22 | El registro ocurre al guardar, si hay velas, y además en un catch-up después de cada fusión del banco | Solo al guardar | Como el export es manual o va en segundo plano, al guardar casi nunca hay velas del momento. Sin catch-up, casi ningún análisis quedaría registrado |

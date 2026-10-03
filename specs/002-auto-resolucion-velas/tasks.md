@@ -714,6 +714,10 @@
         corrida 1 h: son las de invierno del CSV viejo, las mismas que N44 quitó del banco;
       - en 1H, 0.
       SUITE: `846 passed, 3 skipped, 97 warnings in 25.97s`; sin `.data/`.
+- [ ] T28b. *(Agregada el 2026-10-03, N45.)* Structural Resolution: gana lo que pasa primero, la vuelta al Mark
+      Price o la expansión; en la misma vela, "revertido". (RF-8)
+      Hecho cuando: los tests cubren expansión antes de la vuelta, vuelta antes de la expansión, las dos en la misma
+      vela, y siguen en verde los de T28. SUITE en verde.
 - [x] T29. `core/outcome_metrics.py`: etiqueta Overlap (N11, N22), S1, S4, exclusión de retroactivos con conteo, y
       corte direccional. (RF-5, RF-17, RF-21)
       Hecho cuando: los tests prueban que Overlap nunca excluye, S1 y S4 con "fuera", los retroactivos contados, y que
@@ -767,6 +771,11 @@
       Las DBs quedaron byte a byte iguales. Los 14 Overlap de XAU son los mismos 14 de `analisis-overlap-2d.md`; en
       BTC hay uno más que el 2026-09-27 (análisis posteriores).
       SUITE: `873 passed, 3 skipped, 97 warnings in 31.94s`; sin `.data/`.
+- [ ] T30b. *(Agregada el 2026-10-03, N46.)* Excepciones de toque por análisis (`TOUCH_EXCEPTIONS`): el toque pasa a
+      la vela de máximo acercamiento al nivel confirmado por el operador, y el reporte lo marca. Primera: `4b17b903`.
+      (RF-4, RF-6)
+      Hecho cuando: los tests prueban la excepción con el otro nivel tocado después, sin toque, con el mismo nivel ya
+      tocado (no cambia nada) y la marca en el reporte. SUITE en verde.
 - [x] T31. Chequeo del Mark Price: escalera 1M → 5M → 15M con ±0.1% y versión por período. (RF-3, RF-3b)
       Hecho cuando: los tests prueban que coincide en 1M, que coincide recién en 15M, y que queda fuera (advertencia),
       más la versión por período para filas sin `mark_price_time`. SUITE en verde.
@@ -1038,6 +1047,11 @@
       las DBs reales, así que T35 en adelante se integra recién con T58. Mismas verificaciones: ningún archivo del
       usuario entre los cambiados, `git status` idéntico y los 30 archivos del usuario byte a byte iguales. La SUITE
       sobre `da29692` es la de T34 (`911 passed`).
+- [ ] T58a. *(Agregada el 2026-10-03, N48.)* El banco de velas en el backup 3-2-1: artefacto `candle_bank.tar.gz` en
+      local, USB y B2, y su restore en `<destino>/candle_bank/`. (NFR-1)
+      Hecho cuando: los tests prueban el archivo (solo los CSV y `status.json` del banco, rutas relativas), la subida
+      con su clave, el restore que nunca escribe en `.data/` ni fuera del destino, y el listado de B2 por fecha.
+      SUITE en verde.
 - [ ] T58. 🖐 **Migración de esquema de las 4 DBs reales con las 3 puertas**, antes de correr cualquier comando del
       CLI nuevo en el checkout principal (N41, NFR-1, R9, constitución principio 5):
       1. copiar las 4 `.data/flight_account_*.db` a un directorio temporal, correr `init_db` sobre cada copia, y
@@ -1099,6 +1113,12 @@
 - [ ] T61. 🖐 Demo en una Flight Session descartable: un Efficiency Audit con propuestas aceptadas y una corregida,
       más un Tactical con MAE/MFE y `Could hit TP?` propuestos. (RF-7, RF-9, RF-10)
       Hecho cuando: queda documentado en `validation.md` con la salida, y la Flight Session se borra al terminar.
+- [ ] T62a. *(Agregada el 2026-10-03, N47.)* Retención de `_incoming`: al final de cada export se conservan las 3
+      corridas más recientes del símbolo y se borran las demás, solo si son carpetas de corrida con CSV de
+      temporalidades. (RF-1, RF-20)
+      Hecho cuando: los tests prueban que se borran solo las corridas viejas y que quedan intactos los nombres que no
+      son `run_id`, los enlaces, las carpetas con otro contenido, los otros símbolos y la corrida recién exportada.
+      SUITE en verde.
 - [ ] T62. 🖐 Demo del export automático con MT5 abierto y con MT5 cerrado. Solo si T22 funcionó. (RF-20 a RF-20e)
       Hecho cuando: las dos salidas quedan en `validation.md`.
       **Decisión pendiente antes de activar `AUTO_EXPORT` (postergada por el usuario el 2026-09-29): retención de
