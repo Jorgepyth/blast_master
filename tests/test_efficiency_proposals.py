@@ -82,3 +82,57 @@ def test_propose_for_trade_resolves_one_analysis_of_a_database_file(tmp_path):
     _write_db(tmp_path / "account.db", [A])
     proposal = auto_resolution.propose_for_trade(str(tmp_path / "account.db"), "a1", str(tmp_path / "bank"))
     assert proposal.resolution_type == ResolutionType.CONFIRMED.value and proposal.resolution_time == TOUCH
+
+
+# --- T42: defaults (auto) en Resolution Type, Structural Resolution, Failure Reason y Structural MAE/MFE -------------
+
+TOUCH = datetime.datetime(2026, 6, 1, 1, 0)
+PROPOSAL = AutoProposal(
+    trade_id="x", symbol="XAUUSD", anchor=ANCHOR, reason=None,
+    resolution_type=ResolutionType.CONFIRMED.value,
+    structural_resolution=StructuralResolution.CONFIRMED_EXPANSION.value,
+    failure_reason=FailureReason.NA.value, resolution_time=TOUCH, structural_mae=4300.5, structural_mfe=4369.62)
+
+
+def test_each_proposed_value_reaches_its_prompt_as_an_auto_default(wizard):
+    out, enum_calls, _, text_calls, _ = wizard(PROPOSAL, texts=("4300.5", "4369.62"))
+    by_prompt = {call.args[0]: call.kwargs for call in enum_calls}
+    assert "default" not in by_prompt["Real Bias B"]  # el sesgo real lo juzga el operador
+    assert by_prompt["Resolution Type"]["default"] == ResolutionType.CONFIRMED.value
+    assert by_prompt["Resolution Type"]["exclude"] == [ResolutionType.OPEN]
+    assert by_prompt["Structural Resolution"]["default"] == StructuralResolution.CONFIRMED_EXPANSION.value
+    assert by_prompt["Failure Reason"]["default"] == FailureReason.NA.value
+    assert [call.kwargs["default"] for call in text_calls[:2]] == ["4300.5", "4369.62"]
+    assert "(auto: 4300.5)" in text_calls[0].kwargs["message"] and "(auto: 4369.62)" in text_calls[1].kwargs["message"]
+    assert "Candles: no proposal" not in out
+
+
+def test_accepting_the_defaults_saves_the_proposed_values(in_memory_db, capsys):  # noqa: F811
+    # Aceptar con Enter = cada prompt devuelve su default (InquirerPy está reemplazado).
+    answers = [StructuralBias.BOS, ResolutionType.CONFIRMED, StructuralResolution.CONFIRMED_EXPANSION, FailureReason.NA]
+    *_, trade_id = _drive(in_memory_db, PROPOSAL, capsys, answers=answers, texts=("4300.5", "4369.62"))
+    row = _get_saved_efficiency_row(in_memory_db, trade_id)
+    assert (row.resolution_type, row.structural_resolution, row.failure_reason) == (
+        ResolutionType.CONFIRMED.value, StructuralResolution.CONFIRMED_EXPANSION.value, FailureReason.NA.value)
+    assert (float(row.structural_mae), float(row.structural_mfe)) == (4300.5, 4369.62)
+
+
+def test_correcting_a_default_saves_the_operator_value(in_memory_db, capsys):  # noqa: F811
+    answers = [StructuralBias.CHOCH, ResolutionType.INVALIDATED, StructuralResolution.NA,
+               FailureReason.LIQUIDITY_SWEEP]
+    *_, trade_id = _drive(in_memory_db, PROPOSAL, capsys, answers=answers, texts=("4290", ""))
+    row = _get_saved_efficiency_row(in_memory_db, trade_id)
+    assert (row.resolution_type, row.failure_reason) == (ResolutionType.INVALIDATED.value,
+                                                         FailureReason.LIQUIDITY_SWEEP.value)
+    assert float(row.structural_mae) == 4290.0 and row.structural_mfe is None  # MFE vaciado a mano
+
+
+def test_values_the_candles_do_not_propose_have_no_default(wizard):
+    partial = AutoProposal(trade_id="x", symbol="XAUUSD", anchor=ANCHOR, reason=None,
+                           resolution_type=ResolutionType.INVALIDATED.value,
+                           structural_resolution=StructuralResolution.NA.value, failure_reason=None,
+                           resolution_time=TOUCH, structural_mae=None, structural_mfe=4369.62)
+    _, enum_calls, _, text_calls, _ = wizard(partial)
+    by_prompt = {call.args[0]: call.kwargs for call in enum_calls}
+    assert "default" not in by_prompt["Failure Reason"]  # RF-8b: sin Liquidity Sweep no se propone
+    assert "default" not in text_calls[0].kwargs and text_calls[1].kwargs["default"] == "4369.62"

@@ -1009,10 +1009,21 @@
       - **Tests:** `tests/test_efficiency_proposals.py`, 5 tests. Mutación: 4 de 4 muertos. La red de seguridad de T5
         sigue en verde.
       SUITE: `1024 passed, 3 skipped, 105 warnings in 38.20s`; sin `.data/`.
-- [ ] T42. Efficiency, parte 2: defaults `(auto)` en Resolution Type, Structural Resolution, Failure Reason y
+- [x] T42. Efficiency, parte 2: defaults `(auto)` en Resolution Type, Structural Resolution, Failure Reason y
       Structural MAE/MFE. (RF-7, RF-7e, RF-8 a RF-8d)
       Hecho cuando: los tests prueban que cada default llega a su prompt, que aceptar guarda el valor, que corregir
       guarda el valor del operador, y que la red de seguridad de T5 sigue en verde en el orden. SUITE en verde.
+      Evidencia (2026-10-03):
+      - **Defaults:** cada valor propuesto llega como default `(auto)` a Resolution Type, Structural Resolution,
+        Failure Reason y los dos precios. `auto_default()` no agrega la clave si no hay valor, así que sin propuesta el
+        prompt queda idéntico al de antes (INV-1).
+      - **Precios:** MAE y MFE siguen siendo opcionales; con propuesta, el campo viene escrito y dice `(auto: …)`.
+        Vaciarlo deja el campo vacío.
+      - **Solo del operador:** Real Bias B y la lección nunca llevan default.
+      - **Tests:** 4 nuevos en `tests/test_efficiency_proposals.py`: el default llega a cada prompt, aceptar guarda lo
+        propuesto, corregir guarda lo del operador, y lo que las velas no proponen no lleva default. Mutación: 8 de 8
+        muertos. La red de seguridad de T5 sigue en verde, con el mismo orden.
+      SUITE: `1028 passed, 3 skipped, 113 warnings in 38.30s`; sin `.data/`.
 - [ ] T43. Efficiency, parte 3: prompt "Resolution Time" opcional al final, `audit_registration_time`, y
       `resolution_time_source` (`candles`, `corrected` o el motivo). (RF-7c, RF-7g, RF-14, RF-14b)
       Hecho cuando: los tests cubren aceptar, corregir, dejar vacío y el caso sin propuesta, con el valor persistido

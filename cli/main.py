@@ -2752,6 +2752,12 @@ def efficiency_proposal(trade_id):
         return None
 
 
+def auto_default(value):
+    """`default=value` para un prompt, solo si las velas propusieron algo (RF-7). Sin propuesta no agrega nada, así el
+    prompt queda idéntico al de antes (INV-1)."""
+    return {} if value is None else {"default": value}
+
+
 def proposal_status_line(proposal):
     """La línea que explica por qué no hay propuesta (RF-7f, RF-5b), en inglés (N30). `None` si hay propuesta."""
     if proposal is None:
@@ -3513,23 +3519,34 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
         if status_line:
             console.print(status_line, style="yellow", markup=False, highlight=False, soft_wrap=True)
 
+        # T42 (RF-7, RF-8): lo que propusieron las velas va como default `(auto)` de cada prompt; el operador lo acepta con
+        # Enter o lo corrige (RF-7e). Real Bias B y la lección siguen siendo solo del operador.
+        auto = proposal  # cada campo es None cuando las velas no lo proponen (open, pending, sin toque...)
+
+        def optional_price(label, value):
+            message = f"{label} [Optional] >"
+            extra = {}
+            if value is not None:
+                extra["default"] = _plain_number(float(value))
+                message = f"{label} (auto: {extra['default']}) [Optional] >"
+            return bind_pause(inquirer.text(message=message, style=INQUIRER_STYLE, **extra)).execute()
+
         session = AuditSession(trade_id, "eff")
         while True:
             try:
                 real_bias_b = session.prompt("real_bias_b", get_enum_choice, "Real Bias B", StructuralBias)
-                res_type = session.prompt("res_type", get_enum_choice, "Resolution Type", ResolutionType, exclude=[ResolutionType.OPEN])
-                struct_res = session.prompt("struct_res", get_enum_choice, "Structural Resolution", StructuralResolution)
-                fail_reason = session.prompt("fail_reason", get_enum_choice, "Failure Reason", FailureReason)
+                res_type = session.prompt("res_type", get_enum_choice, "Resolution Type", ResolutionType, exclude=[ResolutionType.OPEN],
+                                          **auto_default(auto and auto.resolution_type))
+                struct_res = session.prompt("struct_res", get_enum_choice, "Structural Resolution", StructuralResolution,
+                                            **auto_default(auto and auto.structural_resolution))
+                fail_reason = session.prompt("fail_reason", get_enum_choice, "Failure Reason", FailureReason,
+                                             **auto_default(auto and auto.failure_reason))
                 lesson_eff = session.prompt("lesson_eff", get_optional_text, "Efficiency Lesson Learned")
 
-                structural_mae_raw = session.prompt("structural_mae_raw", lambda: bind_pause(inquirer.text(
-                    message="Structural MAE (peor precio alcanzado en contra de la tesis) [Optional] >",
-                    style=INQUIRER_STYLE
-                )).execute())
-                structural_mfe_raw = session.prompt("structural_mfe_raw", lambda: bind_pause(inquirer.text(
-                    message="Structural MFE (mejor precio alcanzado a favor de la tesis) [Optional] >",
-                    style=INQUIRER_STYLE
-                )).execute())
+                structural_mae_raw = session.prompt("structural_mae_raw", lambda: optional_price(
+                    "Structural MAE (peor precio alcanzado en contra de la tesis)", auto and auto.structural_mae))
+                structural_mfe_raw = session.prompt("structural_mfe_raw", lambda: optional_price(
+                    "Structural MFE (mejor precio alcanzado a favor de la tesis)", auto and auto.structural_mfe))
                 try:
                     structural_mae_val = Decimal(str(structural_mae_raw)) if structural_mae_raw.strip() else None
                     structural_mfe_val = Decimal(str(structural_mfe_raw)) if structural_mfe_raw.strip() else None
