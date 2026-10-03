@@ -2794,6 +2794,26 @@ def resolution_time_source(entered, proposal):
     return None
 
 
+def auto_mark(value, proposed):
+    """T44: " (auto)" si el valor sigue siendo el que propusieron las velas; vacío si no hay propuesta o se corrigió."""
+    if value is None or proposed is None:
+        return ""
+    if isinstance(value, (Decimal, float, int)) and not isinstance(value, bool):
+        try:
+            return " (auto)" if abs(float(value) - float(proposed)) < 1e-9 else ""
+        except (TypeError, ValueError):
+            return ""
+    text = value.value if hasattr(value, "value") else value
+    return " (auto)" if text == proposed else ""
+
+
+def resolution_time_display(value, source):
+    """T44: la hora de resolución para el panel y el menú de edición; sin hora, el motivo (RF-14b)."""
+    if value is None:
+        return f"N/A ({source})" if source else "N/A"
+    return f"{value:%Y-%m-%d %H:%M}" + (" (auto)" if source == RESOLUTION_TIME_SOURCE_CANDLES else "")
+
+
 def proposal_status_line(proposal):
     """La línea que explica por qué no hay propuesta (RF-7f, RF-5b), en inglés (N30). `None` si hay propuesta."""
     if proposal is None:
@@ -3609,17 +3629,24 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
                     structural_mfe=structural_mfe_val
                 )
 
-                # Review Panel
+                # Review Panel. T44: "(auto)" marca lo que sigue siendo la propuesta de las velas.
+                res_type_mark = auto_mark(res_type, auto and auto.resolution_type)
+                struct_res_mark = auto_mark(struct_res, auto and auto.structural_resolution)
+                fail_reason_mark = auto_mark(fail_reason, auto and auto.failure_reason)
+                mae_mark = auto_mark(structural_mae_val, auto and auto.structural_mae)
+                mfe_mark = auto_mark(structural_mfe_val, auto and auto.structural_mfe)
+                resolution_time_text = resolution_time_display(resolution_time_val, audit_eff.resolution_time_source)
                 rev_text = Text()
                 rev_text.append(f"Original Bias (Bias A): {bias_a.value if hasattr(bias_a, 'value') else bias_a}\n")
                 rev_text.append(f"Real Bias B: {real_bias_b.value if hasattr(real_bias_b, 'value') else real_bias_b}\n")
                 rev_text.append(f"Efficiency Timeframe: {eff_tf_val}\n")
-                rev_text.append(f"Resolution Type: {res_type.value if hasattr(res_type, 'value') else res_type}\n")
-                rev_text.append(f"Structural Resolution: {struct_res.value if hasattr(struct_res, 'value') else struct_res}\n")
-                rev_text.append(f"Failure Reason: {fail_reason.value if hasattr(fail_reason, 'value') else fail_reason}\n")
+                rev_text.append(f"Resolution Type: {res_type.value if hasattr(res_type, 'value') else res_type}{res_type_mark}\n")
+                rev_text.append(f"Structural Resolution: {struct_res.value if hasattr(struct_res, 'value') else struct_res}{struct_res_mark}\n")
+                rev_text.append(f"Failure Reason: {fail_reason.value if hasattr(fail_reason, 'value') else fail_reason}{fail_reason_mark}\n")
                 rev_text.append(f"Lesson Learned: {lesson_eff or ''}\n")
-                rev_text.append(f"Structural MAE: {structural_mae_val if structural_mae_val is not None else 'N/A'}\n")
-                rev_text.append(f"Structural MFE: {structural_mfe_val if structural_mfe_val is not None else 'N/A'}\n")
+                rev_text.append(f"Structural MAE: {structural_mae_val if structural_mae_val is not None else 'N/A'}{mae_mark}\n")
+                rev_text.append(f"Structural MFE: {structural_mfe_val if structural_mfe_val is not None else 'N/A'}{mfe_mark}\n")
+                rev_text.append(f"Resolution Time: {resolution_time_text}\n")
 
                 try:
                     console.clear(home=True)
@@ -3650,12 +3677,13 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
                     display_bias_b = real_bias_b.value if hasattr(real_bias_b, 'value') else real_bias_b
                     edit_choices = [
                         Choice("real_bias_b", name=f"Real Bias B: {display_bias_b}"),
-                        Choice("res_type", name=f"Resolution Type: {res_type.value}"),
-                        Choice("struct_res", name=f"Structural Resolution: {struct_res.value}"),
-                        Choice("fail_reason", name=f"Failure Reason: {fail_reason.value}"),
+                        Choice("res_type", name=f"Resolution Type: {res_type.value}{res_type_mark}"),
+                        Choice("struct_res", name=f"Structural Resolution: {struct_res.value}{struct_res_mark}"),
+                        Choice("fail_reason", name=f"Failure Reason: {fail_reason.value}{fail_reason_mark}"),
                         Choice("lesson_eff", name=f"Lesson Learned: {lesson_eff or ''}"),
-                        Choice("structural_mae_raw", name=f"Structural MAE: {structural_mae_val if structural_mae_val is not None else 'N/A'}"),
-                        Choice("structural_mfe_raw", name=f"Structural MFE: {structural_mfe_val if structural_mfe_val is not None else 'N/A'}"),
+                        Choice("structural_mae_raw", name=f"Structural MAE: {structural_mae_val if structural_mae_val is not None else 'N/A'}{mae_mark}"),
+                        Choice("structural_mfe_raw", name=f"Structural MFE: {structural_mfe_val if structural_mfe_val is not None else 'N/A'}{mfe_mark}"),
+                        Choice("resolution_time", name=f"Resolution Time: {resolution_time_text}"),
                         Choice("back", name="[<] Back to Review")
                     ]
                     field_to_edit = inquirer.select(
@@ -3669,23 +3697,26 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
                     if field_to_edit == "real_bias_b":
                         session.state["real_bias_b"] = get_enum_choice("Edit Real Bias B", StructuralBias)
                     elif field_to_edit == "res_type":
-                        session.state["res_type"] = get_enum_choice("Edit Resolution Type", ResolutionType, exclude=[ResolutionType.OPEN])
+                        session.state["res_type"] = get_enum_choice("Edit Resolution Type", ResolutionType, exclude=[ResolutionType.OPEN],
+                                                                    **auto_default(auto and auto.resolution_type))
                     elif field_to_edit == "struct_res":
-                        session.state["struct_res"] = get_enum_choice("Edit Structural Resolution", StructuralResolution)
+                        session.state["struct_res"] = get_enum_choice("Edit Structural Resolution", StructuralResolution,
+                                                                      **auto_default(auto and auto.structural_resolution))
                     elif field_to_edit == "fail_reason":
-                        session.state["fail_reason"] = get_enum_choice("Edit Failure Reason", FailureReason)
+                        session.state["fail_reason"] = get_enum_choice("Edit Failure Reason", FailureReason,
+                                                                       **auto_default(auto and auto.failure_reason))
                     elif field_to_edit == "lesson_eff":
                         session.state["lesson_eff"] = get_optional_text("Edit Efficiency Lesson Learned")
                     elif field_to_edit == "structural_mae_raw":
-                        session.state["structural_mae_raw"] = bind_pause(inquirer.text(
-                            message="Structural MAE (peor precio alcanzado en contra de la tesis) [Optional] >",
-                            style=INQUIRER_STYLE
-                        )).execute()
+                        session.state["structural_mae_raw"] = optional_price(
+                            "Structural MAE (peor precio alcanzado en contra de la tesis)", auto and auto.structural_mae)
                     elif field_to_edit == "structural_mfe_raw":
-                        session.state["structural_mfe_raw"] = bind_pause(inquirer.text(
-                            message="Structural MFE (mejor precio alcanzado a favor de la tesis) [Optional] >",
-                            style=INQUIRER_STYLE
-                        )).execute()
+                        session.state["structural_mfe_raw"] = optional_price(
+                            "Structural MFE (mejor precio alcanzado a favor de la tesis)", auto and auto.structural_mfe)
+                    elif field_to_edit == "resolution_time":
+                        session.state["resolution_time"] = get_optional_datetime(
+                            "Edit Resolution Time", precision=touch_precision(auto),
+                            **auto_default(auto and auto.resolution_time))
             except RestartFlowException:
                 continue
             except PauseAuditException:
@@ -6738,6 +6769,8 @@ def flow_repair_analysis_audits():
                                     record.efficiency_audit.updated_at = new_dt
                                 elif dt_choice == "ea_res_time":
                                     record.efficiency_audit.resolution_time = new_dt
+                                    # Spec 002 (RF-14b): una hora puesta a mano es `corrected`.
+                                    record.efficiency_audit.resolution_time_source = RESOLUTION_TIME_SOURCE_CORRECTED
                                 elif dt_choice == "ta_entry":
                                     selected_ta.entry_time = new_dt
                                 elif dt_choice == "ta_exit":

@@ -8,7 +8,7 @@ El wizard se maneja como en tests/test_wizard_safety_net.py (T5). La propuesta s
 """
 import dataclasses
 import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -196,3 +196,99 @@ def test_the_precision_comes_from_the_timeframe_of_the_touch(wizard):
 def test_a_resumed_resolution_time_is_read_back_as_a_datetime(value, expected):
     from cli.main import resolution_time_entry
     assert resolution_time_entry(value) == expected
+
+
+# --- T44: Resolution Time en "Edit a Field" y la marca (auto) en el panel de revisión -------------------------------
+
+def _drive_with_review(engine, proposal, capsys, review, texts, answers=None, edit_answers=()):
+    """Como `_drive`, pero con las respuestas del panel de revisión (`review`: "save", "edit", un campo...)."""
+    answers = iter(list(answers or [StructuralBias.BOS, ResolutionType.CONFIRMED,
+                                    StructuralResolution.CONFIRMED_EXPANSION, FailureReason.NA]) + list(edit_answers))
+    trade_id, payload = _seed_unified_for_efficiency(engine)
+    # AuditSession.prompt mira `__name__` al volver a pasar por un campo ya respondido (después de editar), así que el
+    # reemplazo es una función con ese nombre que anota sus llamadas.
+    enum_calls = []
+
+    def get_enum_choice(*args, **kwargs):
+        enum_calls.append(call(*args, **kwargs))
+        return next(answers)
+
+    def get_optional_text(*args, **kwargs):
+        return "lesson"
+
+    with patch.object(auto_resolution, "propose_for_trade", return_value=proposal), \
+            patch("cli.main.get_enum_choice", new=get_enum_choice), \
+            patch("cli.main.get_optional_text", new=get_optional_text), \
+            patch("InquirerPy.inquirer.text") as text, patch("InquirerPy.inquirer.select") as select, \
+            patch("builtins.input", return_value=""):
+        text.return_value = MagicMock(**{"execute.side_effect": list(texts)})
+        select.return_value = MagicMock(**{"execute.side_effect": list(review)})
+        _run_efficiency_audit(trade_id, payload)
+    return capsys.readouterr().out, enum_calls, text.call_args_list, select.call_args_list, trade_id
+
+
+def test_the_review_panel_marks_the_values_that_are_still_the_proposal(in_memory_db, capsys):  # noqa: F811
+    out, *_ = _drive_with_review(in_memory_db, PROPOSAL, capsys, review=["save"],
+                                 texts=("4290", "4369.62", "2026-06-01 01:00"))
+    assert "Resolution Type: Confirmed (A equal to B) (auto)" in out
+    assert "Structural Resolution: Confirmed + expansión significativa (auto)" in out
+    assert "Structural MAE: 4290\n" in out or "Structural MAE: 4290 " in out  # corregido: sin marca
+    assert "Structural MAE: 4290 (auto)" not in out
+    assert "Structural MFE: 4369.62 (auto)" in out
+    assert "Resolution Time: 2026-06-01 01:00 (auto)" in out
+
+
+def test_an_empty_resolution_time_shows_why_in_the_review_panel(in_memory_db, capsys):  # noqa: F811
+    pending = AutoProposal(trade_id="x", symbol="XAUUSD", anchor=ANCHOR, reason=REASON_PENDING_CANDLES)
+    out, *_ = _drive_with_review(in_memory_db, pending, capsys, review=["save"], texts=("", "", ""))
+    assert "Resolution Time: N/A (pending_candles)" in out
+
+
+def test_resolution_time_can_be_edited_from_the_review_and_keeps_its_auto_default(in_memory_db, capsys,  # noqa: F811
+                                                                                   saved_clock):
+    out, _, text_calls, select_calls, trade_id = _drive_with_review(
+        in_memory_db, PROPOSAL, capsys, review=["edit", "resolution_time", "save"],
+        texts=("", "", "2026-06-01 01:00", "2026-06-01 03:00"))
+    edit_menu = select_calls[1].kwargs["choices"]
+    assert any(getattr(choice, "value", None) == "resolution_time"
+               and choice.name == "Resolution Time: 2026-06-01 01:00 (auto)" for choice in edit_menu)
+    edit_prompt = text_calls[3].kwargs
+    assert edit_prompt["default"] == "2026-06-01 01:00" and edit_prompt["message"].startswith("Edit Resolution Time")
+    row = _get_saved_efficiency_row(in_memory_db, trade_id)
+    assert (row.resolution_time, row.resolution_time_source) == (datetime.datetime(2026, 6, 1, 3, 0), "corrected")
+
+
+def test_the_edit_prompts_of_the_proposed_enums_keep_their_auto_default(in_memory_db, capsys):  # noqa: F811
+    _, enum_calls, *_ = _drive_with_review(in_memory_db, PROPOSAL, capsys, review=["edit", "res_type", "save"],
+                                           texts=("", "", ""), edit_answers=[ResolutionType.INVALIDATED])
+    edit_call = enum_calls[-1]
+    assert edit_call.args[0] == "Edit Resolution Type" and edit_call.kwargs["default"] == ResolutionType.CONFIRMED.value
+
+
+def test_editing_resolution_time_in_the_repair_flow_marks_it_corrected(in_memory_db):  # noqa: F811
+    from sqlalchemy.orm import Session
+    from cli.main import flow_repair_analysis_audits
+    from tools.database import EfficiencyAudit as EfficiencyAuditORM
+    trade_id, _ = _seed_unified_for_efficiency(in_memory_db)
+    with Session(in_memory_db) as session:
+        session.add(EfficiencyAuditORM(id=trade_id, bias_a="BOS", resolution_type=ResolutionType.CONFIRMED.value,
+                                       resolution_time=datetime.datetime(2026, 6, 2, 18, 0),
+                                       resolution_time_source="candles"))
+        session.commit()
+    new_time = datetime.datetime(2026, 6, 1, 4, 0)
+    with patch("InquirerPy.inquirer.select") as select, \
+            patch("cli.main.get_mandatory_text", side_effect=["1", "b"]), \
+            patch("cli.main.get_mandatory_datetime", return_value=new_time), patch("builtins.input", return_value=""):
+        select.return_value = MagicMock(**{"execute.side_effect": ["datetime", "ea_res_time", "save", "back"]})
+        flow_repair_analysis_audits()
+    row = _get_saved_efficiency_row(in_memory_db, trade_id)
+    assert (row.resolution_time, row.resolution_time_source) == (new_time, "corrected")
+
+
+def test_corrected_values_lose_the_auto_mark(in_memory_db, capsys):  # noqa: F811
+    answers = [StructuralBias.BOS, ResolutionType.CONFIRMED, StructuralResolution.CONFIRMED_MINIMAL, FailureReason.NA]
+    out, *_ = _drive_with_review(in_memory_db, PROPOSAL, capsys, review=["save"], answers=answers,
+                                 texts=("", "", "2026-06-01 02:30"))
+    assert "Structural Resolution: Confirmed pero mínima" in out
+    assert "Structural Resolution: Confirmed pero mínima (auto)" not in out   # la propuesta era "expansión"
+    assert "Resolution Time: 2026-06-01 02:30" in out and "Resolution Time: 2026-06-01 02:30 (auto)" not in out

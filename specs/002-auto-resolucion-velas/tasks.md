@@ -1043,9 +1043,20 @@
         `ea_res_time`) todavía edita `resolution_time` sin tocar `resolution_time_source`. Lo cubre T44 o se anota
         aparte.
       SUITE: `1039 passed, 3 skipped, 127 warnings in 39.29s`; sin `.data/`.
-- [ ] T44. Efficiency, parte 4: "Resolution Time" en el menú "Edit a Field" y en el panel de revisión con la marca
+- [x] T44. Efficiency, parte 4: "Resolution Time" en el menú "Edit a Field" y en el panel de revisión con la marca
       `(auto)`. (RF-7, INV-1)
       Hecho cuando: los tests prueban que la edición funciona y que el panel muestra la marca. SUITE en verde.
+      Evidencia (2026-10-03):
+      - **Panel de revisión:** `(auto)` en cada valor que sigue siendo el que propusieron las velas (`auto_mark`), y una
+        línea nueva "Resolution Time". Sin hora, muestra el motivo, por ejemplo `N/A (pending_candles)`. Al corregir
+        un valor, la marca desaparece.
+      - **"Edit a Field":** suma "Resolution Time". Las ediciones de los campos propuestos vuelven a ofrecer el valor
+        `(auto)`.
+      - **Flujo de reparación:** editar `ea_res_time` ahora marca `resolution_time_source = corrected` (era el
+        pendiente de T43).
+      - **Tests:** 6 nuevos en `tests/test_efficiency_proposals.py`. Mutación: 9 de 9 muertos; 2 sobrevivieron al
+        principio y se agregó el test de valores corregidos.
+      SUITE: `1045 passed, 3 skipped, 139 warnings in 35.16s`; sin `.data/`.
 
 ## Etapa 6 — Propuestas en el Tactical Audit
 
