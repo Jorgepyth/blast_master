@@ -222,6 +222,23 @@ def plan_account(account: str, db_path: str, bank_root: str,
     return plan
 
 
+# Los campos que pueden tener un conflicto: los que se comparan con un valor que ya está en la DB. Son los que acepta
+# `backfill --apply --accept CAMPO` (N53, T51b).
+CONFLICT_FIELDS = ("resolution_type", "structural_resolution", "failure_reason", "structural_mae", "structural_mfe",
+                   "resolution_time", "mae_adverse", "mfe_favorable", "could_hit_tp")
+
+
+def conflicts_of_fields(plans: List[AccountPlan], fields) -> Dict[str, set]:
+    """N53: los conflictos de esos campos, por cuenta, con las claves que recibe `apply_plan` en `accepted`."""
+    wanted = set(fields)
+    accepted: Dict[str, set] = {}
+    for plan in plans:
+        for change in plan.changes:
+            if change.kind == KIND_CONFLICT and change.field in wanted:
+                accepted.setdefault(plan.account, set()).add((change.table_name, change.record_id, change.field))
+    return accepted
+
+
 @dataclass(frozen=True)
 class HistoryRun:
     """Una corrida ya aplicada, leída de `backfill_history`. Los valores son el texto guardado."""

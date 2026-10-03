@@ -1228,12 +1228,33 @@
       - **Mutación:** 9 de 9 muertos; uno sobrevivió al principio (el orden del historial) y se agregó la verificación.
       SUITE: `1114 passed, 3 skipped, 144 warnings in 45.63s`; sin `.data/`.
 
-- [ ] T51b. *(Agregada el 2026-10-03, N53.)* `backfill --apply --accept CAMPO` (se puede repetir): acepta todos los
+- [x] T51b. *(Agregada el 2026-10-03, N53.)* `backfill --apply --accept CAMPO` (se puede repetir): acepta todos los
       conflictos de ese campo sin preguntar, y pregunta los demás uno por uno. Sin `--apply`, la vista previa dice
       cuántos aceptaría. Un campo que no puede tener conflictos sale con 1. (RF-11e)
       Hecho cuando: los tests con `CliRunner` prueban que los conflictos del campo se aceptan sin preguntarse y quedan
       como `accepted_conflict`, que los demás se siguen preguntando, que `q` no frena a los del campo, la vista previa
       sin escrituras y el campo desconocido. SUITE en verde.
+      Evidencia (2026-10-03):
+      - **`tools/auto_backfill.py`:** `CONFLICT_FIELDS` (los 9 campos que se comparan con un valor existente) y
+        `conflicts_of_fields(plans, fields)`, que junta los conflictos de esos campos con las claves que recibe
+        `apply_plan`. Solo toma conflictos: un campo sin cambio no se acepta.
+      - **`cli/main.py`:** `backfill --accept CAMPO` (se puede repetir).
+        - Con `--apply`, esos conflictos se aceptan antes de las preguntas y no se preguntan; los demás siguen uno por
+          uno, y `q` frena solo las preguntas. El resumen dice `N conflicts accepted (M with --accept)`.
+        - Sin `--apply`, la vista previa agrega `With --accept, N conflicts would be accepted: structural_mae 41, ...`.
+        - Un campo que no puede tener conflictos sale con 1 y la lista de los que sí, antes de exportar o calcular
+          nada.
+      - **En las DBs reales** (plan recalculado sobre copias con N52): `--accept structural_mae --accept structural_mfe
+        --accept mae_adverse --accept mfe_favorable` acepta 133 conflictos en XAU y 31 en BTC. Quedan para preguntar 34
+        y 19.
+      - **Tests:** `tests/test_cli_backfill.py` (+5): aceptar dos campos sin preguntarlos (queda una sola pregunta),
+        `q` no frena a los del campo, la vista previa sin escrituras, el campo desconocido (1, sin escribir), y
+        `conflicts_of_fields` solo con conflictos.
+      - **Mutación:** 7 de 7 muertos.
+      - **De paso:** el test de T56 que compara la salida del wizard con y sin velas fallaba a veces, porque el panel de
+        revisión muestra `Created:` con la hora real al segundo. Arreglado en el test (`ac554ba`), y probado con un
+        segundo de diferencia entre las dos corridas.
+      SUITE: `1215 passed, 3 skipped, 405 warnings in 71.66s`; sin `.data/`.
 
 ## Etapa 8 — Export automático (solo si el spike de T22 funcionó)
 

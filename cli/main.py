@@ -1460,21 +1460,32 @@ BACKFILL_EXIT_UNKNOWN_ACCOUNT = 1
 @click.option("--account", "accounts", multiple=True,
               help="Account id from REAL_ACCOUNTS, e.g. 000. Repeat it for several (default: all).")
 @click.option("--hide-unchanged", is_flag=True, help="Do not list the fields that would not change.")
+@click.option("--accept", "accept_fields", multiple=True, metavar="FIELD",
+              help="With --apply, accept every conflict of this field without asking, e.g. structural_mae. "
+                   "Repeat it for several fields. Without --apply, the preview says how many it would accept.")
 @click.pass_context
-def backfill_command(ctx, do_apply, accounts, hide_unchanged):
+def backfill_command(ctx, do_apply, accounts, hide_unchanged, accept_fields):
     """Fill the audits with the candle values: a git-style preview, and --apply to write.
 
-    Exit code: 0 done, 1 unknown account, 3 rehearsal failed, 4 no backup from the last 24 h, 5 cancelled.
+    Exit code: 0 done, 1 unknown account or --accept field, 3 rehearsal failed, 4 no backup from the last 24 h,
+    5 cancelled.
     """
     import uuid as _uuid
     import config.auto_resolution as auto_cfg
     from cli.backfill_view import ViewRun, print_runs
-    from tools.auto_backfill import KIND_CONFLICT, build_plan, read_history, run_apply
+    from tools.auto_backfill import (CONFLICT_FIELDS, KIND_CONFLICT, build_plan, conflicts_of_fields, read_history,
+                                     run_apply)
 
     unknown = [account for account in accounts if account not in auto_cfg.REAL_ACCOUNTS]
     if unknown:
         console.print(f"Unknown account: {', '.join(unknown)} (known: {', '.join(auto_cfg.REAL_ACCOUNTS)})",
                       style="red", markup=False)
+        ctx.exit(BACKFILL_EXIT_UNKNOWN_ACCOUNT)
+    accept_fields = list(dict.fromkeys(accept_fields))
+    bad_fields = [field for field in accept_fields if field not in CONFLICT_FIELDS]
+    if bad_fields:
+        console.print(f"Unknown field for --accept: {', '.join(bad_fields)} (fields that can have conflicts: "
+                      f"{', '.join(CONFLICT_FIELDS)})", style="red", markup=False, soft_wrap=True)
         ctx.exit(BACKFILL_EXIT_UNKNOWN_ACCOUNT)
     selected = {account: auto_cfg.REAL_ACCOUNTS[account] for account in (accounts or auto_cfg.REAL_ACCOUNTS)}
     # T54 (RF-20c): antes del plan, el export de los símbolos de las cuentas, con espera acotada.
@@ -1489,15 +1500,25 @@ def backfill_command(ctx, do_apply, accounts, hide_unchanged):
         console.print(f"{plan.account} {plan.db_name}", style="bold cyan", markup=False)
         print_runs(console, runs, show_unchanged=not hide_unchanged)
 
+    if accept_fields:
+        counts = {field: sum(1 for plan in plans for change in plan.changes
+                             if change.kind == KIND_CONFLICT and change.field == field) for field in accept_fields}
+        total = sum(counts.values())
+        verb = "were" if do_apply else "would be"
+        console.print(f"With --accept, {total} conflict{'s' if total != 1 else ''} {verb} accepted: "
+                      + ", ".join(f"{field} {n}" for field, n in counts.items()), markup=False, soft_wrap=True)
+
     if not do_apply:
         console.print("Dry run: nothing was written. Use --apply to write.", markup=False)
         return
 
-    accepted = {}
+    # N53: los conflictos de los campos de --accept se aceptan sin preguntar; los demás, uno por uno.
+    accepted = conflicts_of_fields(plans, accept_fields)
+    by_field = sum(len(keys) for keys in accepted.values())
     stop = False
     for plan in plans:
         for change in plan.changes:
-            if change.kind != KIND_CONFLICT or stop:
+            if change.kind != KIND_CONFLICT or change.field in accept_fields or stop:
                 continue
             question = (f"Accept {plan.account} {change.record_id[:8]} {change.table_name}.{change.field}: "
                         f"{change.old_value} -> {change.new_value}? (y = accept, n = keep, q = keep all the rest)")
@@ -1507,7 +1528,8 @@ def backfill_command(ctx, do_apply, accounts, hide_unchanged):
             elif answer == "y":
                 accepted.setdefault(plan.account, set()).add((change.table_name, change.record_id, change.field))
     total_accepted = sum(len(keys) for keys in accepted.values())
-    console.print(f"{total_accepted} conflict{'s' if total_accepted != 1 else ''} accepted.", markup=False)
+    detail = f" ({by_field} with --accept)" if accept_fields else ""
+    console.print(f"{total_accepted} conflict{'s' if total_accepted != 1 else ''} accepted{detail}.", markup=False)
 
     code, _ = run_apply(
         plans, auto_cfg.ACCOUNTS_DATA_DIR, auto_cfg.CANDLE_BANK_DIR,
