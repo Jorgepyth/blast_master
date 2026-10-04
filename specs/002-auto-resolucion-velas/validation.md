@@ -88,4 +88,13 @@ El usuario corrió `resolution-report`, `candles status` y el CLI (`trading`) en
 - La espera de 30 s terminó con `not finished in 30s (BTCUSD, USTEC)`, y los dos siguieron de fondo: BTCUSD se fusionó
   a las 16:11:43 y USTEC dio `clock_unverified` a las 16:11:48, según el log.
 
-**Falta:** la corrida con MT5 cerrado.
+**Domingo 16:15 a 16:17 (el usuario cerró MT5):**
+- **Hallazgo:** con MT5 cerrado el export no falla, porque **vuelve a abrir MT5**. El exportador llama a
+  `mt5.initialize()` sin argumentos (`windows_export/export_p2_ohlc.py:638`), y el paquete `MetaTrader5` lanza la
+  terminal si no está corriendo. Cada símbolo es un proceso aparte, así que MT5 se reabría una vez por símbolo, y
+  además en cada disparo (abrir el CLI, el reporte). El usuario lo vio al abrir `trading`: cerraba MT5 y se volvía a
+  abrir.
+- Así, el caso "MT5 cerrado" de RF-20e nunca se da hoy: XAUUSD se fusionó (+1 vela de 1M) con MT5 "cerrado".
+- Cerrar MT5 en medio de un export sí se maneja bien: USTEC a las 16:16:26 terminó en
+  `exporter_exit_1: ... (-10001, 'IPC send failed')`, como `Candle export skipped`, sin tocar el banco.
+- **Pendiente de decisión del usuario:** que el export automático nunca abra MT5 (propuesto como N54 y T62c).
