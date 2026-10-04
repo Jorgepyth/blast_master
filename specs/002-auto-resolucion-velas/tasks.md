@@ -1608,11 +1608,8 @@
       SUITE: `982 passed, 3 skipped, 97 warnings in 58.90s`; sin `.data/`.
 - [ ] T62. 🖐 Demo del export automático con MT5 abierto y con MT5 cerrado. Solo si T22 funcionó. (RF-20 a RF-20e)
       Hecho cuando: las dos salidas quedan en `validation.md`.
-      **Decisión pendiente antes de activar `AUTO_EXPORT` (postergada por el usuario el 2026-09-29): retención de
-      corridas.** Cada export deja una carpeta de 2 a 11 MB en `C:\Users\jcifu\MT5Exports\_incoming\<SÍMBOLO>\`
-      (5 corridas y 36 MB hoy) y nada las borra. A mano no importa, pero con el export automático varias corridas por
-      día crecerían sin límite. El plan (§2.4) propone conservar las últimas 5 por símbolo, para poder auditarlas; no
-      está implementado ni tiene tarea. Las 2 corridas del spike ya se borraron, con aprobación del usuario.
+      *(Resuelta el 2026-10-03: la retención de corridas que estaba pendiente acá la decidió el usuario en N47 y está
+      implementada en T62a. `AUTO_EXPORT=true` está en el `.env` del principal desde la 8.ª integración.)*
 - [ ] T63. 🖐 Backfill real:
       1. dry-run y revisión de la vista git-graph;
       2. las 3 puertas (copia, backup y tu aprobación);
