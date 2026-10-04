@@ -1622,8 +1622,13 @@
         principio (el orden de `-2` contra `-10`) y se corrigió el test.
       - **Con las corridas reales de hoy** (XAU 3, USTEC 2, US500 2, BTC 1) no se borraría nada.
       SUITE: `982 passed, 3 skipped, 97 warnings in 58.90s`; sin `.data/`.
-- [ ] T62. 🖐 Demo del export automático con MT5 abierto y con MT5 cerrado. Solo si T22 funcionó. (RF-20 a RF-20e)
+- [x] T62. 🖐 Demo del export automático con MT5 abierto y con MT5 cerrado. Solo si T22 funcionó. (RF-20 a RF-20e)
       Hecho cuando: las dos salidas quedan en `validation.md`.
+      Evidencia (2026-10-04), detalle en `validation.md` § T62: con el mercado cerrado (domingo) XAUUSD, US500 y USTEC dan
+      `Candle export skipped` y BTCUSD se fusiona; a las 16:11, con el mercado abierto, XAUUSD se fusiona (+2877 velas de
+      1M), y US500 y USTEC siguen `clock_unverified` por N43. Con MT5 cerrado, el exportador lo vuelve a abrir
+      (`mt5.initialize()`); el usuario decidió que está bien (N54). Cerrarlo a mitad de un export da `IPC send failed`,
+      informado como skipped. Lo que mostró la demo dejó T62b.
       *(Resuelta el 2026-10-03: la retención de corridas que estaba pendiente acá la decidió el usuario en N47 y está
       implementada en T62a. `AUTO_EXPORT=true` está en el `.env` del principal desde la 8.ª integración.)*
 - [x] T62b. *(Agregada el 2026-10-04, a pedido del usuario, por lo que mostró la demo T62.)* El exportador explica un

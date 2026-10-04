@@ -63,7 +63,7 @@ repitió el script de aquel día (`analisis/overlap_2d.py`, en solo lectura) y s
   (7 casos en XAU, 6 de ellos con Overlap). El backfill (T63) mueve esas horas a `audit_registration_time` (N2), pero
   la demora sigue siendo la misma: no es un error de datos.
 
-## T62. Export automático con MT5 abierto y cerrado (2026-10-04, en curso)
+## T62. Export automático con MT5 abierto y cerrado (2026-10-04)
 
 El usuario corrió `resolution-report`, `candles status` y el CLI (`trading`) en el checkout principal, con
 `AUTO_EXPORT=true`. Fuente: su terminal y `.data/candle_export.log`.
@@ -97,4 +97,13 @@ El usuario corrió `resolution-report`, `candles status` y el CLI (`trading`) en
 - Así, el caso "MT5 cerrado" de RF-20e nunca se da hoy: XAUUSD se fusionó (+1 vela de 1M) con MT5 "cerrado".
 - Cerrar MT5 en medio de un export sí se maneja bien: USTEC a las 16:16:26 terminó en
   `exporter_exit_1: ... (-10001, 'IPC send failed')`, como `Candle export skipped`, sin tocar el banco.
-- **Pendiente de decisión del usuario:** que el export automático nunca abra MT5 (propuesto como N54 y T62c).
+- **Decisión del usuario (N54, 2026-10-04):** que el export abra MT5 está bien. Más adelante quiere que el Tactical
+  Audit coloque las órdenes en MT5, y para eso tiene que estar abierto. No se agrega el chequeo propuesto.
+
+**Veredicto de T62:** cumplido.
+- **Mercado abierto:** XAUUSD y BTCUSD se fusionan.
+- **No disponible:** el mercado cerrado y MT5 cerrado a mitad de un export dan `Candle export skipped`, sin tocar el
+  banco ni frenar nada.
+- **El resto de los disparos** funcionó: de fondo al abrir el CLI, con espera acotada en el reporte, sin exports
+  duplicados y con la retención.
+- **El mensaje confuso** del offset fuera de rango quedó corregido en T62b.
