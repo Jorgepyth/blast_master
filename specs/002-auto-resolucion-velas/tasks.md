@@ -1491,6 +1491,10 @@
       `.data/`. Ningún archivo del usuario entre los cambiados, y los 30 quedaron byte a byte iguales. Desde acá el
       wizard ya no propone "Overlap Invalidation", y el backfill vuelve a intentar las horas vacías por motivos
       temporales.
+      **10.ª integración 2026-10-04 (aprobada por el usuario: "sí, integra N53 y T51b"):** avance rápido de `5c79775`
+      a `7536a87`, 4 commits: N53, el arreglo del test inestable de T56, T51b y la nota de T62. La SUITE de la rama dio
+      `1215 passed, 3 skipped`, sin `.data/`. Ningún archivo del usuario entre los cambiados, y los 30 quedaron byte a
+      byte iguales.
 - [x] T58a. *(Agregada el 2026-10-03, N48.)* El banco de velas en el backup 3-2-1: artefacto `candle_bank.tar.gz` en
       local, USB y B2, y su restore en `<destino>/candle_bank/`. (NFR-1)
       Hecho cuando: los tests prueban el archivo (solo los CSV y `status.json` del banco, rutas relativas), la subida
