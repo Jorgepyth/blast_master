@@ -62,3 +62,30 @@ repitió el script de aquel día (`analisis/overlap_2d.py`, en solo lectura) y s
   XAU): audits guardados antes de que el precio tocara el nivel. Ya se habían visto en la medición del 2026-10-02
   (7 casos en XAU, 6 de ellos con Overlap). El backfill (T63) mueve esas horas a `audit_registration_time` (N2), pero
   la demora sigue siendo la misma: no es un error de datos.
+
+## T62. Export automático con MT5 abierto y cerrado (2026-10-04, en curso)
+
+El usuario corrió `resolution-report`, `candles status` y el CLI (`trading`) en el checkout principal, con
+`AUTO_EXPORT=true`. Fuente: su terminal y `.data/candle_export.log`.
+
+**Domingo antes de las 16:00 (mercado cerrado, salvo BTC):**
+- XAUUSD, US500 y USTEC fallan con `exporter_exit_1: ... Offset de servidor inferido fuera de rango: -42h.`: el último
+  tick es del viernes y el exportador se niega a adivinar el reloj. El banco no cambia, y el reloj de XAUUSD sigue
+  `verified` en `status.json`. El mensaje no dice que el mercado está cerrado: lo arregla T62b.
+- BTCUSD (24/7) se fusiona (+1104 velas de 1M en la primera corrida; casi nada en las siguientes, minutos después).
+- Abrir el CLI lanza los 4 de fondo sin esperar: `Candle export started in the background: XAUUSD, US500, BTCUSD,
+  USTEC`.
+- Un segundo export de BTCUSD no arranca mientras hay otro: `Candle export skipped: export_in_progress (BTCUSD)`
+  (RF-20f).
+- La retención (N47) borró las corridas viejas y deja 3 por símbolo.
+- El reporte terminó normal en todos los casos (RF-20e, INV-2).
+
+**Domingo 16:11 (mercado abierto):**
+- XAUUSD se fusiona: `+2877` velas de 1M, reloj verificado por superposición.
+- US500 y USTEC: `clock_unverified (9 reference prices in the exported range, need 10; 1 of 9 own reference prices do
+  not fit the candles, so the clock of BTCUSD is not inherited)`. Es la regla estricta de N43, elegida por el usuario
+  el 2026-10-02: el banco no cambia hasta tener 10 referencias propias que calcen.
+- La espera de 30 s terminó con `not finished in 30s (BTCUSD, USTEC)`, y los dos siguieron de fondo: BTCUSD se fusionó
+  a las 16:11:43 y USTEC dio `clock_unverified` a las 16:11:48, según el log.
+
+**Falta:** la corrida con MT5 cerrado.
