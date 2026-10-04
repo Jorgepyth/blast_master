@@ -222,6 +222,16 @@ def test_infer_offset_rechaza_valores_absurdos():
         infer_server_utc_offset(now + 20 * 3600, now)
 
 
+def test_infer_offset_con_el_mercado_cerrado_mas_de_un_dia_dice_por_que():
+    """T62b: el domingo antes de que abra el mercado, el último tick (del viernes) queda a -42 h casi enteras."""
+    now = 1_790_000_000.0
+    with pytest.raises(RuntimeError) as error:
+        infer_server_utc_offset(now - 42 * 3600 + 10, now)
+    message = str(error.value)
+    assert "fuera de rango: -42h" in message
+    assert "mercado está cerrado" in message and "--server-utc-offset" in message
+
+
 # --- T17 (spec 002, RF-15): 5M/1M en el mapa de TF y --timeframes -----------
 
 def test_timeframe_map_has_5m_and_1m():

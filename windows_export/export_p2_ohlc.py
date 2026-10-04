@@ -333,7 +333,14 @@ def infer_server_utc_offset(tick_epoch: float, now_utc_epoch: float,
             "(la hora del servidor se ve en el encabezado de Market Watch)."
         )
     if not -12 <= hours <= 14:
-        raise RuntimeError(f"Offset de servidor inferido fuera de rango: {hours}h.")
+        # T62b: con el mercado cerrado más de un día (el domingo antes de que abra), el último tick es del viernes y
+        # queda a una cantidad casi entera de horas: pasa el chequeo de arriba pero no es un offset.
+        raise RuntimeError(
+            f"Offset de servidor inferido fuera de rango: {hours}h. El último tick está a {hours:+d} h de la hora "
+            "UTC actual, y un offset de servidor va de -12 a +14: probablemente el mercado está cerrado desde hace "
+            "más de un día. Corré el export con el mercado abierto, o pasá --server-utc-offset (la hora del "
+            "servidor se ve en el encabezado de Market Watch)."
+        )
     return hours
 
 

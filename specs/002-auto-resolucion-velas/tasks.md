@@ -1626,7 +1626,7 @@
       Hecho cuando: las dos salidas quedan en `validation.md`.
       *(Resuelta el 2026-10-03: la retención de corridas que estaba pendiente acá la decidió el usuario en N47 y está
       implementada en T62a. `AUTO_EXPORT=true` está en el `.env` del principal desde la 8.ª integración.)*
-- [ ] T62b. *(Agregada el 2026-10-04, a pedido del usuario, por lo que mostró la demo T62.)* El exportador explica un
+- [x] T62b. *(Agregada el 2026-10-04, a pedido del usuario, por lo que mostró la demo T62.)* El exportador explica un
       offset fuera de rango. Con el mercado cerrado más de un día (el domingo antes de las 16:00, hora GT), el último
       tick queda a una cantidad casi entera de horas y `infer_server_utc_offset` falla con `Offset de servidor inferido
       fuera de rango: -42h.`, sin decir por qué. Ese mensaje pasa a decir, como el otro caso de mercado cerrado, que el
@@ -1634,6 +1634,15 @@
       o pasar `--server-utc-offset`). (RF-20e)
       Hecho cuando: los tests de `windows_export` prueban el mensaje nuevo con un tick de hace 42 h y que un offset válido
       sigue funcionando igual. SUITE en verde.
+      Evidencia (2026-10-04):
+      - **`windows_export/export_p2_ohlc.py`:** `infer_server_utc_offset` dice ahora, en ese caso, a cuántas horas está el
+        último tick, que el rango válido es de -12 a +14, que probablemente el mercado está cerrado desde hace más de un
+        día, y qué hacer. Conserva el comienzo `Offset de servidor inferido fuera de rango: -42h.`
+      - **Test:** `tests/test_export_p2_ohlc.py` (+1), con un tick de hace 42 h. Falló antes del cambio. Los tests de
+        offsets válidos y del otro caso de mercado cerrado siguen igual.
+      - **Llega sin copiar nada:** el `EXPORTER_WIN_PATH` del `.env` apunta al archivo del checkout principal por
+        `\\wsl.localhost`, así que el mensaje nuevo se ve desde la próxima integración.
+      SUITE: `1216 passed, 3 skipped, 405 warnings in 72.33s`; sin `.data/`.
 - [ ] T63. 🖐 Backfill real:
       1. dry-run y revisión de la vista git-graph;
       2. las 3 puertas (copia, backup y tu aprobación);
