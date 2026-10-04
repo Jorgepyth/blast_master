@@ -1586,9 +1586,21 @@
       - Filas antes → después: XAU 1W 1993 → 1484, 1D 1635 → 1228, 12H 1691 → 1329, 4H 2258 → 1730; BTC 1W 1081 → 809,
         1D 2200 → 1695, 12H 2295 → 1791, 4H 2911 → 2174. Los de XAU coinciden con lo que trajo el primer export nuevo
         (1W +1484, 1D +1228, 12H +1329, 4H +1730).
-- [ ] T60. Correr `resolution-report` sobre las DBs reales, en solo lectura. (RF-6, RF-17, RF-21)
+- [x] T60. Correr `resolution-report` sobre las DBs reales, en solo lectura. (RF-6, RF-17, RF-21)
       Hecho cuando: el `.md` generado se muestra, y el S1 direccional de XAU se compara con el 61% de
       `analisis-overlap-2d.md`, explicando cualquier diferencia (1M/5M, ancla).
+      Evidencia (2026-10-04), detalle en `validation.md` § T60:
+      - **Cómo se corrió:** el comando real, desde el scratchpad, con `AUTO_EXPORT=false` y las rutas de `.data/` real.
+        Las 4 DBs y el banco quedaron sin cambios (fecha y tamaño de cada archivo, antes y después). 21 s, código 0. El
+        `.md` se le mostró al usuario y quedó fuera del repo.
+      - **Resultado:** XAU resuelve 75 de 81 (6 `no_levels`), con S4 estricto direccional 28/45 = 62% y S1 direccional
+        29/45 = 64%. BTC resuelve 22 de 24, con S4 estricto direccional 8/16. US500 y US100 dan 0, por
+        `clock_unverified`.
+      - **El 61% (23/38) contra el 64% (29/45):** se repitió el script del 2026-09-27 y se comparó análisis por
+        análisis.
+        - Los 38 de entonces dan el mismo primer toque: ni las velas de 1M/5M ni el ancla cambiaron nada.
+        - Se suman 6 retroactivos recuperados (N50), que ganan los 6, y `792518cd`, que tocó la invalidación el
+          2026-09-27, después de la fecha de los CSV de entonces.
 - [ ] T61. 🖐 Demo en una Flight Session descartable: un Efficiency Audit con propuestas aceptadas y una corregida,
       más un Tactical con MAE/MFE y `Could hit TP?` propuestos. (RF-7, RF-9, RF-10)
       Hecho cuando: queda documentado en `validation.md` con la salida, y la Flight Session se borra al terminar.
