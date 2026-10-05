@@ -107,3 +107,37 @@ El usuario corrió `resolution-report`, `candles status` y el CLI (`trading`) en
 - **El resto de los disparos** funcionó: de fondo al abrir el CLI, con espera acotada en el reporte, sin exports
   duplicados y con la retención.
 - **El mensaje confuso** del offset fuera de rango quedó corregido en T62b.
+
+## T61. Demo en una Flight Session descartable (2026-10-04 y 2026-10-05)
+
+Sesión `demo-t61` (`flight_account_000_demot61.db`). Se rehizo como retroactivo el análisis real `82c1c17c` (XAU,
+2026-07-27, Bearish): Mark Price 4072.71, EVP 4056 y SI 4100. Su orden real se cargó en el Tactical. El usuario manejó
+el wizard; lo guardado se leyó en solo lectura.
+
+**Análisis 1 (`fb1eae79`, hora tipeada 08:49): todas las propuestas aceptadas con Enter.**
+
+| Campo | Propuesto `(auto)` y guardado |
+|---|---|
+| Resolution Type | Confirmed (A equal to B) |
+| Structural Resolution | Confirmed + expansión significativa |
+| Failure Reason | N/A |
+| Structural MAE / MFE | 4093.96 / 4054.14 |
+| Resolution Time | 2026-07-27 19:00, `resolution_time_source = candles` |
+| `audit_registration_time` | 2026-10-04 18:15, la hora real del guardado (N1) |
+| Tactical: MAE / MFE / Could hit TP? | 0.52 / 2.05 / yes |
+
+Las horas del análisis (RF-13): `analysis_start_time` y `mark_price_time` son la hora tipeada (08:49), y `saved_at` es
+la hora real del guardado. Todo coincide con lo calculado antes de la demo con `propose_for_trade` y
+`propose_tactical` sobre el análisis real.
+
+**Análisis 2 (`81da10e8`, hora tipeada 09:49): dos propuestas corregidas, el resto aceptado.** Structural MAE pasó de
+4093.96 a 4095, y Resolution Time de 19:00 a 19:05. Se guardaron los valores del operador, con
+`resolution_time_source = corrected` (T43); los demás campos quedaron como los propuso el banco.
+
+**Otros hechos de la demo:**
+- La Flight Session no escribió `p2_model_log.jsonl`, como corresponde a T56.
+- El aviso de pydantic al guardar el Tactical (`Expected float but got Decimal`, 6 veces) es anterior a la spec: sale
+  de los 6 campos monetarios de la Fase 2f, y ya aparece en el test de caracterización T5, escrito antes de tocar el
+  wizard. No afecta lo guardado.
+
+**Veredicto de T61:** cumplido. Falta que el usuario borre la sesión.

@@ -1608,6 +1608,10 @@
 - [ ] T61. 🖐 Demo en una Flight Session descartable: un Efficiency Audit con propuestas aceptadas y una corregida,
       más un Tactical con MAE/MFE y `Could hit TP?` propuestos. (RF-7, RF-9, RF-10)
       Hecho cuando: queda documentado en `validation.md` con la salida, y la Flight Session se borra al terminar.
+      Evidencia (2026-10-05), detalle en `validation.md` § T61: análisis `82c1c17c` rehecho como retroactivo en
+      `demo-t61`. Las propuestas aceptadas se guardaron como propuestas (Confirmed, expansión significativa, N/A,
+      4093.96/4054.14, 19:00 `candles`; Tactical 0.52/2.05/yes). En un segundo análisis, el MAE (4095) y la hora (19:05)
+      corregidos se guardaron con `corrected`. Pendiente: borrar la sesión.
 - [x] T62a. *(Agregada el 2026-10-03, N47.)* Retención de `_incoming`: al final de cada export se conservan las 3
       corridas más recientes del símbolo y se borran las demás, solo si son carpetas de corrida con CSV de
       temporalidades. (RF-1, RF-20)
