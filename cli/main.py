@@ -311,6 +311,10 @@ MONEY_FIELDS_REQUIRING_CONTRACT_SIZE = (
 # No fusionar ambos gates sin revisar esa decisión.
 ANXIETY_GATE_THRESHOLD = 4
 
+class SessionKeyTakenError(ValueError):
+    """T61b: la clave de una Flight Session nueva ya la usa otra cuenta o sesión, y crearla la pisaría."""
+
+
 class FlightSessionManager:
     @staticmethod
     def load_sessions():
@@ -332,6 +336,12 @@ class FlightSessionManager:
     def create_session(account_index: str, name: str):
         import re
         sessions = FlightSessionManager.load_sessions()
+        account_index = account_index.strip()
+        if account_index in sessions:  # T61b: nunca pisa una cuenta existente (en la demo T61 se perdió la de XAU)
+            used = sessions[account_index]
+            raise SessionKeyTakenError(
+                f"Account key {account_index} is already used by {used.get('name', 'another session')} "
+                f"({used.get('db_name', 'unknown database')}). Choose a free key.")
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         sanitized_nickname = re.sub(r'[^a-zA-Z0-9]', '', name).lower()
         db_name = f"flight_account_{account_index}_{sanitized_nickname}.db"
@@ -1004,7 +1014,15 @@ def flow_flight_sessions():
         if choice == "back":
             return
         elif choice == "create":
-            account_idx = get_mandatory_text("Enter sequential account numeric index key (e.g. 002)")
+            console.print(f"Keys in use: {', '.join(sorted(sessions)) or 'none'}", markup=False, highlight=False)
+            while True:  # T61b: una clave usada se rechaza y se vuelve a pedir
+                account_idx = get_mandatory_text("Enter sequential account numeric index key (e.g. 002)").strip()
+                if account_idx not in sessions:
+                    break
+                used = sessions[account_idx]
+                console.print(f"Account key {account_idx} is already used by {used.get('name', 'another session')} "
+                              f"({used.get('db_name', 'unknown database')}). Choose a free key.",
+                              style="yellow", markup=False, highlight=False)
             name = get_mandatory_text("Enter flight session nickname")
             session_id, session_data = FlightSessionManager.create_session(account_idx, name)
             ACTIVE_SESSION = {"id": session_id, "name": name, "db_name": session_data["db_name"]}

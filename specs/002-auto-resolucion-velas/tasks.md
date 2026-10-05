@@ -1612,7 +1612,7 @@
       `demo-t61`. Las propuestas aceptadas se guardaron como propuestas (Confirmed, expansión significativa, N/A,
       4093.96/4054.14, 19:00 `candles`; Tactical 0.52/2.05/yes). En un segundo análisis, el MAE (4095) y la hora (19:05)
       corregidos se guardaron con `corrected`. Pendiente: borrar la sesión.
-- [ ] T61b. *(Agregada el 2026-10-05, a pedido del usuario: bug encontrado al cerrar la demo T61. Es anterior a la
+- [x] T61b. *(Agregada el 2026-10-05, a pedido del usuario: bug encontrado al cerrar la demo T61. Es anterior a la
       spec.)* `FlightSessionManager.create_session` (`cli/main.py`) guarda la sesión nueva con la clave tipeada sin
       revisar si ya existe. En la demo se tipeó `000`, la clave de la cuenta real de XAU: la sesión `demo-t61` pisó su
       entrada en `.data/flight_sessions.json`, y al borrarla se fue la entrada (no la DB, que quedó intacta). Sin esa
@@ -1621,6 +1621,17 @@
       Hecho cuando: los tests prueban que crear una sesión con una clave que ya existe se rechaza con un mensaje y no
       cambia el archivo, que el wizard vuelve a pedir la clave, y que una clave libre funciona como siempre. SUITE en
       verde.
+      Evidencia (2026-10-05):
+      - **`cli/main.py`:** `create_session` levanta `SessionKeyTakenError` si la clave (sin espacios) ya existe, sin
+        escribir el archivo. El flujo "Provision New Flight Session" muestra antes `Keys in use: 000, 001, ...`, y si se
+        tipea una usada avisa `Account key 000 is already used by XAUUSDT.P (flight_account_001_xauusd.db). Choose a
+        free key.` y vuelve a pedirla.
+      - **Tests:** `tests/test_flight_session_keys.py` (4): la clave usada se rechaza sin tocar el archivo (también con
+        espacios), una clave libre funciona igual, y el flujo vuelve a pedir la clave y nunca pisa la de XAU.
+      - **Mutación:** 4 de 4 muertos.
+      - **Lo que paró la SUITE:** la primera versión del test del flujo dejaba activa la sesión falsa en las globales del
+        CLI (`ACTIVE_SESSION`, `ACTIVE_ENGINE`), y 32 tests posteriores fallaban. Ahora el test las restaura.
+      SUITE: `1220 passed, 3 skipped, 405 warnings in 79.51s`; sin `.data/`.
 - [x] T62a. *(Agregada el 2026-10-03, N47.)* Retención de `_incoming`: al final de cada export se conservan las 3
       corridas más recientes del símbolo y se borran las demás, solo si son carpetas de corrida con CSV de
       temporalidades. (RF-1, RF-20)
