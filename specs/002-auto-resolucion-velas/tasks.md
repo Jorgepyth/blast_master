@@ -1691,9 +1691,13 @@
       `--accept` en los 4 campos de MAE/MFE; el usuario respondió `y` en el resto. Historial: XAU 168 fill, 167
       accepted_conflict y 80 legacy_move; US500 43 fill; BTC 62, 50 y 24; US100 13 fill y 5 legacy_move. Coincide con la
       vista previa, `integrity_check` ok en las 4, y una segunda corrida no cambiaría nada.
-- [ ] T64. Validación final (F8): recorrido RF por RF e INV por INV, citando cada test, con la suite completa. (Todos)
+- [x] T64. Validación final (F8): recorrido RF por RF e INV por INV, citando cada test, con la suite completa. (Todos)
       Hecho cuando: `validation.md` tiene un veredicto por RF e INV y el frontmatter `verdict:`, y SUITE en verde con la
       salida mostrada.
+      Evidencia (2026-10-05): `validation.md` § T64 tiene una fila por requisito (71 RF, 8 INV y 3 NFR), con sus tests,
+      la evidencia real cuando la hubo y el veredicto. El frontmatter dice `verdict: pass`. SUITE: `1220 passed,
+      3 skipped, 405 warnings in 89.25s`, sin `.data/`. INV-4, INV-5 y NFR-1 también se verificaron en git contra
+      `158869b`.
 
 ## Trazabilidad RF → Tarea
 

@@ -1,6 +1,6 @@
 ---
 spec: 002-auto-resolucion-velas
-verdict: pending  # lo fija T64, con un veredicto por RF e INV
+verdict: pass  # T64, 2026-10-05: los 71 RF, 8 INV y 3 NFR se cumplen; ver § T64
 ---
 
 # Validación de la spec 002
@@ -198,3 +198,117 @@ Coincide exactamente con la vista previa.
   corrida del backfill después de que su reloj se verifique.
 
 **Veredicto de T63:** cumplido.
+
+## T64. Validación final (2026-10-05)
+
+**SUITE**, en el worktree sin `.data/` (verificado antes y después), sobre `c173c73`, que es igual al checkout principal:
+
+```
+1220 passed, 3 skipped, 405 warnings in 89.25s (0:01:29)
+```
+
+Los 3 `skipped` son las pruebas opt-in contra Windows real (`WINDOWS_INTEROP_TESTS=1`, T20b). Baseline de INV-5 al
+empezar la spec: 429 passed y 1 skipped.
+
+**Cómo se armó la tabla:**
+- Para cada requisito de `spec.md` se buscaron los archivos de test que lo citan por nombre: 73 de 82 tienen al menos
+  uno.
+- Los 9 sin cita (INV-2, INV-3, INV-4, INV-5, INV-7, RF-8c, RF-9c, RF-10b y NFR-3) se buscaron por contenido y se citan
+  con el test concreto.
+- INV-4, INV-5 y NFR-1 se verificaron además en git, contra `158869b` (el commit anterior a la spec).
+- "real:" indica que el requisito también se vio con datos reales o con el usuario (T60 a T63).
+
+| Requisito | Evidencia | Veredicto |
+|---|---|---|
+| INV-1 | `test_wizard_safety_net.py` (orden de prompts, T5/T6), `test_efficiency_proposals.py`, `test_tactical_proposals.py`; Resolution Time es el único prompt nuevo | Cumple |
+| INV-2 | `test_efficiency_proposals.py::test_a_failing_proposal_never_blocks_the_audit`, `test_tactical_proposals.py::test_a_symbol_without_candles_or_a_failing_service_never_blocks`, `test_analysis_times.py::test_a_failing_check_never_blocks_the_save`, `test_auto_export.py`, `test_p2_model_hooks.py::test_a_failing_log_never_blocks_the_save` | Cumple |
+| INV-3 | `test_backfill_apply.py` (conflictos sin tocar, lista blanca, rollback), `test_backfill_gates.py`; real: T63 (solo fill, legacy_move y aceptados, con historial) | Cumple |
+| INV-4 | git: `core/math_engine.py`, `tools/notion_sync.py`, `core/edge_analysis.py`, `determine_market_bias` y los tests de los tres gates sin cambios desde `158869b`; `tools/p2_backtest.py` solo agrega 5M/1M, `evaluate_clock_entries` y columnas explícitas (recetas A–F iguales) | Cumple |
+| INV-5 | SUITE en verde en cada tarea (hoy 1220 passed); los 3 tests anteriores a la spec que cambiaron lo hicieron por su tarea: `test_cli_report_command.py` (T2), `test_export_p2_ohlc.py` (T17–T22b, T62b), `test_p2_clock.py` (T10) | Cumple |
+| INV-6 | `test_cli_candles.py` (el import legacy deja el origen byte a byte igual), `test_candle_bank.py` y `test_p2_finer_timeframes.py` (`CsvOHLCProvider` lee el banco); el cuaderno sigue leyendo `MT5Exports/{SÍMBOLO}/` (T60 lo reusó) | Cumple |
+| INV-7 | `test_analysis_times.py` (`ALL_PROMPTS = 22`: el wizard llega al final con los mismos prompts) | Cumple |
+| INV-8 | `test_auto_backfill.py` | Cumple |
+| RF-16 | `conftest.py`, `test_incoming_retention.py`, `test_isolation_guard.py` | Cumple |
+| RF-16b | `conftest.py` | Cumple |
+| RF-13 | `test_analysis_times.py`; real: T61 | Cumple |
+| RF-13b | `test_analysis_times.py` | Cumple |
+| RF-13c | `test_analysis_times.py` | Cumple |
+| RF-13d | `test_analysis_times.py`, `test_database_spec002_schema.py`; real: T61 | Cumple |
+| RF-13e | `test_analysis_times.py`, `test_database_spec002_schema.py`; real: T61 | Cumple |
+| RF-14 | `test_audit_efficiency_spec002.py`, `test_database_spec002_schema.py`, `test_wizard_safety_net.py` | Cumple |
+| RF-15 | `test_candle_sync.py`, `test_export_p2_ohlc.py`, `test_p2_finer_timeframes.py` | Cumple |
+| RF-15b | `test_export_p2_ohlc.py` | Cumple. La regla `us` del broker está sin confirmar hasta la ventana del 26 al 30 de octubre (recordatorio en CLAUDE.md) |
+| RF-15c | `test_candle_bank.py` | Cumple |
+| RF-1 | `test_candle_bank.py`, `test_cli_candles.py`; real: T59, T62 | Cumple |
+| RF-1b | `test_candle_bank.py` | Cumple |
+| RF-1c | `test_candle_bank.py`, `test_candle_sync.py` | Cumple |
+| RF-1d | `test_candle_bank.py` | Cumple |
+| RF-2 | `test_candle_bank.py`, `test_p2_clock.py`; real: T59, T62 | Cumple |
+| RF-2d | `test_candle_bank.py` | Cumple |
+| RF-2b | `test_candle_bank.py`, `test_p2_clock.py` | Cumple |
+| RF-2c | `test_candle_bank.py`, `test_cli_candles.py`; real: T59, T16c | Cumple |
+| RF-2e | `test_candle_bank.py`, `test_candle_sync.py`; real: US500 y USTEC no heredaron por la regla estricta (N43) | Cumple |
+| RF-4 | `test_candle_resolution.py`, `test_p2_finer_timeframes.py`, `test_p2_first_touch_detail.py` | Cumple |
+| RF-4b | `test_candle_resolution.py`, `test_p2_first_touch_detail.py` | Cumple |
+| RF-4c | `test_candle_resolution.py` | Cumple |
+| RF-4g | `test_candle_resolution.py` | Cumple |
+| RF-4h | `test_auto_resolution.py` | Cumple |
+| RF-4d | `test_candle_resolution.py`, `test_p2_first_touch_detail.py` | Cumple |
+| RF-4e | `test_auto_resolution.py`, `test_candle_resolution.py` | Cumple |
+| RF-4f | `test_p2_clock.py`, `test_p2_finer_timeframes.py`, `test_p2_first_touch_detail.py` | Cumple |
+| RF-5 | `test_candle_resolution.py`, `test_outcome_metrics.py` | Cumple |
+| RF-5b | `test_candle_resolution.py`, `test_efficiency_proposals.py` | Cumple |
+| RF-7 | `test_prompt_defaults.py`; real: T61 | Cumple |
+| RF-7e | `test_prompt_defaults.py`; real: T61 | Cumple |
+| RF-7f | `test_efficiency_proposals.py` | Cumple |
+| RF-7g | `test_audit_efficiency_spec002.py`, `test_wizard_safety_net.py` | Cumple |
+| RF-14b | `test_audit_efficiency_spec002.py`, `test_database_spec002_schema.py`; real: T61 | Cumple |
+| RF-8 | `test_candle_resolution.py` | Cumple |
+| RF-8b | `test_candle_resolution.py` (los tres tests de Liquidity Sweep), `test_efficiency_proposals.py` | Cumple |
+| RF-8c | Reemplazado por N52: `test_candle_resolution.py::test_propose_structural_no_longer_knows_about_overlap`, `test_auto_resolution.py::test_an_overlap_is_only_a_label_and_the_proposal_follows_the_touch` | Cumple, como lo reescribió N52 |
+| RF-8d | `test_candle_resolution.py` | Cumple |
+| RF-9 | `test_trade_proposals.py`; real: T61 | Cumple |
+| RF-9b | `test_trade_proposals.py` (`REASON_NO_INTERVAL`), `test_auto_backfill.py` | Cumple |
+| RF-9c | `test_trade_proposals.py` (`REASON_ZERO_R`, `test_zero_r_gives_no_could_hit_tp_either`) | Cumple |
+| RF-9d | `test_trade_proposals.py` | Cumple |
+| RF-10 | `test_auto_backfill.py`, `test_trade_proposals.py`; real: T61 | Cumple |
+| RF-10b | `test_trade_proposals.py::test_tp_and_sl_in_the_same_candle_gives_no_proposal` | Cumple |
+| RF-10d | `test_trade_proposals.py` | Cumple |
+| RF-10c | `test_tactical_proposals.py` | Cumple |
+| RF-3 | `test_analysis_times.py`, `test_candle_resolution.py` | Cumple |
+| RF-3b | `test_candle_resolution.py`, `test_resolution_report.py` | Cumple |
+| RF-6 | `test_cli_resolution_report.py`, `test_resolution_report.py`; real: T60 | Cumple |
+| RF-6b | `test_auto_resolution.py` | Cumple |
+| RF-21 | `test_criterios_doc_example.py`, `test_outcome_metrics.py`, `test_resolution_report.py`; real: T60 | Cumple |
+| RF-17 | `test_outcome_metrics.py`, `test_resolution_report.py`; real: T60 | Cumple |
+| RF-11 | `test_auto_backfill.py`, `test_cli_backfill.py`; real: T63 | Cumple |
+| RF-11b | `test_backfill_apply.py`; real: T63 | Cumple |
+| RF-11c | `test_auto_backfill.py`, `test_backfill_apply.py`; real: T63 | Cumple |
+| RF-11d | `test_backfill_gates.py`; real: T63 | Cumple |
+| RF-11e | `test_cli_backfill.py`; real: T63 | Cumple |
+| RF-18 | `test_backfill_apply.py`, `test_database_spec002_schema.py`; real: T63 | Cumple |
+| RF-19 | `test_backfill_view.py`, `test_cli_backfill.py`; real: T63 | Cumple |
+| RF-20 | `test_auto_export.py`; real: T62 | Cumple |
+| RF-20b | `test_auto_export_wait.py`; real: T62 | Cumple |
+| RF-20c | `test_auto_export_triggers.py`; real: T62 | Cumple |
+| RF-20d | `test_auto_export_triggers.py`; real: T62 | Cumple |
+| RF-20e | `test_auto_export_wait.py`, `test_candle_sync.py`; real: T62 (con N54) | Cumple, con N54: con MT5 cerrado el exportador lo abre |
+| RF-20f | `test_auto_export.py`, `test_candle_sync.py`; real: T62 | Cumple |
+| RF-12 | `test_p2_model_feedback.py`, `test_p2_model_hooks.py`; real: primera línea del registro el 2026-10-05 | Cumple |
+| RF-12b | `test_p2_model_hooks.py`; real: catch-up de US500 el 2026-10-05 | Cumple |
+| RF-12c | `test_p2_model_feedback.py` | Cumple |
+| RF-12d | `test_p2_model_hooks.py` | Cumple |
+| RF-12e | `test_p2_model_feedback.py` | Cumple |
+| NFR-1 | `test_database_spec002_schema.py`; git: en `tools/database.py` solo hay `ADD COLUMN` y una tabla nueva; migración real T58 y backfill T63 con las 3 puertas | Cumple |
+| NFR-2 | `tests/conftest.py` y `test_isolation_guard.py`; `.data/` verificado ausente antes y después de cada SUITE | Cumple |
+| NFR-3 | Demo T61 en la Flight Session `demo-t61`, borrada al terminar (`validation.md` § T61) | Cumple |
+
+**Veredicto:** la spec 002 se cumple.
+
+**Lo que queda fuera del veredicto** (no son requisitos incumplidos):
+- **La regla de horario de verano del broker (`BROKER_DST_RULE=us`)** está sin confirmar. Solo se distingue de la
+  europea del 26 al 30 de octubre de 2026 (recordatorio en CLAUDE.md).
+- **USTEC sigue con `clock_unverified`** (9 de 10 referencias propias). US100 no resuelve nada, y sus 5 horas de toque
+  quedan vacías hasta que el reloj se verifique; las llena el próximo backfill (T49b).
+- **El aviso de pydantic** al guardar un Tactical es anterior a la spec (T61).
+- **El pedido del usuario de colocar órdenes en MT5 desde el Tactical Audit** es una spec nueva (003).
