@@ -1612,6 +1612,15 @@
       `demo-t61`. Las propuestas aceptadas se guardaron como propuestas (Confirmed, expansión significativa, N/A,
       4093.96/4054.14, 19:00 `candles`; Tactical 0.52/2.05/yes). En un segundo análisis, el MAE (4095) y la hora (19:05)
       corregidos se guardaron con `corrected`. Pendiente: borrar la sesión.
+- [ ] T61b. *(Agregada el 2026-10-05, a pedido del usuario: bug encontrado al cerrar la demo T61. Es anterior a la
+      spec.)* `FlightSessionManager.create_session` (`cli/main.py`) guarda la sesión nueva con la clave tipeada sin
+      revisar si ya existe. En la demo se tipeó `000`, la clave de la cuenta real de XAU: la sesión `demo-t61` pisó su
+      entrada en `.data/flight_sessions.json`, y al borrarla se fue la entrada (no la DB, que quedó intacta). Sin esa
+      entrada, el backup del 2026-10-05 no respaldó XAU, y la cuenta no aparece en el menú de sesiones. La entrada se
+      restauró ese día desde el backup del 2026-10-03, con aprobación del usuario. (INV-2)
+      Hecho cuando: los tests prueban que crear una sesión con una clave que ya existe se rechaza con un mensaje y no
+      cambia el archivo, que el wizard vuelve a pedir la clave, y que una clave libre funciona como siempre. SUITE en
+      verde.
 - [x] T62a. *(Agregada el 2026-10-03, N47.)* Retención de `_incoming`: al final de cada export se conservan las 3
       corridas más recientes del símbolo y se borran las demás, solo si son carpetas de corrida con CSV de
       temporalidades. (RF-1, RF-20)

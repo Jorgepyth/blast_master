@@ -140,4 +140,14 @@ la hora real del guardado. Todo coincide con lo calculado antes de la demo con `
   de los 6 campos monetarios de la Fase 2f, y ya aparece en el test de caracterización T5, escrito antes de tocar el
   wizard. No afecta lo guardado.
 
-**Veredicto de T61:** cumplido. Falta que el usuario borre la sesión.
+**Veredicto de T61:** cumplido. El usuario borró la sesión el 2026-10-05.
+
+**Incidente al borrar la sesión (2026-10-05):** la sesión se creó con la clave `000`, que era la de la cuenta real de
+XAU. Lo que pasó:
+- `create_session` pisó la entrada de XAU en `.data/flight_sessions.json` sin avisar, y al borrar la demo la entrada
+  desapareció.
+- La DB de XAU no se tocó: `integrity_check` ok, 81 análisis, 82 ejecuciones, sin cambios desde el 2026-10-03.
+- El backup del 2026-10-05 07:19 salió sin XAU, porque descubre las cuentas en ese archivo.
+- Ese mismo día, con aprobación del usuario, se restauró la entrada exacta desde el backup del 2026-10-03, sin tocar
+  las otras tres. Hay una copia previa del archivo en el scratchpad.
+- El bug se corrige en T61b.
