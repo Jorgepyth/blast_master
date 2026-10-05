@@ -1605,7 +1605,7 @@
         - Los 38 de entonces dan el mismo primer toque: ni las velas de 1M/5M ni el ancla cambiaron nada.
         - Se suman 6 retroactivos recuperados (N50), que ganan los 6, y `792518cd`, que tocó la invalidación el
           2026-09-27, después de la fecha de los CSV de entonces.
-- [ ] T61. 🖐 Demo en una Flight Session descartable: un Efficiency Audit con propuestas aceptadas y una corregida,
+- [x] T61. 🖐 Demo en una Flight Session descartable: un Efficiency Audit con propuestas aceptadas y una corregida,
       más un Tactical con MAE/MFE y `Could hit TP?` propuestos. (RF-7, RF-9, RF-10)
       Hecho cuando: queda documentado en `validation.md` con la salida, y la Flight Session se borra al terminar.
       Evidencia (2026-10-05), detalle en `validation.md` § T61: análisis `82c1c17c` rehecho como retroactivo en
@@ -1665,13 +1665,17 @@
       - **Llega sin copiar nada:** el `EXPORTER_WIN_PATH` del `.env` apunta al archivo del checkout principal por
         `\\wsl.localhost`, así que el mensaje nuevo se ve desde la próxima integración.
       SUITE: `1216 passed, 3 skipped, 405 warnings in 72.33s`; sin `.data/`.
-- [ ] T63. 🖐 Backfill real:
+- [x] T63. 🖐 Backfill real:
       1. dry-run y revisión de la vista git-graph;
       2. las 3 puertas (copia, backup y tu aprobación);
       3. `--apply`;
       4. conteo de campos llenados, conflictos aceptados y diferencias. (RF-11 a RF-11e, RF-18, RF-19)
 
       Hecho cuando: los conteos quedan en `validation.md` y `backfill_history` tiene una fila por cambio.
+      Evidencia (2026-10-05), detalle en `validation.md` § T63: corrida `e36eadb7`, con un backup de 6/6 previo y
+      `--accept` en los 4 campos de MAE/MFE; el usuario respondió `y` en el resto. Historial: XAU 168 fill, 167
+      accepted_conflict y 80 legacy_move; US500 43 fill; BTC 62, 50 y 24; US100 13 fill y 5 legacy_move. Coincide con la
+      vista previa, `integrity_check` ok en las 4, y una segunda corrida no cambiaría nada.
 - [ ] T64. Validación final (F8): recorrido RF por RF e INV por INV, citando cada test, con la suite completa. (Todos)
       Hecho cuando: `validation.md` tiene un veredicto por RF e INV y el frontmatter `verdict:`, y SUITE en verde con la
       salida mostrada.

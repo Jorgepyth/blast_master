@@ -151,3 +151,50 @@ XAU. Lo que pasó:
 - Ese mismo día, con aprobación del usuario, se restauró la entrada exacta desde el backup del 2026-10-03, sin tocar
   las otras tres. Hay una copia previa del archivo en el scratchpad.
 - El bug se corrige en T61b.
+
+## T63. Backfill real (2026-10-05)
+
+**Antes de aplicar:**
+- **Backup:** el del 2026-10-05 08:38, 6 de 6 artefactos en local, USB y B2. El anterior de ese día había salido sin
+  XAU por el incidente de T61.
+- **Vista previa** con `--accept structural_mae --accept structural_mfe --accept mae_adverse --accept mfe_favorable`:
+
+  | Cuenta | fill | conflict | unchanged | legacy_move |
+  |---|---|---|---|---|
+  | 000 XAU | 168 | 167 | 274 | 80 |
+  | 001 US500 | 43 | 0 | 0 | 0 |
+  | 002 BTC | 62 | 50 | 49 | 24 |
+  | 003 US100 | 13 | 0 | 0 | 5 |
+
+  `--accept` tomaba 164 conflictos de MAE/MFE.
+- **US500 verificó su reloj por referencias ese mismo día (08:48)**, por eso pasó de 10 a 43 fills: sus 10 análisis ya
+  se resuelven. US100 sigue con `clock_unverified`.
+- **Los 14 conflictos de `resolution_type` y los 7 fills** se le mostraron al usuario análisis por análisis, con el
+  efecto en el win rate. Las cifras del sistema no cambian. Solo baja un win rate contado directo del campo de tipo
+  (XAU direccional, de 73% a 65%), y queda al nivel de S1 por velas.
+- **El usuario respondió `y` a todos los conflictos.**
+
+**Aplicado** con `--apply` y las mismas opciones, en la corrida `e36eadb7` (2026-10-05 11:18). `backfill_history`, una
+fila por cambio:
+
+| Cuenta | fill | accepted_conflict | legacy_move | integrity_check |
+|---|---|---|---|---|
+| 000 XAU | 168 | 167 | 80 | ok |
+| 001 US500 | 43 | 0 | 0 | ok |
+| 002 BTC | 62 | 50 | 24 | ok |
+| 003 US100 | 13 | 0 | 5 | ok |
+
+Coincide exactamente con la vista previa.
+
+**Después:**
+- **Idempotencia:** el plan, recalculado sobre copias de las DBs ya escritas, da solo `unchanged` (XAU 522, US500 32,
+  BTC 135) y nada para US100.
+- **Valores, por ejemplo:**
+  - `d55f09b2` quedó Invalidated, con la hora del toque (06-29 08:06, `candles`) y la hora vieja del guardado en
+    `audit_registration_time`. Su `specific_bias_compliance` sigue `Valid` y su Real Bias B sigue igual (INV-8).
+  - `792518cd` (audit nunca hecho) tiene el tipo y la hora; Real Bias B y compliance siguen vacíos.
+  - En XAU, `resolution_time_source` es `candles` en 75 audits y `no_levels` en 6.
+- **US100:** sus 5 audits viejos tienen `resolution_time` vacía con `clock_unverified`. Por T49b se llenan en la primera
+  corrida del backfill después de que su reloj se verifique.
+
+**Veredicto de T63:** cumplido.
