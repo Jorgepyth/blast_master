@@ -1499,6 +1499,10 @@
       `d6cf985`, 5 commits: T60, los registros de T62, T62b, N54 y el cierre de T62. La SUITE de la rama dio
       `1216 passed, 3 skipped`, sin `.data/`. Ningún archivo del usuario entre los cambiados, y los 30 quedaron byte a
       byte iguales.
+      **12.ª integración 2026-10-05 (aprobada por el usuario: "sí, integra y empieza T64"):** avance rápido de
+      `a5948df` a `209b98e`, 4 commits: el registro de T61, la tarea y el arreglo de T61b, y el registro de T63. La
+      SUITE de la rama dio `1220 passed, 3 skipped`, sin `.data/`. Ningún archivo del usuario entre los cambiados, y
+      los 30 quedaron byte a byte iguales.
 - [x] T58a. *(Agregada el 2026-10-03, N48.)* El banco de velas en el backup 3-2-1: artefacto `candle_bank.tar.gz` en
       local, USB y B2, y su restore en `<destino>/candle_bank/`. (NFR-1)
       Hecho cuando: los tests prueban el archivo (solo los CSV y `status.json` del banco, rutas relativas), la subida
