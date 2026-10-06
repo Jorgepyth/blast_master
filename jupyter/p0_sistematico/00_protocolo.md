@@ -282,3 +282,40 @@ o Insuficiente. Es consecuencia de las reglas pre-registradas, no un cambio.
 - §11 no se ejecutó (`ALLOW_CONFIRMATORY = False`). Para habilitarlo hace falta la aprobación escrita del usuario (R10).
 - Suite con las utilidades de F4 (modo de zona ATR14, verdad con otra ancla, predicciones en lote, regla v1.2 en D18):
   **1282 passed, 3 skipped**.
+
+## 6. Verificación final (F6, 2026-10-06)
+
+- **Confirmatorio (F5):** el usuario lo aprobó después de leer el exploratorio, con el mensaje "Continua" en respuesta
+  al pedido de aprobación escrita. Se ejecutó **una sola vez**, el 2026-10-06 de 12:34 a 12:55 GT, con
+  `ALLOW_CONFIRMATORY = True` en el cuaderno. Antes se hizo una prueba en seco del código de §11 y §12, sobre una copia
+  en el scratchpad que usaba los datos **exploratorios**, ya vistos, en lugar del confirmatorio. Sirvió para que un
+  error de código no obligara a calcularlo dos veces. Las lecturas de §11 y §12 se agregaron después, sin volver a
+  ejecutar el cuaderno.
+- **Suite:** `conda run -n blast_master pytest -q -p no:cacheprovider`, **1282 passed, 3 skipped** en 86 s. No se creó
+  `.data/` en el worktree.
+- **Foto (E3):** al terminar, los 20 archivos siguen coincidiendo con `foto_manifest.json` (sha256 del manifiesto
+  `e396ef6a4761bbc818133f41b3587d19ef191a276faa4e6bb2ffc80b74fc5d37`).
+- **Pre-registro:** versión vigente v1.2, sha256 `a3acf7007cdb9099b9a72c31bf335abfb2fc0fa8e9e9508a0bb368637ff5f1b3`.
+  Las tres versiones (`3c12d0f`, `4f23145`, `c22d550`) se commitearon solas, antes de F4 y antes de cualquier
+  resultado. El cuaderno las cita en cada sección (INV-8).
+- **Archivos generados:**
+  - `jupyter/p0_sistematico.ipynb`, sha256 `527d64e47ee5d20dc2c3f4aeeb2cbf31993ebe420debdc6d7a97732c826b88f4`;
+  - `jupyter/p0_sistematico.html`, sha256 `2c9d71c0c8b6c26860386b9ee91198e6e526df90fd2571be81da6269606e72b9`;
+  - `jupyter/p0_sistematico/resultados.csv`, sha256
+    `67c81f8e46b57f411edcaf8afec32e55f21a93fa212af0e1939f309c82ba6a04`.
+- **R1:** `git diff --stat CLAUDE.md` vacío; `readlink AGENTS.md` = `CLAUDE.md`.
+- **Lecciones para un próximo pre-registro.** No cambian nada de esta evaluación (R7):
+  - "Ganador > su gemelo" con b > c y sin pedir significancia dejó que **un solo análisis** decidiera la condición.
+    Los modelos casi nunca difieren en dirección (≤ 1 discordancia por par), así que una comparación pareada solo entre
+    análisis donde opinan los dos casi no mide el aporte de Fibonacci, que está en cuándo se abstiene el modelo.
+  - "Fib nulo" pedía n suficiente en T3a **y** T3b. Con T3b siempre más chico (los extremos se tocan menos), un T3a nulo
+    con datos suficientes no alcanzó para abandonar.
+  - Con fractales de 2 velas, la mayoría de las TF quedan en rango en el ancla, y su puntaje es 0.
+
+## 7. Resultado en una línea
+
+**Insuficiente (D18):** con datos suficientes, los retrocesos de Fibonacci no rebotan más que niveles placebo (T3a,
+OR 0.97 [0.82, 1.14] en XAU, 1.00 en BTC). Ningún modelo A–G se distingue del P0 del operador (B 11 contra 11) ni del
+azar (R13 p = 0.37; T6 falla). Pero T3b no llegó a 480 eventos por brazo y B le ganó a su gemelo por un único análisis,
+así que las reglas no permiten abandonar: se acumula (más historia de velas para T3b, y B congelado contra los
+análisis nuevos de §14).
