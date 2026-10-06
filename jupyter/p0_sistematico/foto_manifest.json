@@ -1,0 +1,140 @@
+{
+  "created": "2026-10-06",
+  "source": ".data/candle_bank (main checkout)",
+  "files": {
+    "XAUUSD/1W.csv": {
+      "sha256": "44ae21982a201c53c8073cd2899e6ce8b05b49cb0591a18c574a0d40edbc5853",
+      "same_as_source_now": true,
+      "rows": 1485,
+      "first": "1998-04-18 15:00:00",
+      "last": "2026-09-26 15:00:00"
+    },
+    "XAUUSD/1D.csv": {
+      "sha256": "6e48d77b54be9c834ffb0c54ddb9aa53df0436c1d0be0927a040867b6eaedefc",
+      "same_as_source_now": true,
+      "rows": 1232,
+      "first": "2021-12-26 16:00:00",
+      "last": "2026-10-01 15:00:00"
+    },
+    "XAUUSD/12H.csv": {
+      "sha256": "39ead389553758b7051a4c42720cab9b03efca30e0bb20e68959f4874e04cc58",
+      "same_as_source_now": true,
+      "rows": 1337,
+      "first": "2024-03-03 16:00:00",
+      "last": "2026-10-04 15:00:00"
+    },
+    "XAUUSD/4H.csv": {
+      "sha256": "75676594cac134b2bf4d4001a8889b798656bbf4a5323ab21a9af14b12f736e8",
+      "same_as_source_now": true,
+      "rows": 1755,
+      "first": "2025-08-17 15:00:00",
+      "last": "2026-10-05 07:00:00"
+    },
+    "XAUUSD/1H.csv": {
+      "sha256": "43f5689aac97dbd35dd293220a3d60647301ffa1e0b2c4d5b29b76b5a58f00ec",
+      "same_as_source_now": true,
+      "rows": 3433,
+      "first": "2026-03-08 16:00:00",
+      "last": "2026-10-05 10:00:00"
+    },
+    "XAUUSD/30M.csv": {
+      "sha256": "294e29d452e85fcfb8da4d5c3ec0d44bf9cd655df92239c891209e546ae78833",
+      "same_as_source_now": true,
+      "rows": 5883,
+      "first": "2026-04-07 23:00:00",
+      "last": "2026-10-05 10:30:00"
+    },
+    "XAUUSD/15M.csv": {
+      "sha256": "d9c553e940e89a125e6d9beba93fe8ad709692dc4149a7cf823e0f3b0f685c34",
+      "same_as_source_now": true,
+      "rows": 10597,
+      "first": "2026-04-26 16:00:00",
+      "last": "2026-10-05 11:00:00"
+    },
+    "XAUUSD/5M.csv": {
+      "sha256": "2c84b101114fea24caee29702b33521a977f1ec2beb7e51f2a4da519b12c735f",
+      "same_as_source_now": true,
+      "rows": 29834,
+      "first": "2026-05-05 17:40:00",
+      "last": "2026-10-05 11:10:00"
+    },
+    "XAUUSD/1M.csv": {
+      "sha256": "b3e545e099418f77b265e38082785e4a9f6e8a466abd30e8eb86f24483a297cc",
+      "same_as_source_now": true,
+      "rows": 144933,
+      "first": "2026-05-10 16:00:00",
+      "last": "2026-10-05 11:17:00"
+    },
+    "XAUUSD/status.json": {
+      "sha256": "d63605caea400561ffa26ce1221873208458b2d50683ff2a7c85398bde5f8a3d",
+      "same_as_source_now": true
+    },
+    "BTCUSD/1W.csv": {
+      "sha256": "0b92ac171f730bc488ec4a3160de7a2d10d43b25953551a77b6e81f8f138847c",
+      "same_as_source_now": true,
+      "rows": 810,
+      "first": "2011-03-19 15:00:00",
+      "last": "2026-09-26 15:00:00"
+    },
+    "BTCUSD/1D.csv": {
+      "sha256": "c563802c54e854a62ce96d82c185e77680389ba4777b6a394dcef762ed86a995",
+      "same_as_source_now": true,
+      "rows": 1702,
+      "first": "2022-02-06 16:00:00",
+      "last": "2026-10-04 15:00:00"
+    },
+    "BTCUSD/12H.csv": {
+      "sha256": "8cc484f8f11f52a9868c44ccb82f3f6e19ea2c105946abf3f7d103ca8b73acab",
+      "same_as_source_now": true,
+      "rows": 1805,
+      "first": "2024-04-16 15:00:00",
+      "last": "2026-10-05 15:00:00"
+    },
+    "BTCUSD/4H.csv": {
+      "sha256": "dbcdf910442b92c3030f2652d0ad24340f4d5f5d4c213d677b5c569135190964",
+      "same_as_source_now": true,
+      "rows": 2215,
+      "first": "2025-10-01 19:00:00",
+      "last": "2026-10-05 23:00:00"
+    },
+    "BTCUSD/1H.csv": {
+      "sha256": "9df98b490777412ddefd287a54685e2369bff26fa5ff8aa72747ea00319c430b",
+      "same_as_source_now": true,
+      "rows": 4053,
+      "first": "2026-04-19 17:00:00",
+      "last": "2026-10-06 05:00:00"
+    },
+    "BTCUSD/30M.csv": {
+      "sha256": "41c6e71b29392a605d07e7c751c67bc5a74bb129d471236d37bd55dfe48258f1",
+      "same_as_source_now": true,
+      "rows": 6488,
+      "first": "2026-05-23 00:30:00",
+      "last": "2026-10-06 05:30:00"
+    },
+    "BTCUSD/15M.csv": {
+      "sha256": "b4b68d60db378e8ad2b8d5d31a34ea99b6a45f2ed01d7907235d8a696de1b743",
+      "same_as_source_now": true,
+      "rows": 11362,
+      "first": "2026-06-08 16:15:00",
+      "last": "2026-10-06 06:00:00"
+    },
+    "BTCUSD/5M.csv": {
+      "sha256": "bd376ce4de20cea4abb76aa12f3fe30bc0ed3b4c16bc5c6800c1a9f595c0f1c1",
+      "same_as_source_now": true,
+      "rows": 30852,
+      "first": "2026-06-19 18:55:00",
+      "last": "2026-10-06 06:15:00"
+    },
+    "BTCUSD/1M.csv": {
+      "sha256": "819a56a434284a2449041594db3be4c75e1c64991fc4c6e146ee9e9ef962f772",
+      "same_as_source_now": true,
+      "rows": 147605,
+      "first": "2026-06-24 05:31:00",
+      "last": "2026-10-06 06:19:00"
+    },
+    "BTCUSD/status.json": {
+      "sha256": "5de500d76753bf3b6c9ab4a607c7e61c3806d8861506f638fb812b2cbbe30432",
+      "same_as_source_now": true
+    }
+  }
+}
