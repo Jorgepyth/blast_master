@@ -10,9 +10,12 @@
     `51724e5530f0ad2fca2558707e01e284ec439a0c721036c27677251129b66931`;
   - v1.1: commit `4f23145`, 2026-10-06 09:35:49 GT, sha256
     `39e748b7aa0492aa4c303f484fb52f8a46db42cdaceb0579e789f192722dbefe`. Agrega el camino con respaldo grueso
-    (decidido por el usuario en la puerta de F1) y la lectura de `12T-`/`4T-` (§3, puntos 1 y 6).
-- **Corte de la evidencia independiente (§14 del pre-registro):** ancla posterior a 2026-10-06 09:35:49 GT (commit de
-  la v1.1).
+    (decidido por el usuario en la puerta de F1) y la lectura de `12T-`/`4T-` (§3, puntos 1 y 6);
+  - v1.2: commit `c22d550`, 2026-10-06 10:21:09 GT, sha256
+    `a3acf7007cdb9099b9a72c31bf335abfb2fc0fa8e9e9508a0bb368637ff5f1b3`. Si el ganador es A (sin gemelo placebo),
+    "ganador ≤ su gemelo" se da por cumplido (decidido por el usuario al empezar F4, antes de cualquier resultado).
+- **Corte de la evidencia independiente (§14 del pre-registro):** ancla posterior a 2026-10-06 10:21:09 GT (commit de
+  la v1.2, la última versión).
 
 ## 1. Lectura obligatoria: qué se usa y de dónde
 
@@ -268,3 +271,14 @@ o Insuficiente. Es consecuencia de las reglas pre-registradas, no un cambio.
 `conda run -n blast_master pytest -q -p no:cacheprovider`: **1277 passed, 3 skipped** en 62 s (la suite base tenía
 1220 passed y 3 skipped; los 57 nuevos son `tests/test_p0_structure.py`, `tests/test_p0_fib.py` y
 `tests/test_p0_sistematico.py`). No se creó `.data/` en el worktree.
+
+### 5.8 F4: ejecución del exploratorio
+
+- `jupyter/p0_sistematico.ipynb`, ejecutado dos veces, con salidas idénticas (INV-2); 222 s por corrida. HTML sin código
+  en `jupyter/p0_sistematico.html`; una fila por análisis en `jupyter/p0_sistematico/resultados.csv`.
+- La foto se verificó contra el manifiesto al empezar (sha256 del manifiesto `e396ef6a4761bbc8…`), y el pre-registro
+  contra la v1.2 (`a3acf700…`).
+- T2: 97 análisis recalculados con las velas cortadas en su ancla, 0 diferencias.
+- §11 no se ejecutó (`ALLOW_CONFIRMATORY = False`). Para habilitarlo hace falta la aprobación escrita del usuario (R10).
+- Suite con las utilidades de F4 (modo de zona ATR14, verdad con otra ancla, predicciones en lote, regla v1.2 en D18):
+  **1282 passed, 3 skipped**.

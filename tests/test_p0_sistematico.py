@@ -350,6 +350,15 @@ def test_d18_first_matching_row():
         ps.DECISION_INSUFFICIENT
 
 
+def test_d18_winner_a_has_no_twin_v12():
+    # v1.2: si gana A, "ganador ≤ su gemelo" se da por cumplido, aunque no haya pares.
+    assert ps.decide_d18(_inputs(winner_is_a=True, twin_pairs=0, fib_positive=True, btc_same_sign=True))[0] == \
+        ps.DECISION_ABANDON_FIB
+    assert ps.decide_d18(_inputs(winner_is_a=True, twin_pairs=0, t6_fails=True))[0] == ps.DECISION_ABANDON_P0
+    # Modificar sigue antes que los abandonos.
+    assert ps.decide_d18(_inputs(winner_is_a=True, twin_pairs=0, t5_passing=1))[0] == ps.DECISION_MODIFY
+
+
 def test_label_t8():
     assert ps.label_t8(10, 5, 0, 0.01, (0.1, 0.5)) == ps.LABEL_NO_CONCLUYENTE
     assert ps.label_t8(30, 9, 1, 0.02, (0.05, 0.4), p_r13=0.01, involves_winner=True) == ps.LABEL_SUPERA
@@ -370,3 +379,63 @@ def test_dst_window_and_anomalous_gaps():
     bars = ps.Bars.from_lists(times, [1.0] * len(times), [0.0] * len(times), [0.5] * len(times), H)
     assert ps.anomalous_gaps(bars, "XAUUSD") == [(datetime(2026, 6, 29, 0), datetime(2026, 6, 29, 1))]
     assert len(ps.anomalous_gaps(bars, "BTCUSD")) == 2
+
+
+# ---------------------------------------------------------------- utilidades de F4
+
+def test_logit_point_estimate_without_bootstrap():
+    df = _events_frame(n_legs=100, p_p0=0.7, p_pl=0.5)
+    point = ps.logit_test(df, n_boot=0, min_arm=10)
+    full = ps.logit_test(df, n_boot=20, min_arm=10)
+    assert point.odds_ratio == pytest.approx(full.odds_ratio)
+    assert point.p_one_sided is None and point.n_boot_ok == 0
+
+
+def _ladder_1h(prices, start=T0):
+    """1H con (high, low, close) por vela."""
+    return {"1H": [Candle(start + i * H, c, h, lo, c) for i, (h, lo, c) in enumerate(prices)]}
+
+
+def test_geometric_truth_at_is_geometric_not_by_level_name():
+    ladder = _ladder_1h([(100.5, 99.5, 100.0), (101.0, 99.8, 100.5), (103.0, 100.2, 102.5), (106.0, 102.0, 105.5)])
+    anchor = T0 + 2 * H  # precio de partida: cierre de la vela 1 (100.5)
+    # Objetivo arriba (105), invalidación abajo (98): tocó primero el de arriba en la vela 3.
+    up = ps.AnalysisInput("x1", "XAUUSD", "000", anchor, anchor, None, False, "Bullish", "Direccionales", 100.5,
+                          105.0, 98.0, 105.0, 98.0, 1, "Mid", "")
+    t = ps.geometric_truth_at(up, ladder)
+    assert t.upper_first is True and t.touch_time == T0 + 3 * H
+    # Mismos niveles con los nombres al revés (objetivo abajo): sigue siendo "arriba primero".
+    down = ps.AnalysisInput("x2", "XAUUSD", "000", anchor, anchor, None, False, "Bearish", "Direccionales", 100.5,
+                            105.0, 98.0, 98.0, 105.0, -1, "Mid", "")
+    t2 = ps.geometric_truth_at(down, ladder)
+    assert t2.upper_first is True and t2.code == OUTCOME_INVALIDATED
+
+
+def test_atr_zone_mode_calibrates_the_median_width():
+    # 40 velas de 1H en zigzag para tener tramos con ATR14 definido.
+    rows = []
+    for i in range(60):
+        base = 100 + (i % 6) * (1 if (i // 6) % 2 == 0 else -1) + (i // 12)
+        rows.append((base + 1.0, base - 1.0, base))
+    candles = {"1H": [Candle(T0 + i * H, c, h, lo, c) for i, (h, lo, c) in enumerate(rows)]}
+    market = ps.Market("SYN", candles, zone_mode="atr")
+    legs = [info["leg"] for info in ps.leg_intervals(market.timelines["1H"]).values()]
+    hw, c = ps.atr_half_widths(market, "1H", legs)
+    finite = [leg for leg in legs if np.isfinite(hw[leg.key])]
+    assert finite and c > 0
+    assert np.median([hw[leg.key] for leg in finite]) == pytest.approx(
+        np.median([ps.ZONE_DELTA * leg.size for leg in finite]))
+    leg = finite[0]
+    assert market.half_width("1H", leg, (0.382,)) == {0.382: hw[leg.key]}
+    assert ps.Market("SYN", candles).half_width("1H", leg, (0.382,)) is None
+    ps.level_events(market, "1H")  # corre con el ancho por ATR
+
+
+def test_predictions_for_matches_predict_at():
+    market = _market(_synthetic_candles())
+    items = [_item(f"t{k}", T0 + k * H) for k in (12, 15, 16)]
+    x0, readings = ps.predictions_for(items, market)
+    for k, item in enumerate(items):
+        direct = ps.predict_at(market, item.anchor)
+        assert all(x0[name][k] == direct[name]["x0"] for name in ps.SPECS_BY_NAME)
+    assert len(readings) == 3

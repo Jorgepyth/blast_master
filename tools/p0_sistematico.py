@@ -31,13 +31,14 @@ import pandas as pd
 from sqlalchemy import text
 
 from cli.main import determine_market_bias
-from config.auto_resolution import RECOVERED_BACKDATED, S4_WINDOW_H
+from config.auto_resolution import RECOVERED_BACKDATED, S4_WINDOW_H, TOUCH_EXCEPTIONS
 from core.candle_resolution import (
     LADDER,
     OUTCOME_CONFIRMED,
     OUTCOME_INVALIDATED,
     OUTCOME_OPEN,
     Candle,
+    resolve_analysis,
     start_price,
 )
 from core.outcome_metrics import AnalysisOutcome, analysis_anchor, counted_outcomes
@@ -179,9 +180,22 @@ class Market:
     candles: Dict[str, List[Candle]]
     n: int = FRACTAL_N
     wick_invalidation: bool = False
+    zone_mode: str = "delta"  # "delta" (δ·|B−A|) o "atr" (sensibilidad T11)
     bars: Dict[str, Bars] = field(default_factory=dict)
     paths: Dict[str, Path] = field(default_factory=dict)
     timelines: Dict[str, list] = field(default_factory=dict)
+    _atr_hw: Dict[str, Dict[tuple, float]] = field(default_factory=dict)
+
+    def half_width(self, tf: str, leg: Leg, levels: Sequence[float]) -> Optional[Dict[float, float]]:
+        """Semiancho de zona por nivel: None con δ·|B−A|; con "atr", c·ATR14 al confirmarse B (T11). La constante c
+        se calibra con todos los tramos de la TF en la foto: es una escala, no un resultado."""
+        if self.zone_mode == "delta":
+            return None
+        if tf not in self._atr_hw:
+            legs = [info["leg"] for info in leg_intervals(self.timelines[tf]).values()]
+            self._atr_hw[tf], _ = atr_half_widths(self, tf, legs)
+        hw = self._atr_hw[tf].get(leg.key, np.nan)
+        return {r: hw for r in levels}
 
     def __post_init__(self):
         self.bars = {tf: bars_of(self.candles[tf], tf) for tf in STRUCTURE_TFS if self.candles.get(tf)}
@@ -199,10 +213,10 @@ class Market:
 
 
 def load_market(foto_dir: str, symbol: str, n: int = FRACTAL_N, wick_invalidation: bool = False,
-                candles: Optional[Mapping[str, List[Candle]]] = None) -> Market:
+                candles: Optional[Mapping[str, List[Candle]]] = None, zone_mode: str = "delta") -> Market:
     if candles is None:
         candles = {tf: read_candles(os.path.join(foto_dir, symbol, f"{tf}.csv")) for tf in ALL_TFS}
-    return Market(symbol, dict(candles), n=n, wick_invalidation=wick_invalidation)
+    return Market(symbol, dict(candles), n=n, wick_invalidation=wick_invalidation, zone_mode=zone_mode)
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +326,7 @@ def read_tf(market: Market, tf: str, tau: datetime, level_set: str) -> TfReading
     if pt.state == RANGE:
         return TfReading(tf, RANGE, pt.leg, SIT_RANGE)
     levels = P0_LEVELS if level_set == "p0" else PLACEBO_LEVELS
-    events = tf_events_at(market, tf, pt.leg, tau, levels)
+    events = tf_events_at(market, tf, pt.leg, tau, levels, half_width=market.half_width(tf, pt.leg, levels))
     if not events:
         return TfReading(tf, pt.state, pt.leg, SIT_NO_EVENT)
     # Último por entrada. Si una misma vela entró a varias zonas, el último es el más avanzado en el sentido de su
@@ -477,6 +491,7 @@ class GeometricTruth:
     upper_first: Optional[bool]
     touch_time: Optional[datetime]
     path_end: Optional[datetime]
+    overlap: bool = False       # etiqueta Overlap del resolvedor (N36): nunca excluye
 
 
 def geometric_truths(db_path: str, foto_dir: str, account: str) -> Dict[str, GeometricTruth]:
@@ -492,8 +507,36 @@ def geometric_truths(db_path: str, foto_dir: str, account: str) -> Dict[str, Geo
             upper = (res.thesis_direction == "long") == (code == OUTCOME_CONFIRMED)
         out[proposal.trade_id] = GeometricTruth(proposal.trade_id, code, upper,
                                                 touch.touch_time if touch and upper is not None else None,
-                                                touch.path_end if touch else None)
+                                                touch.path_end if touch else None, proposal.overlap is not None)
     return out
+
+
+def geometric_truth_at(item: AnalysisInput, ladder: Mapping[str, Sequence[Candle]]) -> GeometricTruth:
+    """
+    La verdad de un análisis con su `anchor` (que puede venir de la sensibilidad de ancla de T11), con el mismo
+    resolvedor que `AccountResolver.propose`: `resolve_analysis` y la excepción de toque de `TOUCH_EXCEPTIONS`.
+    """
+    exception = TOUCH_EXCEPTIONS.get(item.trade_id)
+    res = resolve_analysis(item.anchor, ladder, item.evp, item.si, touched_level=exception[0] if exception else None)
+    touch = res.first_touch
+    upper = None
+    if res.outcome in (OUTCOME_CONFIRMED, OUTCOME_INVALIDATED):
+        upper = (res.thesis_direction == "long") == (res.outcome == OUTCOME_CONFIRMED)
+    return GeometricTruth(item.trade_id, res.outcome, upper, touch.touch_time if touch and upper is not None else None,
+                          touch.path_end if touch else None)
+
+
+def predictions_for(items: Sequence[AnalysisInput], market: Market, specs: Sequence[P0ModelSpec] = ALL_SPECS
+                    ) -> Tuple[Dict[str, np.ndarray], List[dict]]:
+    """x0 de cada modelo para cada análisis (en el orden de `items`) y las lecturas por TF de cada uno."""
+    x0 = {spec.name: np.zeros(len(items), dtype=int) for spec in specs}
+    readings = []
+    for k, item in enumerate(items):
+        out = predict_at(market, item.anchor, specs)
+        for spec in specs:
+            x0[spec.name][k] = out[spec.name]["x0"]
+        readings.append(out["_readings"])
+    return x0, readings
 
 
 def outcomes_for(items: Sequence[AnalysisInput], truths: Mapping[str, GeometricTruth],
@@ -624,24 +667,22 @@ def atr_half_widths(market: Market, tf: str, legs: Sequence[Leg]) -> Tuple[Dict[
     return {key: c * value for key, value in at.items()}, c
 
 
-def level_events(market: Market, tf: str, half_width_mode: str = "delta") -> List[dict]:
-    """Todos los eventos (P0 y placebo) de los tramos de una TF en toda la foto, uno por (tramo, nivel)."""
+def level_events(market: Market, tf: str) -> List[dict]:
+    """
+    Todos los eventos (P0 y placebo) de los tramos de una TF en toda la foto, uno por (tramo, nivel). El ancho de zona
+    es el del mercado (`zone_mode`); con "atr", un tramo sin ATR14 todavía (menos de 14 velas) no genera eventos.
+    """
     timeline = market.timelines[tf]
     legs = leg_intervals(timeline)
     levels = P0_LEVELS + PLACEBO_LEVELS
-    hw_by_leg = None
-    if half_width_mode == "atr":
-        hw_by_leg, _ = atr_half_widths(market, tf, [info["leg"] for info in legs.values()])
     rows = []
     for key, info in legs.items():
         leg: Leg = info["leg"]
         if leg.size <= 0:
             continue
-        hw = None
-        if hw_by_leg is not None:
-            if not np.isfinite(hw_by_leg[key]):
-                continue
-            hw = {r: hw_by_leg[key] for r in levels}
+        hw = market.half_width(tf, leg, levels)
+        if hw is not None and not np.isfinite(hw[levels[0]]):
+            continue
         found: Dict[float, Tuple[LevelEvent, str]] = {}
         for start, end, state in info["intervals"]:
             remaining = [r for r in levels if r not in found]
@@ -803,6 +844,10 @@ def logit_test(df: pd.DataFrame, term: str = "is_p0", n_boot: int = N_BOOT, seed
     j = names.index(term)
     beta, ok = logistic_irls(x, y)
     uniq, inverse = np.unique(clusters, return_inverse=True)
+    if n_boot == 0:  # solo la estimación puntual (sensibilidades de T11: signo y tamaño)
+        return LogitResult(term, len(data), n_p0, n_pl, len(uniq), float(beta[j]) if ok else None,
+                           float(np.exp(beta[j])) if ok else None, (np.nan, np.nan), None, 0, insufficient,
+                           tuple(names))
     members = [np.flatnonzero(inverse == g) for g in range(len(uniq))]
     rng = np.random.default_rng(seed)
     boot = []
@@ -877,12 +922,13 @@ class DecisionInputs:
     t5_passing: int          # cuántos segmentos de T5 pasan
     t4_passing: int          # cuántos niveles de T4 pasan
     t6_fails: bool
+    winner_is_a: bool = False  # v1.2: A no tiene gemelo; "ganador ≤ su gemelo" se da por cumplido
 
 
 def decide_d18(d: DecisionInputs) -> Tuple[str, str]:
     """§13 del pre-registro: la primera fila que se cumple es la decisión."""
-    twin_win = d.twin_pairs >= N_MIN_PAIRS and d.twin_b > d.twin_c
-    twin_lose = d.twin_pairs >= N_MIN_PAIRS and d.twin_b <= d.twin_c
+    twin_win = not d.winner_is_a and d.twin_pairs >= N_MIN_PAIRS and d.twin_b > d.twin_c
+    twin_lose = d.winner_is_a or (d.twin_pairs >= N_MIN_PAIRS and d.twin_b <= d.twin_c)
     if not (d.t0_ok and d.t2_ok):
         return DECISION_STOP, "T0 o T2 fallan"
     if d.fib_positive and d.btc_same_sign and twin_win:
@@ -898,7 +944,7 @@ def decide_d18(d: DecisionInputs) -> Tuple[str, str]:
         missing.append("T3a/T3b sin n suficiente en el confirmatorio")
     if d.fib_positive and not d.btc_same_sign:
         missing.append("BTC con signo opuesto")
-    if d.twin_pairs < N_MIN_PAIRS:
+    if d.twin_pairs < N_MIN_PAIRS and not d.winner_is_a:
         missing.append(f"ganador contra gemelo con {d.twin_pairs} pares (< {N_MIN_PAIRS})")
     return DECISION_INSUFFICIENT, "; ".join(missing) or "ninguna fila anterior se cumple"
 
