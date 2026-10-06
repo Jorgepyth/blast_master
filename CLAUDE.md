@@ -267,9 +267,10 @@ reemplazar al modelo **D** como feedback impreso. Prompt: "v1.2 — P2 banco v2"
   - El 66% de D es compatible con un acierto real de entre 50% y 79%. Si ese 66% fuera real,
     confirmarlo pediría unos 75 casos en los que D opine, o sea unos 175 análisis.
 - **Hallazgos aparte:**
-  - (a) Las velas 4H, 12H, 1D y 1W del banco guardan cada vela de invierno dos veces, 1 h aparte y con
-    el mismo OHLC. Acá se quitan al leer. **Arreglarlo en el banco es trabajo de la spec 002, y está
-    pendiente.**
+  - (a) Las velas 4H, 12H, 1D y 1W del banco guardaban cada vela de invierno dos veces, 1 h aparte y con
+    el mismo OHLC; esta evaluación las quitaba al leer. **Arreglado en el banco el 2026-09-30** (spec 002,
+    N44, T16c y T59c): se quitaron los 3.824 pares y el import legacy ya filtra todas las TF, así que ya no
+    hace falta quitarlas al leer.
   - (b) El walk-forward de 2F usa, en 9 de los 45 análisis de prueba, resultados que todavía no se
     conocían. Repetido sin esos resultados da lo mismo.
   - (c) La 1D sola acierta 1 de 10, y un peso alto en 1D empeora cualquier combinación.
