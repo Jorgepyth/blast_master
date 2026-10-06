@@ -1,6 +1,6 @@
-# Pre-registro: P0 sistemático (fractales + Fibonacci), modelos A–H, v1.1
+# Pre-registro: P0 sistemático (fractales + Fibonacci), modelos A–H, v1.2
 
-- **Fecha:** 2026-10-06 (v1.0 y v1.1).
+- **Fecha:** 2026-10-06 (v1.0, v1.1 y v1.2).
 - **Base:** commit `76c9a53` (el prompt, commiteado solo sobre `3856296` = `main`), rama `claude/p0-sistematico`,
   worktree `.claude/worktrees/p0-sistematico`, sin `.data/` propio.
 - **Origen:** prompt v1.1 del 2026-10-06, `docs/prompts/2026-10-06-p0-sistematico-fractal-fib.md`, sha256
@@ -20,6 +20,12 @@
   - Entre la v1.0 y la v1.1 se calculó, **sin ninguna verdad ni acierto**: la re-verificación de los hechos `[COPIA]`,
     la cobertura del banco por TF y un conteo grueso de tramos por TF (`00_protocolo.md` §2 y §3). Ninguna cifra de
     acierto ni de reacción en niveles existía al fijar esta versión.
+- **Versión 1.2 (2026-10-06), commiteada sola al empezar F4, antes de calcular cualquier predicción o acierto.** Un
+  solo cambio, decidido por el usuario: si el ganador de la selección es A, que no tiene gemelo placebo, "ganador ≤ su
+  gemelo" se da por cumplido (Fibonacci no mejoró al mejor modelo), y la familia F3 queda en {T6, T8×2} (§10, §13).
+  - La v1.1 es el commit `4f23145`, sha256 `39e748b7aa0492aa4c303f484fb52f8a46db42cdaceb0579e789f192722dbefe`.
+  - Entre la v1.1 y la v1.2 se escribió y testeó el código de F3 y se contaron entradas a zonas por brazo, sin mirar
+    rechazos ni rupturas (`00_protocolo.md` §5.5). Ningún acierto, predicción de análisis ni prueba existía.
 - **Qué ya se sabía antes de este archivo:**
   - los hechos `[COPIA]` del prompt: conteos de análisis por sesgo, coincidencia de la dirección P0 con el sesgo final
     y menciones de niveles en las tesis;
@@ -278,7 +284,8 @@ converge se cuentan y se informan.
 | T10 | Generalización a BTC, todo congelado | T3–T5 con eventos de BTC (misma partición); T1, T6–T8 con análisis de BTC y el ganador elegido en XAU | Efecto de signo opuesto al de XAU |
 | T11 | Sensibilidad | n = 3 y 5; ancho por ATR14 (precisión: semiancho = c·ATR14 de la TF al confirmarse B, con c tal que la mediana del semiancho sea la de δ·\|B−A\| en esa TF y activo; las zonas pueden solaparse); invalidación por mecha; ancla a 0, 10, 20, 30 y 60 min antes de `created_at` (los que tienen `analysis_start_time` no cambian); **(v1.1)** solo escalera: sin eventos gruesos, y en el puntaje una TF sin camino de escalera desde su B vale 0. Sobre el OR exploratorio de T3a/T3b y el neto y acierto de A–G | El signo cambia → frágil; no se elige variante |
 
-**Familias de Holm (α = 0.05):** F1 = {T3a, T3b, T4×5}; F2 = {T5×2}; F3 = {T6, T8×3}.
+**Familias de Holm (α = 0.05):** F1 = {T3a, T3b, T4×5}; F2 = {T5×2}; F3 = {T6, T8×3}. **(v1.2)** Si el ganador
+es A, no existe "ganador contra su gemelo" y F3 = {T6, T8×2}.
 
 **Mínimos:** T3–T5: 480 eventos por brazo (P0 y placebo) en el confirmatorio; por debajo es "insuficiente", no "falla".
 Pruebas de análisis: menos de 20 opiniones o pares en un segmento = "muestra insuficiente", sin conclusión (R17).
@@ -314,7 +321,8 @@ Condiciones, todas en el **confirmatorio** para T3–T5 y en XAU salvo que se di
 - **Fib nulo:** T3a y T3b tienen ≥ 480 eventos por brazo y ninguno pasa.
 - **BTC mismo signo:** para cada prueba que pasó en XAU, el OR de BTC (confirmatorio, punto) es > 1.
 - **Gemelo (precisión):** "ganador > su gemelo" = b > c con ≥ 20 pares (S4 estricto, Todos); "ganador ≤ su gemelo" =
-  b ≤ c con ≥ 20 pares. Con menos de 20 pares no vale ninguna de las dos.
+  b ≤ c con ≥ 20 pares. Con menos de 20 pares no vale ninguna de las dos. **(v1.2)** Si el ganador es A (sin gemelo),
+  "ganador ≤ su gemelo" se da por cumplido: ningún modelo con Fibonacci le ganó a la estructura sola.
 - **T6 falla:** p Holm (F3) de T6 ≥ 0.05.
 - **(precisión)** Un nivel de T4 o un segmento de T5 "pasa" con ≥ 480 eventos por brazo, OR > 1, IC95 inferior > 1 y p
   Holm (F1 para T4, F2 para T5) < 0.05.
