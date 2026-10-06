@@ -1,6 +1,6 @@
-# Pre-registro: P0 sistemático (fractales + Fibonacci), modelos A–H, v1.0
+# Pre-registro: P0 sistemático (fractales + Fibonacci), modelos A–H, v1.1
 
-- **Fecha:** 2026-10-06.
+- **Fecha:** 2026-10-06 (v1.0 y v1.1).
 - **Base:** commit `76c9a53` (el prompt, commiteado solo sobre `3856296` = `main`), rama `claude/p0-sistematico`,
   worktree `.claude/worktrees/p0-sistematico`, sin `.data/` propio.
 - **Origen:** prompt v1.1 del 2026-10-06, `docs/prompts/2026-10-06-p0-sistematico-fractal-fib.md`, sha256
@@ -10,6 +10,16 @@
 - **Cuándo se fijó:** este archivo se commitea **solo, antes de calcular cualquier predicción, acierto o prueba** (F0).
   Si una discrepancia de F1 o un dato de F2 obliga a cambiar algo, se commitea una versión nueva, sola, **antes de
   F4**, y el reporte cita el sha256 de las dos.
+- **Versión 1.1 (2026-10-06), commiteada sola antes de F4.** Dos cambios, por las discrepancias de F1
+  (`00_protocolo.md` §3, puntos 1 y 6):
+  - **Camino de los eventos (decidido por el usuario):** el banco tiene velas de 1M a 1H solo desde el 2026-03-08
+    (XAU) y el 2026-04-19 (BTC). Donde la escalera no cubre, los eventos se detectan y resuelven con la TF más fina del
+    banco que no sea más gruesa que la del tramo (§7). "Solo escalera" queda como sensibilidad (§10, T11).
+  - **Lectura de etiquetas (precisión):** `12T-` y `4T-` se leen como `12HT-` y `4HT-`, sin distinguir mayúsculas (§9).
+  - La v1.0 es el commit `3c12d0f`, sha256 `51724e5530f0ad2fca2558707e01e284ec439a0c721036c27677251129b66931`.
+  - Entre la v1.0 y la v1.1 se calculó, **sin ninguna verdad ni acierto**: la re-verificación de los hechos `[COPIA]`,
+    la cobertura del banco por TF y un conteo grueso de tramos por TF (`00_protocolo.md` §2 y §3). Ninguna cifra de
+    acierto ni de reacción en niveles existía al fijar esta versión.
 - **Qué ya se sabía antes de este archivo:**
   - los hechos `[COPIA]` del prompt: conteos de análisis por sesgo, coincidencia de la dirección P0 con el sesgo final
     y menciones de niveles en las tesis;
@@ -148,9 +158,18 @@ Por TF k ∈ {1W, 1D, 12H, 4H, 1H}, con las velas de la foto.
 - **Niveles (D1):** `L_r = B − r · (B − A)`, con r ∈ {0, 0.382, 0.5, 0.618, 1}. 0 = B (fin del impulso), 1 = A.
 - **Placebo (D2):** r ∈ {0.300, 0.441, 0.559} (retrocesos) y {0.10, 0.90} (extremos).
 - **Zona (D6):** `[L_r − δ·|B−A|, L_r + δ·|B−A|]`, δ = 0.025, igual para P0 y placebo. Ninguna zona se solapa.
-- **Camino (precisión):** `forward_path()` de `core/candle_resolution.py` (1M → 5M → 15M → 30M → 1H, la más fina que
-  cubre cada instante) desde el instante de confirmación de B. Un tramo cuyo período no cubre ninguna TF de la escalera
-  no genera eventos (motivo `no_ladder_path`, contado).
+- **Camino (v1.1):** desde el instante de confirmación de B, vela por vela, sin huecos ni superposición:
+  - donde la escalera cubre el instante, `forward_path()` de `core/candle_resolution.py` (1M → 5M → 15M → 30M → 1H, la
+    más fina que cubre cada instante);
+  - donde ninguna TF de la escalera lo cubre, la siguiente vela de la TF más fina del banco entre 4H, 12H, 1D y 1W que
+    cubre ese instante **y no es más gruesa que la del tramo** (un tramo de 4H nunca usa velas de 12H). Esa vela se
+    usa entera, y desde su cierre se vuelve a mirar si la escalera ya cubre;
+  - "cubre" es lo mismo que en `forward_path`: estar entre la apertura de la primera vela del archivo y el cierre de la
+    última. Si ninguna TF permitida cubre el instante, el camino termina (motivo `no_path`, contado);
+  - cada evento guarda la TF de cada vela de su camino, de la entrada al resultado. Un evento es "grueso" si alguna de
+    esas velas es de 4H o más.
+  - Es el mismo camino para las pruebas de niveles (T3–T5) y para el puntaje de los modelos (§8), siempre cortado en τ
+    para el puntaje.
 - **Evento (D6):** la primera entrada a la zona (la mecha cuenta) en el camino, después de confirmarse B, mientras el
   tramo está vigente (su vela de entrada abre antes de que el tramo cambie y no después de la vela de extensión).
   Máximo un evento por (tramo, nivel). **(precisión)** Entrar es tocar la zona viniendo de afuera: el lado de llegada es
@@ -164,8 +183,10 @@ Por TF k ∈ {1W, 1D, 12H, 4H, 1H}, con las velas de la foto.
     anterior a la entrada); desde la vela siguiente cuentan las dos.
   - Ambiguo: una vela del camino toca las dos barreras (el camino ya va en la TF más fina disponible) → excluido y
     contado.
-  - Abierto: ninguna barrera en `MAX_HORIZON` = 2160 velas de 1H desde la entrada (`horizon_end()`) → excluido y
-    contado. Sin velas suficientes todavía: `pending`, excluido y contado.
+  - Abierto: ninguna barrera en `MAX_HORIZON` desde la entrada → excluido y contado. **(v1.1)** Como el camino puede
+    tener velas de varias TF, el horizonte se mide en horas de velas recorridas: termina cuando la suma de las
+    duraciones de las velas del camino, desde la entrada, llega a 2160 h (en 1H son exactamente 2160 velas). Sin velas
+    suficientes todavía: `pending`, excluido y contado.
   - Una ruptura en 1 que coincide con la invalidación del tramo cuenta igual: el resultado se sigue hasta la barrera
     aunque el tramo cambie.
 - **Huecos (E4):** un hueco de velas no explicado por el fin de semana ni por la pausa diaria del oro se reporta en §1
@@ -216,7 +237,8 @@ Por TF k ∈ {1W, 1D, 12H, 4H, 1H}, con las velas de la foto.
   acierto.
 - **Etiquetas de tesis (D20, T7):** en `thesis`, `T-BL` = tramo alcista y `T-BR` = bajista, por TF (`1DT-B…`,
   `12HT-B…`, `4HT-B…`, `1HT-B…`); `12HT-BR == 1DT` = el tramo de 12H es el mismo que el de 1D. Una tesis sin ninguna
-  etiqueta queda fuera de T7.
+  etiqueta queda fuera de T7. **(v1.1)** Al leer: sin distinguir mayúsculas (`Bl` = `BL`), `12T-` = `12HT-` y
+  `4T-` = `4HT-`, con espacios o `:` opcionales; si una TF aparece etiquetada dos veces, vale la primera.
 - **"Fractal" (R14):** solo el fractal de precio de n velas de §6. Ningún campo de `tactical_audit` se usa ni se cruza.
 
 ## 10. Pruebas (D16) y partición (D17)
@@ -254,7 +276,7 @@ converge se cuentan y se informan.
 | T7 | Los modelos anclan como el operador (descriptiva) | κ de Cohen por TF: orientación del tramo del modelo en τ vs etiqueta BL/BR de la tesis; `==` del operador vs "mismo tramo" del modelo, descriptivo | κ < 0.4 en 1D y 12H |
 | T8 | Ganador ≥ operador; B > A; ganador > su gemelo | XAU, Todos, S4 estricto, pares donde los dos opinan y S4 estricto cuenta: McNemar exacto, d con IC95 (§12) | Ganador inferior al operador, o ganador ≤ su gemelo |
 | T10 | Generalización a BTC, todo congelado | T3–T5 con eventos de BTC (misma partición); T1, T6–T8 con análisis de BTC y el ganador elegido en XAU | Efecto de signo opuesto al de XAU |
-| T11 | Sensibilidad | n = 3 y 5; ancho por ATR14 (precisión: semiancho = c·ATR14 de la TF al confirmarse B, con c tal que la mediana del semiancho sea la de δ·\|B−A\| en esa TF y activo; las zonas pueden solaparse); invalidación por mecha; ancla a 0, 10, 20, 30 y 60 min antes de `created_at` (los que tienen `analysis_start_time` no cambian). Sobre el OR exploratorio de T3a/T3b y el neto y acierto de A–G | El signo cambia → frágil; no se elige variante |
+| T11 | Sensibilidad | n = 3 y 5; ancho por ATR14 (precisión: semiancho = c·ATR14 de la TF al confirmarse B, con c tal que la mediana del semiancho sea la de δ·\|B−A\| en esa TF y activo; las zonas pueden solaparse); invalidación por mecha; ancla a 0, 10, 20, 30 y 60 min antes de `created_at` (los que tienen `analysis_start_time` no cambian); **(v1.1)** solo escalera: sin eventos gruesos, y en el puntaje una TF sin camino de escalera desde su B vale 0. Sobre el OR exploratorio de T3a/T3b y el neto y acierto de A–G | El signo cambia → frágil; no se elige variante |
 
 **Familias de Holm (α = 0.05):** F1 = {T3a, T3b, T4×5}; F2 = {T5×2}; F3 = {T6, T8×3}.
 
@@ -334,6 +356,7 @@ H y los gemelos no cuentan para ninguna condición salvo "gemelo del ganador".
 | Fractal | n = 2 (n = 3 y 5, sensibilidad) |
 | δ (semiancho de zona) | 0.025·\|B−A\| |
 | Barrera D | 0.10·\|B−A\| |
+| Camino de los eventos (v1.1) | escalera 1M→1H; donde no cubre, la TF más fina del banco que no sea más gruesa que la del tramo |
 | `BROKER_DST_RULE` | `us` (asumida) |
 
 ## 16. Paradas
