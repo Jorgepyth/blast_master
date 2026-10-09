@@ -240,3 +240,17 @@ población de v1.0, con la misma verdad (S4 estricto). No cambian el modelo.
 
 - Antes de esos números, las miradas trimestrales son solo descriptivas: no se adopta ninguna regla antes.
 - Si no se confirma, la regla no se adopta.
+
+### Adenda del 2026-10-09: US500 entra a la población (escrita antes de mirar ningún resultado)
+
+- **Qué cambia:** a pedido del operador, la población de v1.0 y la de las hipótesis H1 y H2 suman la cuenta de US500
+  (símbolo MT5 `US500`). Las reglas son las mismas: ancla posterior a 2026-10-09 17:00 GT, los mismos filtros y la misma
+  verdad.
+- **Por qué:** desde septiembre, los análisis nuevos son de US500. En oro no hay desde el 2026-09-16 y en BTC desde el
+  2026-09-01.
+- **El modelo no cambia y no usa 1W.** Que US500 tenga 739 velas semanales (el P2 D pide 800) no lo afecta.
+- **Cómo se reporta:** cada activo por separado y todos juntos. Las decisiones (190 opiniones; 66 y 29 casos) se toman
+  con todos juntos.
+- **Advertencia:** el modelo se calibró con oro y BTC, así que en US500 queda fuera de muestra también por el activo.
+- **USTEC (US100)** queda fuera mientras su reloj no esté verificado y no tenga velas en el banco. Sumarlo sería otra
+  adenda.
