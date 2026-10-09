@@ -122,6 +122,7 @@ RECOVERED_BACKDATED = frozenset({
 # existente (T23).
 P2_LOG_MODELS = {
     "D": "2026-09-27",
+    "D600": "2026-10-09",   # D con 600 velas semanales mínimas: corre en US500 (739 semanas), donde D no puede
 }
 
 # El registro, dentro de ACCOUNTS_DATA_DIR: una línea JSON por análisis y modelo, solo se agregan líneas (plan.md §2.5).

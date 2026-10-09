@@ -62,10 +62,10 @@ def test_accounts_and_symbol_maps():
     }
 
 
-def test_p2_log_models_default_is_model_d_only():
-    # N42: la lista arranca con solo D; sumar un modelo (p.ej. H) es agregar
-    # una entrada acá, nunca tocar esta.
-    assert auto_resolution_config.P2_LOG_MODELS == {"D": "2026-09-27"}
+def test_p2_log_models_default_is_d_and_d600():
+    # N42: la lista arrancó con solo D; sumar un modelo es agregar una entrada,
+    # nunca tocar la de D. D600 (índices) se sumó el 2026-10-09.
+    assert auto_resolution_config.P2_LOG_MODELS == {"D": "2026-09-27", "D600": "2026-10-09"}
 
 
 def test_p2_log_models_dates_are_valid_iso_dates():

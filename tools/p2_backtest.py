@@ -141,6 +141,11 @@ class ModelSpec:
     # alineadas y el ADX sea alto.
     use_di: bool
     description: str
+    # Velas cerradas mínimas por TF, si un modelo pide otra cosa que MIN_BARS_PER_TF (vacío = 800 en todas).
+    min_bars: Dict[str, int] = field(default_factory=dict)
+
+    def min_bars_for(self, timeframe: str) -> int:
+        return self.min_bars.get(timeframe, MIN_BARS_PER_TF)
 
 
 MODEL_A = ModelSpec(
@@ -218,10 +223,25 @@ MODEL_F = ModelSpec(
                 "así que su resultado tiene sesgo de selección (ver el cuaderno de evaluación).",
 )
 
+MODEL_D600 = ModelSpec(
+    name="D600",
+    label="D600 — D con 600 velas semanales mínimas (índices)",
+    timeframes=MODEL_D.timeframes,
+    weights=dict(MODEL_D.weights),
+    ema_chain=MODEL_D.ema_chain,
+    use_di=MODEL_D.use_di,
+    description="Igual que D, pero acepta desde 600 velas semanales cerradas en vez de 800 (2026-10-09). US500 tiene "
+                "739 desde 2012-08 y D da siempre insufficient_history:1W. Con 600 velas, el arranque de la EMA200 "
+                "semanal pesa (1 - 2/201)^600 = 0.26%: ya está formada. Donde D tiene 800 velas, D600 da lo mismo.",
+    min_bars={"1W": 600},
+)
+
 MODELS: Tuple[ModelSpec, ...] = (MODEL_A, MODEL_B, MODEL_C, MODEL_D, MODEL_E, MODEL_F)
 MODELS_BY_NAME: Dict[str, ModelSpec] = {m.name: m for m in MODELS}
+# D600 no entra a MODELS (las evaluaciones históricas): solo al registro prospectivo y a `p2-model`.
+MODELS_BY_NAME[MODEL_D600.name] = MODEL_D600
 
-for _m in MODELS:
+for _m in MODELS + (MODEL_D600,):
     assert set(_m.weights) == set(_m.timeframes), f"Modelo {_m.name}: pesos y TFs no coinciden"
     assert abs(sum(_m.weights.values()) - 1.0) < 1e-9, f"Modelo {_m.name}: pesos no suman 1.0"
 
@@ -547,7 +567,8 @@ def compute_score_p2_sistematico(
     ADX14 > 25 -> x1, 20-25 -> x0.5, <20 -> fuerza 0 (independiente del bias).
 
     snapshot_incompleto=True si falta cualquier TF del modelo, si bars_available
-    de alguna es menor a MIN_BARS_PER_TF (800), o si al modelo le falta un
+    de alguna es menor a MIN_BARS_PER_TF (800; un modelo puede pedir otro mínimo
+    por TF con `min_bars`, como D600), o si al modelo le falta un
     indicador que pidió (EMA100 / DI). En ese caso devuelve (None, True) -- no
     se puntúa un modelo con datos parciales.
 
@@ -557,7 +578,7 @@ def compute_score_p2_sistematico(
     total = 0.0
     for tf in model.timeframes:
         snap = snapshots.get(tf)
-        if snap is None or snap.bars_available < MIN_BARS_PER_TF:
+        if snap is None or snap.bars_available < model.min_bars_for(tf):
             return None, True
 
         bias = bias_from_emas(snap, model.ema_chain)

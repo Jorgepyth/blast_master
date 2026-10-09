@@ -52,9 +52,13 @@ def _now_gt() -> datetime:
 # --------------------------------------------------------------------------
 
 def model_recipe(model: "p2_backtest.ModelSpec") -> dict:
-    """Lo que define el cálculo del modelo. `label` y `description` no entran: son solo texto."""
-    return {"timeframes": list(model.timeframes), "weights": {tf: model.weights[tf] for tf in model.timeframes},
-            "ema_chain": list(model.ema_chain), "use_di": model.use_di}
+    """Lo que define el cálculo del modelo. `label` y `description` no entran: son solo texto. `min_bars` entra solo si
+    el modelo pide otro mínimo que el general, así la huella de los modelos que ya se registraban (D) no cambia."""
+    recipe = {"timeframes": list(model.timeframes), "weights": {tf: model.weights[tf] for tf in model.timeframes},
+              "ema_chain": list(model.ema_chain), "use_di": model.use_di}
+    if model.min_bars:
+        recipe["min_bars"] = dict(sorted(model.min_bars.items()))
+    return recipe
 
 
 def model_hash(model: "p2_backtest.ModelSpec") -> str:
@@ -216,7 +220,7 @@ def model_p2(model: "p2_backtest.ModelSpec", symbol: Optional[str], anchor: date
     snapshots = {tf: provider.get_indicator_snapshot(tf, anchor) for tf in model.timeframes}
     for tf in model.timeframes:
         snap = snapshots[tf]
-        if snap is None or snap.bars_available < p2_backtest.MIN_BARS_PER_TF:
+        if snap is None or snap.bars_available < model.min_bars_for(tf):
             return cfg.reason_insufficient_history(tf), None, None, {}
     raw, incomplete = p2_backtest.compute_score_p2_sistematico(snapshots, model)
     if incomplete:  # no pasa con este proveedor, que siempre calcula EMA100 y DI; por las dudas, nunca se inventa

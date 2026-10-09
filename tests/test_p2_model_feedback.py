@@ -253,4 +253,5 @@ def test_the_default_paths_come_from_the_config(setup, monkeypatch):
     monkeypatch.setattr(auto_cfg, "ACCOUNTS_DATA_DIR", str(log.parent))
     monkeypatch.setattr(auto_cfg, "CANDLE_BANK_DIR", str(bank_root))
     log_account(str(db), "000", trade_ids=["n1"])
-    assert [line["model"] for line in _lines(log)] == list(auto_cfg.P2_LOG_MODELS)
+    since_n1 = [name for name, since in auto_cfg.P2_LOG_MODELS.items() if datetime.fromisoformat(since) <= N1_START]
+    assert [line["model"] for line in _lines(log)] == since_n1   # D600 (alta 2026-10-09) no corre en n1

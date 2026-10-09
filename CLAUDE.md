@@ -89,16 +89,22 @@ Modelo de datos real: 7 tablas (`unified_department`, `analysis_layer`, `efficie
     análisis nuevo (con `analysis_start_time`) de las cuentas reales, y se agrega a `.data/p2_model_log.jsonl`. Nunca
     se muestra en el wizard: se ve con `p2-model`. Un modelo nuevo se suma en `P2_LOG_MODELS` con la fecha del día,
     sin cambiar la receta de uno existente.
-  - **Velas semanales de los índices (pendiente del usuario, verificado 2026-10-09):** D necesita 800 velas semanales
-    cerradas (umbral del prompt original de P2 sistemático, para que la EMA200 semanal esté formada), así que en los
-    índices da siempre `insufficient_history:1W`.
-    - US500 tiene 739, desde 2012-08. Sin agregar nada, llega a 800 hacia fines de noviembre de 2027. Su 1D recién
-      empieza en 2022, así que el 1W no se puede armar desde el 1D.
-    - USTEC no tiene ninguna vela en el banco: su reloj sigue sin verificar (9 de las 10 referencias).
-    - Hay dos salidas, las dos a decidir por el usuario:
-      - **Velas semanales externas:** rompe la regla de "solo velas verificadas" (T4). Irían en un archivo aparte,
-        solo para las semanas anteriores al banco, con un chequeo de que coincidan en las semanas que se solapan.
-      - **Un modelo de P2 nuevo** que pida menos historia semanal. Va con su propia fecha de alta, sin tocar D.
+  - **Velas semanales de los índices y el modelo D600 (2026-10-09):** D necesita 800 velas semanales cerradas (umbral
+    del prompt original de P2 sistemático, para que la EMA200 semanal esté formada), así que en los índices da siempre
+    `insufficient_history:1W`.
+    - US500 tiene 739, desde 2012-08. Su 1D recién empieza en 2022, así que el 1W no se puede armar desde el 1D.
+    - **Se resolvió con un modelo nuevo, D600** (`tools/p2_backtest.py:MODEL_D600`, en `P2_LOG_MODELS` desde el
+      2026-10-09).
+      - Es D con un mínimo de 600 velas semanales (`ModelSpec.min_bars`). Con 600 velas, el arranque de la EMA200 pesa
+        0.26%: ya está formada.
+      - Donde D tiene 800 velas (XAU, BTC), D600 da exactamente lo mismo.
+      - No entra a `MODELS`, las evaluaciones históricas. `min_bars` solo entra a la receta si no está vacío, así que la
+        huella de D (`20315fe7bfe2`) no cambió.
+      - Probado con datos reales: en los 4 análisis de US500 del 05 al 08-10, D da `insufficient_history:1W` y D600 da
+        un valor.
+    - Las velas semanales externas quedaron descartadas: rompían la regla de "solo velas verificadas" (T4).
+    - USTEC no tiene ninguna vela en el banco: su reloj sigue sin verificar (9 de las 10 referencias). Ni D ni D600
+      pueden correr ahí hasta que se verifique.
     - El P0 sistemático no usa 1W: esto no lo afecta.
   - **Registro del P0 sistemático:** es igual al del P2, pero escribe solo después de cada export fusionado, no al
     guardar. Detalle en la sección "P0 sistemático y opción 2".

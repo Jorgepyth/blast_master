@@ -184,7 +184,9 @@ def test_el_aporte_de_cada_tf_respeta_su_peso():
 
 
 def test_registro_indexado_por_nombre_cubre_los_seis():
-    assert set(MODELS_BY_NAME) == {"A", "B", "C", "D", "E", "F"}
+    # D600 (2026-10-09) está en el registro por nombre, pero no en MODELS: no entra a las evaluaciones históricas.
+    assert set(MODELS_BY_NAME) == {"A", "B", "C", "D", "E", "F", "D600"}
+    assert [m.name for m in MODELS] == ["A", "B", "C", "D", "E", "F"]
 
 
 def test_modelo_f_es_d_sin_30m_con_el_mismo_reparto_relativo():
