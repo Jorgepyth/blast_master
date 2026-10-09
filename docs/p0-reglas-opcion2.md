@@ -223,3 +223,20 @@ R10. No se cambia nada: una regla o un valor distinto es una v1.1, con su propio
     mismos análisis.
   - **No sirve:** el límite superior del IC 95% queda debajo de 55%.
   - **Si no pasa ninguna de las dos:** insuficiente, y se sigue acumulando.
+
+### Adenda del 2026-10-09: dos hipótesis de asistente (escrita antes de mirar ningún análisis nuevo)
+
+Salieron de mirar los 97 análisis después del congelamiento, así que son **hipótesis, no hallazgos**. Se miden en la misma
+población de v1.0, con la misma verdad (S4 estricto). No cambian el modelo.
+
+| | H1: tu P0 cuando el sistema no opina | H2: tu P0 contra tu propia tesis |
+|---|---|---|
+| Casos | Tu P0 opina (Long o Short) y la opción 2 v1.0 no opina | Tu P0 opina en contra de la dirección de tu tesis, el lado del EVP respecto del precio de partida |
+| En los 97 (post hoc) | 8 de 24 = 33% | 1 de 10 = 10% |
+| Qué se espera | Que acierte menos de 50% | Que acierte menos de 50% |
+| Cuándo se decide | A los **66 casos**. Con eso se detecta un acierto real de 33% | A los **29 casos**. Con eso se detecta un 25% |
+| Confirmada si | el límite superior del IC 95% (Wilson) queda debajo de 50% | lo mismo |
+| Regla que se adoptaría | Si el sistema no opina, tu P0 queda en neutral | Si tu P0 va contra tu tesis, queda en neutral |
+
+- Antes de esos números, las miradas trimestrales son solo descriptivas: no se adopta ninguna regla antes.
+- Si no se confirma, la regla no se adopta.
