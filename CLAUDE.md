@@ -102,7 +102,7 @@ Modelo de datos real: 7 tablas (`unified_department`, `analysis_layer`, `efficie
         huella de D (`20315fe7bfe2`) no cambió.
       - Probado con datos reales: en los 4 análisis de US500 del 05 al 08-10, D da `insufficient_history:1W` y D600 da
         un valor.
-    - Las velas semanales externas quedaron descartadas: rompían la regla de "solo velas verificadas" (T4).
+    - La otra alternativa, velas semanales externas, no se usó: rompe la regla de "solo velas verificadas" (T4).
     - USTEC no tiene ninguna vela en el banco: su reloj sigue sin verificar (9 de las 10 referencias). Ni D ni D600
       pueden correr ahí hasta que se verifique.
     - El P0 sistemático no usa 1W: esto no lo afecta.
