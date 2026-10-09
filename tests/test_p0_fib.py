@@ -88,6 +88,18 @@ def test_entry_bar_extreme_on_the_arrival_side_does_not_count():
     assert ev.outcome == RUPTURE and ev.resolved_index == 2
 
 
+def test_rupture_can_be_farther_than_rejection():
+    # Tramo 100→200, nivel 0.382 = 161.8. La vela 2 entra desde arriba; la 3 baja a 150 (pasa 151.8, la ruptura a
+    # 0.10, pero no 141.8, la ruptura a 0.20) y la 4 rebota a 172 (rechazo a 0.10: 171.8).
+    path = hourly_path([(199, 190), (190, 175), (176, 163), (165, 150), (172, 160)])
+    symmetric = _one(path, 0.382, ref_close=195.0)
+    assert symmetric.outcome == RUPTURE and symmetric.resolved_index == 3
+    asymmetric = _one(path, 0.382, ref_close=195.0, rupture_barrier=20.0)
+    assert asymmetric.outcome == REJECTION and asymmetric.resolved_index == 4
+    # Por defecto (sin rupture_barrier) es exactamente la regla del pre-registro.
+    assert _one(path, 0.382, ref_close=195.0, rupture_barrier=None) == symmetric
+
+
 def test_bar_touching_both_barriers_is_ambiguous():
     path = hourly_path([(199, 190), (176, 163), (175, 150)])
     ev = _one(path, 0.382, ref_close=195.0)

@@ -431,6 +431,17 @@ def test_atr_zone_mode_calibrates_the_median_width():
     ps.level_events(market, "1H")  # corre con el ancho por ATR
 
 
+def test_rupture_fraction_defaults_to_the_preregistered_rule():
+    candles = _synthetic_candles()
+    base = ps.Market("SYN", candles)
+    far = ps.Market("SYN", candles, rupture_fraction=0.20)
+    leg = ps.read_tf(base, "1H", T0 + 16 * H, "p0").leg
+    assert base.rupture_distance(leg) is None
+    assert far.rupture_distance(leg) == pytest.approx(0.20 * leg.size)
+    # En el mercado sintético el rechazo de 0.382 no depende de la ruptura: el puntaje no cambia.
+    assert ps.read_tf(far, "1H", T0 + 16 * H, "p0").situation == ps.SIT_RETR_REJECTION
+
+
 def test_predictions_for_matches_predict_at():
     market = _market(_synthetic_candles())
     items = [_item(f"t{k}", T0 + k * H) for k in (12, 15, 16)]

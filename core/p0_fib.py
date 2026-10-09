@@ -207,6 +207,7 @@ def detect_events(
     barrier: Optional[float] = None,
     horizon_hours: float = HORIZON_HOURS,
     coarse_tfs: Sequence[str] = COARSE_TFS,
+    rupture_barrier: Optional[float] = None,
 ) -> Dict[float, Optional[LevelEvent]]:
     """
     Los eventos de un tramo A→B en un intervalo en que fue el vigente (D6, D7).
@@ -218,10 +219,15 @@ def detect_events(
     - `tau`: corte para el puntaje (solo velas cerradas en τ). Un resultado no conocido en τ queda `pending`.
     - `ext_from_time`: desde cuándo se mira si el precio superó B (la confirmación de B); por defecto, `start_time`.
     - `half_width`: semiancho de zona por nivel (sensibilidad ATR14); por defecto δ·|B−A|.
+    - `barrier`: distancia de la barrera de rechazo (y de ruptura, si no se da `rupture_barrier`); por defecto
+      0.10·|B−A|.
+    - `rupture_barrier`: distancia de la barrera de ruptura, si se quiere distinta de la de rechazo (exploratorio,
+      pedido del usuario del 2026-10-08). Por defecto, la misma que `barrier`: el pre-registro no cambia.
     """
     up = b > a
     size = abs(b - a)
     d = BARRIER_FRACTION * size if barrier is None else barrier
+    d_rupture = d if rupture_barrier is None else rupture_barrier
     n = len(path)
     limit = n if tau is None else path.count_closed(tau)
     i0 = path.first_at_or_after(start_time)
@@ -253,13 +259,13 @@ def detect_events(
             continue
         if e > search:
             side = 1 if path.low[e - 1] > hi else -1
-        out[r] = _resolve(path, r, center, e, side, d, limit, horizon_hours, coarse_tfs)
+        out[r] = _resolve(path, r, center, e, side, d, limit, horizon_hours, coarse_tfs, d_rupture)
     return out
 
 
 def _resolve(path: Path, r: float, center: float, e: int, side: int, d: float, limit: int, horizon_hours: float,
-             coarse_tfs: Sequence[str]) -> LevelEvent:
-    rejection, rupture = center + side * d, center - side * d
+             coarse_tfs: Sequence[str], d_rupture: Optional[float] = None) -> LevelEvent:
+    rejection, rupture = center + side * d, center - side * (d if d_rupture is None else d_rupture)
 
     def hit_rejection(i, j):
         return path.high[i:j] >= rejection if side == 1 else path.low[i:j] <= rejection

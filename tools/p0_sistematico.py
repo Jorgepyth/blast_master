@@ -181,10 +181,17 @@ class Market:
     n: int = FRACTAL_N
     wick_invalidation: bool = False
     zone_mode: str = "delta"  # "delta" (δ·|B−A|) o "atr" (sensibilidad T11)
+    # Distancia de la barrera de ruptura en fracción del tramo. 0.10 = la del pre-registro (igual que la de rechazo);
+    # otro valor aleja solo la ruptura (exploratorio, 2026-10-08).
+    rupture_fraction: float = BARRIER_FRACTION
     bars: Dict[str, Bars] = field(default_factory=dict)
     paths: Dict[str, Path] = field(default_factory=dict)
     timelines: Dict[str, list] = field(default_factory=dict)
     _atr_hw: Dict[str, Dict[tuple, float]] = field(default_factory=dict)
+
+    def rupture_distance(self, leg: Leg) -> Optional[float]:
+        """None con la regla del pre-registro (ruptura = rechazo = 0.10·|B−A|); si no, rupture_fraction·|B−A|."""
+        return None if self.rupture_fraction == BARRIER_FRACTION else self.rupture_fraction * leg.size
 
     def half_width(self, tf: str, leg: Leg, levels: Sequence[float]) -> Optional[Dict[float, float]]:
         """Semiancho de zona por nivel: None con δ·|B−A|; con "atr", c·ATR14 al confirmarse B (T11). La constante c
@@ -213,10 +220,12 @@ class Market:
 
 
 def load_market(foto_dir: str, symbol: str, n: int = FRACTAL_N, wick_invalidation: bool = False,
-                candles: Optional[Mapping[str, List[Candle]]] = None, zone_mode: str = "delta") -> Market:
+                candles: Optional[Mapping[str, List[Candle]]] = None, zone_mode: str = "delta",
+                rupture_fraction: float = BARRIER_FRACTION) -> Market:
     if candles is None:
         candles = {tf: read_candles(os.path.join(foto_dir, symbol, f"{tf}.csv")) for tf in ALL_TFS}
-    return Market(symbol, dict(candles), n=n, wick_invalidation=wick_invalidation, zone_mode=zone_mode)
+    return Market(symbol, dict(candles), n=n, wick_invalidation=wick_invalidation, zone_mode=zone_mode,
+                  rupture_fraction=rupture_fraction)
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +322,7 @@ def tf_events_at(market: Market, tf: str, leg: Leg, tau: Optional[datetime], lev
             break
         found = detect_events(market.paths[tf], leg.a.price, leg.b.price, remaining, market.close_at(tf, start),
                               start_time=start, stop_time=end, tau=tau, ext_from_time=leg.b.confirmed_at,
-                              half_width=half_width)
+                              half_width=half_width, rupture_barrier=market.rupture_distance(leg))
         events.update({r: ev for r, ev in found.items() if ev is not None})
     return events
 
@@ -327,19 +336,32 @@ def read_tf(market: Market, tf: str, tau: datetime, level_set: str) -> TfReading
         return TfReading(tf, RANGE, pt.leg, SIT_RANGE)
     levels = P0_LEVELS if level_set == "p0" else PLACEBO_LEVELS
     events = tf_events_at(market, tf, pt.leg, tau, levels, half_width=market.half_width(tf, pt.leg, levels))
+    return reading_from_events(tf, pt.state, pt.leg, events, level_set)
+
+
+def reading_from_events(tf: str, state: str, leg: Optional[Leg], events: Mapping[float, LevelEvent],
+                        level_set: str) -> TfReading:
+    """
+    D8: la situación de una TF a partir de su estado y de los eventos de su tramo conocidos en τ. La usan el sistema
+    (`read_tf`) y el visor cuando el usuario elige otro tramo, así las dos lecturas siguen la misma regla.
+    """
+    if state == INSUFFICIENT or leg is None:
+        return TfReading(tf, INSUFFICIENT, None, SIT_INSUFFICIENT)
+    if state == RANGE:
+        return TfReading(tf, RANGE, leg, SIT_RANGE)
     if not events:
-        return TfReading(tf, pt.state, pt.leg, SIT_NO_EVENT)
+        return TfReading(tf, state, leg, SIT_NO_EVENT)
     # Último por entrada. Si una misma vela entró a varias zonas, el último es el más avanzado en el sentido de su
     # llegada (el más bajo si llegó desde arriba, el más alto si llegó desde abajo).
     last = max(events.values(), key=lambda ev: (ev.entry_index, -ev.arrival * ev.price))
     if last.outcome not in (REJECTION, RUPTURE):
-        return TfReading(tf, pt.state, pt.leg, SIT_NO_EVENT, last)
+        return TfReading(tf, state, leg, SIT_NO_EVENT, last)
     zero = last.r == ZERO_LEVEL[level_set]
     if zero:
         situation = SIT_ZERO_REJECTION if last.outcome == REJECTION else SIT_ZERO_RUPTURE
     else:
         situation = SIT_RETR_REJECTION if last.outcome == REJECTION else SIT_RETR_RUPTURE
-    return TfReading(tf, pt.state, pt.leg, situation, last)
+    return TfReading(tf, state, leg, situation, last)
 
 
 def tf_score(reading: TfReading, uses_fib: bool) -> int:
@@ -371,12 +393,18 @@ def model_x0(spec: P0ModelSpec, scores: Mapping[str, int]) -> int:
     return int(clamp(round_half_away_from_zero(Decimal(2) * total / spec.s_max), -2, 2))
 
 
-def predict_at(market: Market, tau: datetime, specs: Sequence[P0ModelSpec] = ALL_SPECS) -> Dict[str, dict]:
-    """x0 de cada modelo en τ, con las lecturas por TF (para T7 y diagnóstico)."""
+def predict_at(market: Market, tau: datetime, specs: Sequence[P0ModelSpec] = ALL_SPECS,
+               overrides: Optional[Mapping[Tuple[str, str], TfReading]] = None) -> Dict[str, dict]:
+    """
+    x0 de cada modelo en τ, con las lecturas por TF (para T7 y diagnóstico). `overrides` reemplaza la lectura de
+    algunas (TF, juego de niveles): la usa el visor cuando el usuario elige su propio tramo A→B (opción 3).
+    """
     readings = {}
     for level_set in ("p0", "placebo"):
         for tf in STRUCTURE_TFS:
-            if tf in market.timelines:
+            if overrides and (tf, level_set) in overrides:
+                readings[(tf, level_set)] = overrides[(tf, level_set)]
+            elif tf in market.timelines:
                 readings[(tf, level_set)] = read_tf(market, tf, tau, level_set)
     out = {}
     for spec in specs:
@@ -689,7 +717,8 @@ def level_events(market: Market, tf: str) -> List[dict]:
             if not remaining:
                 break
             events = detect_events(market.paths[tf], leg.a.price, leg.b.price, remaining, market.close_at(tf, start),
-                                   start_time=start, stop_time=end, ext_from_time=leg.b.confirmed_at, half_width=hw)
+                                   start_time=start, stop_time=end, ext_from_time=leg.b.confirmed_at, half_width=hw,
+                                   rupture_barrier=market.rupture_distance(leg))
             for r, ev in events.items():
                 if ev is not None:
                     found[r] = (ev, state)
