@@ -87,9 +87,21 @@ Modelo de datos real: 7 tablas (`unified_department`, `analysis_layer`, `efficie
     regla estricta N43. Sin reloj verificado, esa cuenta no recibe propuestas.
   - **Registro del P2 sistemático (N38, N40, N42):** el P2 del modelo D de `tools/p2_backtest.py` se calcula para cada
     análisis nuevo (con `analysis_start_time`) de las cuentas reales, y se agrega a `.data/p2_model_log.jsonl`. Nunca
-    se muestra en el wizard: se ve con `p2-model`. D necesita 800 velas semanales cerradas, así que en US500 (739) y
-    USTEC (732) da siempre `insufficient_history:1W`. Un modelo nuevo se suma en `P2_LOG_MODELS` con la fecha del día,
+    se muestra en el wizard: se ve con `p2-model`. Un modelo nuevo se suma en `P2_LOG_MODELS` con la fecha del día,
     sin cambiar la receta de uno existente.
+  - **Velas semanales de los índices (pendiente del usuario, verificado 2026-10-09):** D necesita 800 velas semanales
+    cerradas (umbral del prompt original de P2 sistemático, para que la EMA200 semanal esté formada), así que en los
+    índices da siempre `insufficient_history:1W`.
+    - US500 tiene 739, desde 2012-08. Sin agregar nada, llega a 800 hacia fines de noviembre de 2027. Su 1D recién
+      empieza en 2022, así que el 1W no se puede armar desde el 1D.
+    - USTEC no tiene ninguna vela en el banco: su reloj sigue sin verificar (9 de las 10 referencias).
+    - Hay dos salidas, las dos a decidir por el usuario:
+      - **Velas semanales externas:** rompe la regla de "solo velas verificadas" (T4). Irían en un archivo aparte,
+        solo para las semanas anteriores al banco, con un chequeo de que coincidan en las semanas que se solapan.
+      - **Un modelo de P2 nuevo** que pida menos historia semanal. Va con su propia fecha de alta, sin tocar D.
+    - El P0 sistemático no usa 1W: esto no lo afecta.
+  - **Registro del P0 sistemático:** es igual al del P2, pero escribe solo después de cada export fusionado, no al
+    guardar. Detalle en la sección "P0 sistemático y opción 2".
   - **Otras piezas:** las excepciones de toque por análisis en `config/auto_resolution.py:TOUCH_EXCEPTIONS` (N46), y
     la retención de `_incoming` en 3 corridas por símbolo (N47).
   - **Idea pendiente del usuario (spec 003, sin empezar):** que el Tactical Audit coloque las órdenes en MT5. Cambiaría
@@ -275,6 +287,52 @@ reemplazar al modelo **D** como feedback impreso. Prompt: "v1.2 — P2 banco v2"
     conocían. Repetido sin esos resultados da lo mismo.
   - (c) La 1D sola acierta 1 de 10, y un peso alto en 1D empeora cualquier combinación.
 - **Pendiente de decisión del usuario:** el merge o push de la rama, y si se conserva `0816ed9`.
+
+### P0 sistemático y opción 2 (2026-10-06 a 2026-10-09)
+
+Rama `claude/p0-sistematico` (worktree del mismo nombre).
+
+- **Evaluación pre-registrada (2026-10-06): resultado "Insuficiente" (D18).**
+  - Se probaron fractales de 2 velas con Fibonacci: modelos A a H, cada uno con su gemelo de niveles falsos (placebo).
+  - Los niveles de Fibonacci reaccionan igual que niveles falsos cercanos: XAU OR 0.97 [0.82, 1.14]. Ningún modelo le
+    gana al azar ni al P0 del operador.
+  - Pre-registro y protocolo en `jupyter/p0_sistematico/`, commits `3c12d0f` a `d1e5c36`. `d1e5c36` trae datos del
+    journal: el notebook ejecutado, el HTML y `resultados.csv`.
+  - El confirmatorio ya corrió una vez: no volver a correrlo.
+- **Visor (opción 3):** `tools/p0_visor.py` y `jupyter/p0_visor.ipynb`.
+  - Por short-id, dibuja los fractales y Fibonacci de cada TF.
+  - El operador puede elegir su tramo A→B, por letra o por la fecha de la vela, y se recalcula el P0.
+  - Oculta por defecto lo que pasó después del ancla.
+  - Los HTML de casos (`jupyter/p0_visor_casos/`) no se commitean: tienen datos del journal.
+- **Opción 2 (las reglas del operador):** `docs/p0-reglas-opcion2.md`, v1.0 congelada en `ddb4b42`.
+  - El motor es `core/p0_tramos.py`: pivotes de al menos 2 ATR14 de la TF, quiebre con 2 cierres seguidos, y A y B
+    como los lee el operador.
+  - `tools/p0_opcion2.py` agrega la lectura D8, con eventos que vencen a las 10 velas, y combina las TF de abajo hacia
+    arriba.
+  - El modelo congelado es `O2-v1.0` (`MODELS_BY_NAME`, huella `0265dd400d07`). Cambiar un valor es una versión
+    nueva, nunca un arreglo.
+  - En los 97 análisis de la evaluación da 39/71 en S4 estricto (+7), contra 34/65 (+3) de B y 43/91 (−5) del P0 del
+    operador. Es optimista y no se distingue del azar.
+- **Hallazgos de la calibración** (velas anteriores al 2026-05-15):
+  - Ninguna regla de quiebre predice mucho; el margen en ATR suma unos 3 puntos, sin significancia.
+  - Un pivote más grande no hace más confiable su quiebre.
+  - Un rechazo en un nivel de Fibonacci deja de servir a las 3 velas, y pasa lo mismo con los niveles falsos.
+  - Los P0 y P2 sistemáticos coinciden en 35 de 36 análisis donde opinan los dos: combinarlos no aporta.
+- **Medición prospectiva** (§9 del doc, con sus adendas):
+  - Entran los análisis de XAU, BTC y US500 con ancla posterior a 2026-10-09 17:00 GT, medidos con S4 estricto.
+  - La decisión llega a las 190 opiniones del modelo.
+  - Dos hipótesis de asistente: H1, el P0 del operador cuando el sistema no opina (se decide a los 66 casos); H2, el
+    P0 del operador contra su propia tesis (a los 29).
+  - Las miradas cada 3 meses, desde el 2027-01-09, son solo descriptivas.
+  - **No buscar valores ni reglas sobre esos análisis.**
+- **Registro en segundo plano** (`c421eb7`, `tools/p0_model_feedback.py`):
+  - Agrega a `.data/p0_model_log.jsonl` una línea por análisis nuevo de las cuentas reales y por modelo de
+    `P0_LOG_MODELS` (`config/auto_resolution.py`). Usa el formato, los reintentos y el candado del registro del P2.
+  - Corre solo en el catch-up después de cada export fusionado (`tools/candle_sync.py`), nunca al guardar.
+  - Usa solo velas cerradas en el ancla, así que da lo mismo cuándo corra.
+  - No se muestra en el wizard, y no tiene un comando como `p2-model`.
+- **Pendiente de decisión del usuario:** el merge de la rama, que es un fast-forward de `feature/tactical-tier-gate-df`.
+  Hasta entonces el registro no escribe. El primer catch-up después del merge registra todo desde el 2026-10-09.
 
 ## Estándar de este repo para research/arquitectura
 
