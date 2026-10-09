@@ -32,6 +32,21 @@ class Opcion2Params:
     expiry: Optional[int] = 10        # velas de la TF; None = un evento nunca vence
 
 
+# Modelos congelados (`docs/p0-reglas-opcion2.md` §9), con sus valores escritos acá y no tomados de los valores por
+# defecto: cambiar un valor por defecto no cambia un modelo congelado. Un modelo nuevo es una entrada nueva; la receta de
+# uno existente no se toca (el registro detecta el cambio por la huella).
+MODELS_BY_NAME: Dict[str, Opcion2Params] = {
+    "O2-v1.0": Opcion2Params(TramoParams(k=2.0, margin=0.0, closes=2, n=2), expiry=10),
+}
+
+
+def model_recipe(params: Opcion2Params) -> dict:
+    """Lo que define el cálculo de un modelo de la opción 2."""
+    t = params.tramos
+    return {"k": t.k, "margin": t.margin, "closes": t.closes, "n": t.n, "expiry": params.expiry,
+            "levels": "p0", "reading": "D8", "combine": "R10", "order": list(ORDER)}
+
+
 class Opcion2:
     """Las líneas de tiempo del motor de tramos de un mercado, calculadas una vez por TF."""
 

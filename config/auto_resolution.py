@@ -128,6 +128,17 @@ P2_LOG_MODELS = {
 P2_MODEL_LOG_NAME = "p2_model_log.jsonl"
 
 # --------------------------------------------------------------------------
+# Registro prospectivo del P0 sistemático, opción 2 (docs/p0-reglas-opcion2.md §9)
+# --------------------------------------------------------------------------
+
+# nombre del modelo en tools.p0_opcion2.MODELS_BY_NAME -> fecha de alta. Mismas reglas que P2_LOG_MODELS: un modelo
+# solo se registra en análisis con analysis_start_time >= esa fecha, y sumar uno es agregar una entrada.
+P0_LOG_MODELS = {
+    "O2-v1.0": "2026-10-09",
+}
+P0_MODEL_LOG_NAME = "p0_model_log.jsonl"
+
+# --------------------------------------------------------------------------
 # Export automático (N31, RF-20 a RF-20f)
 # --------------------------------------------------------------------------
 

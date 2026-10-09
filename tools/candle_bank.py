@@ -960,6 +960,10 @@ class SyncResult:
     p2_logged: int = 0
     p2_warnings: List[str] = field(default_factory=list)
     p2_error: Optional[str] = None
+    # Lo mismo para el registro del P0 sistemático (docs/p0-reglas-opcion2.md §9): nunca cambia `result`.
+    p0_logged: int = 0
+    p0_warnings: List[str] = field(default_factory=list)
+    p0_error: Optional[str] = None
 
 
 def merge_incoming_run(

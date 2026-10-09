@@ -517,6 +517,13 @@ def sync_symbol(
                     result.p2_logged, result.p2_warnings = len(logged.written), logged.warnings
                 except Exception as exc:  # noqa: BLE001
                     result.p2_error = f"{type(exc).__name__}: {exc}"
+                # El catch-up del registro del P0 sistemático (docs/p0-reglas-opcion2.md §9), igual que el del P2.
+                try:
+                    from tools.p0_model_feedback import catch_up as p0_catch_up
+                    logged = p0_catch_up(mt5_symbol, accounts_data_dir, bank_root, real_accounts, symbol_map)
+                    result.p0_logged, result.p0_warnings = len(logged.written), logged.warnings
+                except Exception as exc:  # noqa: BLE001
+                    result.p0_error = f"{type(exc).__name__}: {exc}"
             try:  # N47: con el candado del símbolo tomado; nunca cambia el resultado del export
                 pruned = prune_incoming_runs(incoming_root, mt5_symbol, protect=result.run_id)
                 result.pruned_runs, result.prune_skipped = pruned.removed, pruned.skipped
@@ -556,6 +563,12 @@ def format_result_line(result: SyncResult) -> str:
         line += f"; P2 model log skipped: {', '.join(result.p2_warnings)}"
     if result.p2_error:
         line += f"; P2 model log failed ({result.p2_error})"
+    if result.p0_logged:
+        line += f"; P0 model log: {result.p0_logged} new line{'s' if result.p0_logged != 1 else ''}"
+    if result.p0_warnings:
+        line += f"; P0 model log skipped: {', '.join(result.p0_warnings)}"
+    if result.p0_error:
+        line += f"; P0 model log failed ({result.p0_error})"
     return line
 
 
