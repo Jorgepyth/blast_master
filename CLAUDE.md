@@ -326,7 +326,10 @@ Rama `claude/p0-sistematico` (worktree del mismo nombre).
   - Los P0 y P2 sistemáticos coinciden en 35 de 36 análisis donde opinan los dos: combinarlos no aporta.
 - **Medición prospectiva** (§9 del doc, con sus adendas):
   - Entran los análisis de XAU, BTC y US500 con ancla posterior a 2026-10-09 17:00 GT, medidos con S4 estricto.
-  - La decisión llega a las 190 opiniones del modelo.
+  - La decisión llega a las 190 opiniones del modelo y se compara contra el **azar justo** (adenda `038234b`), no
+    contra 50%. El azar justo es el acierto de 10,000 sorteos con la misma mezcla de Long y Short del modelo, y da
+    alrededor de 44%: en S4 estricto, que en 48 h no se toque ningún nivel es pérdida para cualquiera. Contra 50%, la
+    prueba habría tenido 28% de chances de confirmar un acierto real de 55%; contra el azar justo, 91%.
   - Dos hipótesis de asistente: H1, el P0 del operador cuando el sistema no opina (se decide a los 66 casos); H2, el
     P0 del operador contra su propia tesis (a los 29).
   - Las miradas cada 3 meses, desde el 2027-01-09, son solo descriptivas.
