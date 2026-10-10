@@ -332,6 +332,10 @@ Rama `claude/p0-sistematico` (worktree del mismo nombre).
     prueba habría tenido 28% de chances de confirmar un acierto real de 55%; contra el azar justo, 91%.
   - Dos hipótesis de asistente: H1, el P0 del operador cuando el sistema no opina (se decide a los 66 casos); H2, el
     P0 del operador contra su propia tesis (a los 29).
+  - H3 (`907f255`): el edge del operador con el P0 sistemático en lugar del manual, recalculado con
+    `calculate_edge_score` y sus P1 a P4. En los 97 análisis, sin haberlo registrado antes, acertó 65% con neto +17,
+    contra 59% y +11 del edge real: el P0 sistemático dejó en Choppy 15 análisis en los que el edge real había acertado
+    5. Se decide junto con la principal, con una prueba de signos en los análisis donde los dos edges difieren.
   - Las miradas cada 3 meses, desde el 2027-01-09, son solo descriptivas.
   - **No buscar valores ni reglas sobre esos análisis.**
 - **Registro en segundo plano** (`c421eb7`, `tools/p0_model_feedback.py`):
