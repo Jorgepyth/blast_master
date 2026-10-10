@@ -275,3 +275,26 @@ población de v1.0, con la misma verdad (S4 estricto). No cambian el modelo.
     (McNemar por pares).
 - **H1 y H2 no cambian.** Su pregunta es otra: si sacar esas opiniones mejora el neto. Eso pasa cuando aciertan menos de
   50%, sin importar cuánto acierte el azar.
+
+### Adenda del 2026-10-09: hipótesis H3, el edge con P0 sistemático (escrita antes de mirar ningún análisis nuevo)
+
+- **Qué propone.** Calcular el edge del operador con su P1, P3 y P4, pero con el P0 sistemático (O2-v1.0) en lugar
+  del P0 manual. El cálculo:
+  - el edge se recalcula con `core.math_engine.calculate_edge_score(x0, x1, x2, x3, x4)`;
+  - x1 a x4 salen de las capas cargadas por el operador: dirección × fuerza, con Strong = 2, Mid = 1 y el resto 0, como
+    en `cli.main.get_str_val`;
+  - x0 sale de la línea del registro en segundo plano: la dirección del modelo × su fuerza, con la misma escala;
+  - el sesgo se decide con `cli.main.determine_market_bias`: ±0.26.
+- **De dónde sale.** Se probó después de la evaluación sobre los mismos 97 análisis, así que es una hipótesis, no un
+  hallazgo. Ahí, el edge con P0 sistemático opinó en 55 análisis y acertó 65% en S4 estricto, con neto +17. El edge
+  real opinó en 61, acertó 59% y tuvo neto +11. Cambió el sesgo en 24 análisis y no dio vuelta ninguna dirección: sacó 15
+  en los que el edge real había opinado (acertó 5) y sumó 9 (acertó 5).
+- **Cómo se mide.** En la misma población de v1.0, con la misma verdad (S4 estricto):
+  - para cada análisis se compara el puntaje del edge con P0 sistemático y el del edge real: +1 si acierta, −1 si
+    pierde, 0 si no opina (Choppy);
+  - se cuentan los análisis en que el edge con P0 sistemático queda mejor y los que queda peor. Los empates no cuentan.
+- **Cuándo se decide.** En el mismo momento que la decisión principal: a las 190 opiniones de la opción 2.
+- **Confirmada si:** el edge con P0 sistemático queda mejor más veces que peor, con p unilateral < 0.05 en una prueba
+  de signos. Si no, no se adopta.
+- **Qué se informa al lado:** el acierto contra el azar justo, el resultado en R y el escenario con P0 y P2
+  sistemáticos (el P2 casi no cambia el edge: en los 97 movió 4 análisis).
