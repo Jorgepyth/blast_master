@@ -254,3 +254,24 @@ población de v1.0, con la misma verdad (S4 estricto). No cambian el modelo.
 - **Advertencia:** el modelo se calibró con oro y BTC, así que en US500 queda fuera de muestra también por el activo.
 - **USTEC (US100)** queda fuera mientras su reloj no esté verificado y no tenga velas en el banco. Sumarlo sería otra
   adenda.
+
+### Adenda del 2026-10-09: la decisión se compara contra el azar justo (escrita antes de mirar ningún análisis nuevo)
+
+- **Por qué.** En S4 estricto, si en 48 h el precio no toca ningún nivel, la opinión pierde, sea Long o Short.
+  - En los 97 análisis de la evaluación pasó en 12, el 12%. Por eso, repartir al azar la misma mezcla de Long y Short
+    acierta alrededor de 44%, no 50%.
+  - Con 190 opiniones, el criterio de §9 ("el límite inferior del IC 95% supera 50%") pedía 109 aciertos, el 57.4%. Si
+    el acierto real fuera 55%, el modelo pasaría 28 de cada 100 veces.
+  - Contra el azar justo alcanzan 96 aciertos, el 50.5%, y pasaría 91 de cada 100 veces.
+- **Cómo se calcula el azar justo.** Sobre la misma población medida se hacen 10,000 sorteos, con semilla 20261009.
+  Cada sorteo reparte al azar, entre los análisis en los que opinó el modelo, la misma cantidad de Long y Short que dio
+  el modelo. El azar justo es el acierto promedio de los sorteos.
+- **Criterio nuevo.** Reemplaza "Sirve" y "No sirve" de §9; el resto queda igual.
+  - **Sirve:** menos del 5% de los sorteos aciertan tanto o más que el modelo (p unilateral < 0.05), y su neto supera al
+    de B en los mismos análisis.
+  - **No sirve:** el límite superior del IC 95% (Wilson) del acierto queda debajo del azar justo + 5 puntos.
+  - **Si no pasa ninguna de las dos:** insuficiente, y se sigue acumulando.
+  - No cambian la población, el momento de la decisión (190 opiniones) ni la comparación con B y con el P0 del operador
+    (McNemar por pares).
+- **H1 y H2 no cambian.** Su pregunta es otra: si sacar esas opiniones mejora el neto. Eso pasa cuando aciertan menos de
+  50%, sin importar cuánto acierte el azar.
