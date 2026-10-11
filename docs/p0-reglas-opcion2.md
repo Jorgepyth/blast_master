@@ -4,6 +4,11 @@
 `tools/p0_opcion2.py`) con sus valores por defecto. Cualquier cambio de reglas o de valores es una versión nueva, con su
 propio congelamiento y su propia población (sección 9).
 
+> **Nota del 2026-10-11, antes del primer push.** Se sacaron de la historia de git tres archivos con datos del journal,
+> todos del commit del 2026-10-06 que traía los resultados de la evaluación. Por eso los commits posteriores cambiaron
+> de identificador, con el mismo contenido, autor y fechas. El commit del modelo congelado, `bb5f9d0`, es ahora
+> `e1a52ba`. La tabla completa está en la última sección.
+
 - v0.1: primeras reglas, sacadas de los 24 tramos de 6 casos, con seis preguntas abiertas (P1–P6).
 - v0.2: con las respuestas del operador a P1–P6 y su relectura de los 6 casos. Suma dos hallazgos:
   - la lectura por TF de la evaluación (D8) ya se parece a la del operador cuando el tramo es el correcto;
@@ -400,3 +405,36 @@ población de v1.0, con la misma verdad (S4 estricto). No cambian el modelo.
   - el edge recalculado coincide con el guardado en los 97.
 
   H3b no se puede reproducir así: el registro de D600 empieza el 2026-10-09, y en esos análisis x2 vale 0.
+
+### Nota del 2026-10-11: identificadores de commit después de sacar los datos del journal
+
+Antes del primer push se sacaron de la historia los tres archivos con datos del journal del commit `d1e5c36`: el
+notebook ejecutado de la evaluación (`jupyter/p0_sistematico.ipynb`), su HTML y `jupyter/p0_sistematico/resultados.csv`.
+Quedan solo en el checkout del operador, sin seguimiento. `d1e5c36` no traía nada más y desapareció.
+
+Los commits siguientes tienen el mismo contenido, autor, fecha y mensaje, con otro identificador. Las adendas de arriba
+citan los identificadores viejos; estos son los nuevos:
+
+| Viejo | Nuevo | Qué trae |
+|---|---|---|
+| `5486a3c` | `0b93a5d` | Visor (opción 3) |
+| `bb5f9d0` | `e1a52ba` | El modelo congelado O2-v1.0 |
+| `ddb4b42` | `ac00ae8` | Reglas v1.0 y plan de medición (§9) |
+| `4ae98de` | `7ab24e1` | H1 y H2 |
+| `c421eb7` | `1bcd240` | Registro en segundo plano |
+| `18f4752` | `80bc853` | US500 en la población |
+| `c755b64` | `f67b102` | CLAUDE.md |
+| `f973060` | `ec0a65c` | Modelo P2 D600 |
+| `cfadf00` | `62a1e31` | CLAUDE.md |
+| `038234b` | `8e52447` | Criterio contra el azar justo |
+| `a359bcc` | `c3392db` | CLAUDE.md |
+| `907f255` | `bf74600` | H3 |
+| `669c992` | `0cb5365` | CLAUDE.md |
+| `7960190` | `8fd328f` | H3b |
+| `823f28c` | `60b3ced` | CLAUDE.md |
+| `d423bf7` | `f0fade9` | Tres cortes |
+| `2f0a77c` | `034a37a` | CLAUDE.md |
+| `f527259` | `ab611bb` | El script de la medición |
+| `0761fa6` | `739ed4c` | CLAUDE.md |
+
+Los commits del 2026-10-06 anteriores a `d1e5c36` (del prompt `76c9a53` al protocolo `60f9171`) no cambiaron.

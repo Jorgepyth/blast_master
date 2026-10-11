@@ -303,15 +303,16 @@ push).
   - Se probaron fractales de 2 velas con Fibonacci: modelos A a H, cada uno con su gemelo de niveles falsos (placebo).
   - Los niveles de Fibonacci reaccionan igual que niveles falsos cercanos: XAU OR 0.97 [0.82, 1.14]. Ningún modelo le
     gana al azar ni al P0 del operador.
-  - Pre-registro y protocolo en `jupyter/p0_sistematico/`, commits `3c12d0f` a `d1e5c36`. `d1e5c36` trae datos del
-    journal: el notebook ejecutado, el HTML y `resultados.csv`.
+  - Pre-registro y protocolo en `jupyter/p0_sistematico/`, commits `3c12d0f` a `60f9171`. El notebook ejecutado
+    (`jupyter/p0_sistematico.ipynb`), su HTML y `resultados.csv` tienen datos del journal: se sacaron de la historia
+    antes del primer push (2026-10-11) y quedan solo en el checkout principal, sin seguimiento.
   - El confirmatorio ya corrió una vez: no volver a correrlo.
 - **Visor (opción 3):** `tools/p0_visor.py` y `jupyter/p0_visor.ipynb`.
   - Por short-id, dibuja los fractales y Fibonacci de cada TF.
   - El operador puede elegir su tramo A→B, por letra o por la fecha de la vela, y se recalcula el P0.
   - Oculta por defecto lo que pasó después del ancla.
   - Los HTML de casos (`jupyter/p0_visor_casos/`) no se commitean: tienen datos del journal.
-- **Opción 2 (las reglas del operador):** `docs/p0-reglas-opcion2.md`, v1.0 congelada en `ddb4b42`.
+- **Opción 2 (las reglas del operador):** `docs/p0-reglas-opcion2.md`, v1.0 congelada en `ac00ae8`.
   - El motor es `core/p0_tramos.py`: pivotes de al menos 2 ATR14 de la TF, quiebre con 2 cierres seguidos, y A y B
     como los lee el operador.
   - `tools/p0_opcion2.py` agrega la lectura D8, con eventos que vencen a las 10 velas, y combina las TF de abajo hacia
@@ -327,20 +328,20 @@ push).
   - Los P0 y P2 sistemáticos coinciden en 35 de 36 análisis donde opinan los dos: combinarlos no aporta.
 - **Medición prospectiva** (§9 del doc, con sus adendas):
   - Entran los análisis de XAU, BTC y US500 con ancla posterior a 2026-10-09 17:00 GT, medidos con S4 estricto.
-  - La decisión llega a las 190 opiniones del modelo y se compara contra el **azar justo** (adenda `038234b`), no
+  - La decisión llega a las 190 opiniones del modelo y se compara contra el **azar justo** (adenda `8e52447`), no
     contra 50%. El azar justo es el acierto de 10,000 sorteos con la misma mezcla de Long y Short del modelo, y da
     alrededor de 44%: en S4 estricto, que en 48 h no se toque ningún nivel es pérdida para cualquiera. Contra 50%, la
     prueba habría tenido 28% de chances de confirmar un acierto real de 55%; contra el azar justo, 91%.
-  - Desde `d423bf7`, la decisión principal se mira en tres cortes: a las 63, 127 y 190 opiniones (O'Brien-Fleming).
+  - Desde `f0fade9`, la decisión principal se mira en tres cortes: a las 63, 127 y 190 opiniones (O'Brien-Fleming).
     "Sirve" pide p unilateral menor que 0.0015, 0.0182 y 0.0436, con 100,000 sorteos. "No sirve" se decide solo a las
     190. Cada corte usa exactamente las primeras N opiniones por orden de ancla.
   - Dos hipótesis de asistente: H1, el P0 del operador cuando el sistema no opina (se decide a los 66 casos); H2, el
     P0 del operador contra su propia tesis (a los 29).
-  - H3 (`907f255`): el edge del operador con el P0 sistemático en lugar del manual, recalculado con
+  - H3 (`bf74600`): el edge del operador con el P0 sistemático en lugar del manual, recalculado con
     `calculate_edge_score` y sus P1 a P4. En los 97 análisis, sin haberlo registrado antes, acertó 65% con neto +17,
     contra 59% y +11 del edge real: el P0 sistemático dejó en Choppy 15 análisis en los que el edge real había acertado
     5. Se decide junto con la principal, con una prueba de signos en los análisis donde los dos edges difieren.
-    Desde `7960190` tiene dos partes: H3a (solo P0 sistemático) y H3b (P0 sistemático y el P2 de D600), corregidas
+    Desde `8fd328f` tiene dos partes: H3a (solo P0 sistemático) y H3b (P0 sistemático y el P2 de D600), corregidas
     con Holm. En los 97 dieron lo mismo: cambiar el P2 movió 4 análisis.
   - Las miradas cada 3 meses, desde el 2027-01-09, son solo descriptivas.
   - **No buscar valores ni reglas sobre esos análisis.**
@@ -348,7 +349,7 @@ push).
     medición"). Desde la raíz del checkout principal, `python tools/p0_prospectivo.py` muestra cuánto falta para cada
     corte y cada hipótesis, y el resultado solo de los que ya llegaron a su número. `--descriptivo` agrega las cifras
     acumuladas, para las miradas trimestrales. Solo lee.
-- **Registro en segundo plano** (`c421eb7`, `tools/p0_model_feedback.py`):
+- **Registro en segundo plano** (`1bcd240`, `tools/p0_model_feedback.py`):
   - Agrega a `.data/p0_model_log.jsonl` una línea por análisis nuevo de las cuentas reales y por modelo de
     `P0_LOG_MODELS` (`config/auto_resolution.py`). Usa el formato, los reintentos y el candado del registro del P2.
   - Corre solo en el catch-up después de cada export fusionado (`tools/candle_sync.py`), nunca al guardar.
@@ -356,8 +357,9 @@ push).
   - No se muestra en el wizard, y no tiene un comando como `p2-model`.
   - Para ver que escribe: después de un export fusionado con análisis nuevos, `.data/candle_export.log` dice
     `P0 model log: N new line(s)`.
-- **Pendiente de decisión del usuario:** el push. `d1e5c36` trae datos del journal y el repo tiene remoto en GitHub: si
-  no deben subir, hay que sacarlos de la historia antes del primer push.
+- **Push del 2026-10-11, sin los datos del journal.** Sacarlos de la historia cambió los identificadores de los commits
+  posteriores al 2026-10-06, con las mismas fechas. Este archivo ya cita los nuevos. Las adendas del plan citan los
+  viejos, y la tabla de equivalencias está al final de `docs/p0-reglas-opcion2.md`.
 
 ## Estándar de este repo para research/arquitectura
 
