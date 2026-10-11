@@ -316,3 +316,46 @@ población de v1.0, con la misma verdad (S4 estricto). No cambian el modelo.
   - Como son dos pruebas, se corrige con Holm: la de p más chico tiene que quedar debajo de 0.025 y la otra, debajo de
     0.05.
   - Lo esperable es que den casi lo mismo.
+
+### Adenda del 2026-10-11: tres cortes para la decisión principal (escrita antes de mirar ningún análisis nuevo)
+
+- **Qué cambia.** La decisión principal ya no se mira una sola vez, a las 190 opiniones: se mira en tres cortes, a las
+  **63, 127 y 190 opiniones**, con una vara más exigente en los primeros. Es un diseño de O'Brien-Fleming con error
+  total de 5%, unilateral.
+- **Por qué.** A ritmo normal, 190 opiniones son unos 11 meses. Si el modelo es claramente bueno, se nota antes. Mirar
+  varias veces con la misma vara aumentaría las chances de confirmar algo por suerte; los umbrales de abajo lo
+  compensan.
+- **Qué entra en cada corte.**
+  - Una opinión es un análisis de la población de v1.0 en el que O2-v1.0 da Long o Short.
+  - Cada corte usa exactamente las primeras 63, 127 o 190 opiniones por orden de ancla, aunque al mirar ya haya más.
+  - Se mira cuando todas las opiniones del corte están resueltas: pasaron las 48 h y hay velas.
+- **Sirve en un corte** si se cumplen las dos condiciones de la adenda del azar justo, con el umbral de p de ese corte:
+
+  | Corte | Opiniones | p unilateral menor que | Aciertos que hacen falta si el azar justo fuera 44% |
+  |---|---|---|---|
+  | 1 | 63 | 0.0015 | 40 (63.5%) |
+  | 2 | 127 | 0.0182 | 69 (54.3%) |
+  | 3 | 190 | 0.0436 | 96 (50.5%) |
+
+  - La otra condición no cambia: el neto supera al de B en las mismas opiniones.
+  - El p sale de 100,000 sorteos, no de 10,000, con la misma semilla (20261009). En el primer corte el umbral es chico
+    y hace falta más precisión.
+  - Los umbrales salen de z = 2.970, 2.092 y 1.710: C = 1.710 con las fracciones de información 63/190, 127/190 y 1.
+  - Los aciertos de la última columna son una ilustración, con la cola exacta de la binomial. El azar justo real
+    depende de la mezcla de Long y Short del modelo en cada corte.
+- **Si en el corte 1 o 2 no sirve, se sigue acumulando.** "No sirve" e "insuficiente" se deciden solo en el corte 3, con
+  el criterio de la adenda del azar justo.
+- **Qué cambia en las chances.** Simulación con azar justo de 44%:
+  - Error total (confirmar un modelo sin ventaja): 4.5%. Con una sola mirada a las 190 era 4.1%.
+  - Un acierto real de 55% se confirma 91 de cada 100 veces, igual que con una sola mirada: 11 en el corte 1, 49 en el
+    2 y 31 en el 3.
+  - Un acierto real de 60% se confirma casi siempre: 33 de cada 100 veces en el corte 1, y 92 hasta el corte 2.
+  - El corte 3 pide los mismos 96 aciertos que una sola mirada.
+- **Lo que no cambia.**
+  - H1 y H2 se deciden a los 66 y 29 casos.
+  - H3a y H3b se deciden a las 190 opiniones, aunque la decisión principal llegue antes: el registro sigue acumulando.
+  - La población, la verdad (S4 estricto) y la comparación con B y con el P0 del operador.
+  - Las miradas trimestrales siguen siendo descriptivas: no adelantan ningún corte.
+- **Si el modelo sirve en el corte 1 o 2,** el asistente no cambia hasta que se decidan H1, H2 y H3. Mostrar el P0
+  sistemático antes cambiaría el P0 del operador, que esas hipótesis miden. Si el operador decide mostrarlo antes, las
+  hipótesis pendientes se cierran con los análisis anteriores al cambio, y se informa así.
