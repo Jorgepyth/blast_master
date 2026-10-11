@@ -298,3 +298,21 @@ población de v1.0, con la misma verdad (S4 estricto). No cambian el modelo.
   de signos. Si no, no se adopta.
 - **Qué se informa al lado:** el acierto contra el azar justo, el resultado en R y el escenario con P0 y P2
   sistemáticos (el P2 casi no cambia el edge: en los 97 movió 4 análisis).
+
+### Adenda del 2026-10-11: H3 también con P0 y P2 sistemáticos (escrita antes de mirar ningún análisis nuevo)
+
+- **Qué cambia.** H3 pasa a tener dos partes, que se miden igual y al mismo tiempo:
+  - **H3a:** el edge con el P0 sistemático en lugar del manual. Es la de la adenda anterior, sin cambios.
+  - **H3b:** el edge con P0 y P2 sistemáticos en lugar de los manuales.
+    - x0 es el de H3a.
+    - x2 es el P2 del modelo D600 (`p2_rescaled`, de −2 a 2) del registro del P2. D600 es igual a D en oro y bitcoin,
+      y además corre en US500.
+    - Si D600 no tiene valor para un análisis, x2 = 0.
+    - P1, P3 y P4 siguen siendo los del operador.
+- **Por qué.** El operador pidió medir el reemplazo de las dos capas sistemáticas.
+  - En los 97 análisis, sin haberlo registrado antes, H3b acertó 37 de 57 (65%), con neto +17, lo mismo que H3a.
+  - Cambiar solo el P2 movió 4 análisis: pesa 15% del edge, y el modelo D no opinó en 55 de los 97.
+- **Cómo se decide.** Cada parte se decide con su propia prueba de signos, en el momento de la decisión principal.
+  - Como son dos pruebas, se corrige con Holm: la de p más chico tiene que quedar debajo de 0.025 y la otra, debajo de
+    0.05.
+  - Lo esperable es que den casi lo mismo.
