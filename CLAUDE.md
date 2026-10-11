@@ -330,6 +330,9 @@ Rama `claude/p0-sistematico` (worktree del mismo nombre).
     contra 50%. El azar justo es el acierto de 10,000 sorteos con la misma mezcla de Long y Short del modelo, y da
     alrededor de 44%: en S4 estricto, que en 48 h no se toque ningún nivel es pérdida para cualquiera. Contra 50%, la
     prueba habría tenido 28% de chances de confirmar un acierto real de 55%; contra el azar justo, 91%.
+  - Desde `d423bf7`, la decisión principal se mira en tres cortes: a las 63, 127 y 190 opiniones (O'Brien-Fleming).
+    "Sirve" pide p unilateral menor que 0.0015, 0.0182 y 0.0436, con 100,000 sorteos. "No sirve" se decide solo a las
+    190. Cada corte usa exactamente las primeras N opiniones por orden de ancla.
   - Dos hipótesis de asistente: H1, el P0 del operador cuando el sistema no opina (se decide a los 66 casos); H2, el
     P0 del operador contra su propia tesis (a los 29).
   - H3 (`907f255`): el edge del operador con el P0 sistemático en lugar del manual, recalculado con
