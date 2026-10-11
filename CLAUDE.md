@@ -294,9 +294,10 @@ reemplazar al modelo **D** como feedback impreso. Prompt: "v1.2 — P2 banco v2"
   - (c) La 1D sola acierta 1 de 10, y un peso alto en 1D empeora cualquier combinación.
 - **Pendiente de decisión del usuario:** el merge o push de la rama, y si se conserva `0816ed9`.
 
-### P0 sistemático y opción 2 (2026-10-06 a 2026-10-09)
+### P0 sistemático y opción 2 (2026-10-06 a 2026-10-11)
 
-Rama `claude/p0-sistematico` (worktree del mismo nombre).
+Rama `claude/p0-sistematico`, integrada el 2026-10-11 en `feature/tactical-tier-gate-df` y `main` (fast-forward, sin
+push).
 
 - **Evaluación pre-registrada (2026-10-06): resultado "Insuficiente" (D18).**
   - Se probaron fractales de 2 velas con Fibonacci: modelos A a H, cada uno con su gemelo de niveles falsos (placebo).
@@ -343,14 +344,20 @@ Rama `claude/p0-sistematico` (worktree del mismo nombre).
     con Holm. En los 97 dieron lo mismo: cambiar el P2 movió 4 análisis.
   - Las miradas cada 3 meses, desde el 2027-01-09, son solo descriptivas.
   - **No buscar valores ni reglas sobre esos análisis.**
+  - **El cálculo también quedó fijado antes de tener datos:** `tools/p0_prospectivo.py` (adenda "el script de la
+    medición"). Desde la raíz del checkout principal, `python tools/p0_prospectivo.py` muestra cuánto falta para cada
+    corte y cada hipótesis, y el resultado solo de los que ya llegaron a su número. `--descriptivo` agrega las cifras
+    acumuladas, para las miradas trimestrales. Solo lee.
 - **Registro en segundo plano** (`c421eb7`, `tools/p0_model_feedback.py`):
   - Agrega a `.data/p0_model_log.jsonl` una línea por análisis nuevo de las cuentas reales y por modelo de
     `P0_LOG_MODELS` (`config/auto_resolution.py`). Usa el formato, los reintentos y el candado del registro del P2.
   - Corre solo en el catch-up después de cada export fusionado (`tools/candle_sync.py`), nunca al guardar.
   - Usa solo velas cerradas en el ancla, así que da lo mismo cuándo corra.
   - No se muestra en el wizard, y no tiene un comando como `p2-model`.
-- **Pendiente de decisión del usuario:** el merge de la rama, que es un fast-forward de `feature/tactical-tier-gate-df`.
-  Hasta entonces el registro no escribe. El primer catch-up después del merge registra todo desde el 2026-10-09.
+  - Para ver que escribe: después de un export fusionado con análisis nuevos, `.data/candle_export.log` dice
+    `P0 model log: N new line(s)`.
+- **Pendiente de decisión del usuario:** el push. `d1e5c36` trae datos del journal y el repo tiene remoto en GitHub: si
+  no deben subir, hay que sacarlos de la historia antes del primer push.
 
 ## Estándar de este repo para research/arquitectura
 
