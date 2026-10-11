@@ -2642,7 +2642,7 @@ def flow_review_analysis():
             console.print(Panel(exec_text, title="[bold cyan]Ejecuciones (Tactical Audits)[/bold cyan]", border_style="cyan", box=box.ROUNDED))
 
         action_prompt = inquirer.select(
-            message="Select action (or Ctrl+F to open all linked image assets) >",
+            message="Select action (or Ctrl+F to open all linked image assets, Ctrl+J for the P2 view) >",
             choices=[
                 Choice("back", name="[<] Return to Ledger Index"),
                 Choice("clone", name="[C] Clone for Re-Entry (Fork Structural Vector)")
@@ -2694,7 +2694,17 @@ def flow_review_analysis():
                                 subprocess.Popen(["gio", "open", abs_target_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except Exception:
                         pass
-                        
+
+        @action_prompt.register_kb("c-j")
+        def _open_p2_view(event):
+            # Vista P2 (tools/p2_vista.py): tu P2, el P2 sistemático y las velas, en el navegador. Corre en otro hilo
+            # para no trabar el menú; si algo falla, abre una página con el error.
+            import threading
+            from tools import p2_vista
+            db_file = p2_vista.db_path_of(raw_conn)
+            if db_file:
+                threading.Thread(target=p2_vista.open_p2_view, args=(db_file, selected_id), daemon=True).start()
+
         action = action_prompt.execute()
         if action == "back":
             return
