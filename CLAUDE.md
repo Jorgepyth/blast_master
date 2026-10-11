@@ -15,6 +15,7 @@ CLI interactivo (Click + Rich) de trading journal, multi-cuenta/multi-activo. Ca
   |---|---|
   | Todos los días | `trading`; las velas se exportan solas (ver "Export automático" más abajo) |
   | Ver los win rates | `python cli/main.py resolution-report` |
+  | Ver el P2 de un análisis | Ctrl+J en el detalle del análisis, o `python tools/p2_vista.py --trade-id ID` |
   | Cada tanto (mensual) | `python cli/main.py backfill --hide-unchanged` y, si hay algo, con `--apply` |
   | Si las velas no parecen entrar | `python cli/main.py candles status` y `.data/candle_export.log` |
   | Si no corrió el backup de las 8:00 o el USB no estaba montado | `sudo mount /mnt/d` y `python tools/backup.py backup` |
@@ -87,8 +88,15 @@ Modelo de datos real: 7 tablas (`unified_department`, `analysis_layer`, `efficie
     regla estricta N43. Sin reloj verificado, esa cuenta no recibe propuestas.
   - **Registro del P2 sistemático (N38, N40, N42):** el P2 del modelo D de `tools/p2_backtest.py` se calcula para cada
     análisis nuevo (con `analysis_start_time`) de las cuentas reales, y se agrega a `.data/p2_model_log.jsonl`. Nunca
-    se muestra en el wizard: se ve con `p2-model`. Un modelo nuevo se suma en `P2_LOG_MODELS` con la fecha del día,
-    sin cambiar la receta de uno existente.
+    se muestra en el wizard: se ve con `p2-model` y con la vista P2. Un modelo nuevo se suma en `P2_LOG_MODELS` con la
+    fecha del día, sin cambiar la receta de uno existente.
+  - **Vista P2 (2026-10-11):** Ctrl+J en el detalle de un análisis arma `.data/reports/p2_<id>.html` y lo abre en el
+    navegador (`tools/p2_vista.py`). Muestra el P2 del operador, el de D y D600 con su cuenta por temporalidad, las velas
+    de esas temporalidades con sus EMA y el resultado del análisis.
+    - El P2 de cada modelo sale del registro; si no hay línea, se calcula al abrir con `model_p2`.
+    - **Muestra el P2 sistemático siempre,** también con el análisis abierto (decisión del usuario). Desde ese día, el P2
+      del operador ya no se compara a ciegas contra D. Nunca muestra el P0 sistemático.
+    - Ctrl+J llega como salto de línea (LF) y Enter como CR, así que no se confunden.
   - **Velas semanales de los índices y el modelo D600 (2026-10-09):** D necesita 800 velas semanales cerradas (umbral
     del prompt original de P2 sistemático, para que la EMA200 semanal esté formada), así que en los índices da siempre
     `insufficient_history:1W`.
@@ -345,6 +353,8 @@ push).
     con Holm. En los 97 dieron lo mismo: cambiar el P2 movió 4 análisis.
   - Las miradas cada 3 meses, desde el 2027-01-09, son solo descriptivas.
   - **No buscar valores ni reglas sobre esos análisis.**
+  - **El P2 sistemático está a la vista** (vista P2, Ctrl+J): la población se mide entera así, y H3 responde para ese
+    régimen, no a ciegas (adenda "el P2 sistemático se ve siempre"). El P0 sistemático sigue oculto.
   - **El cálculo también quedó fijado antes de tener datos:** `tools/p0_prospectivo.py` (adenda "el script de la
     medición"). Desde la raíz del checkout principal, `python tools/p0_prospectivo.py` muestra cuánto falta para cada
     corte y cada hipótesis, y el resultado solo de los que ya llegaron a su número. `--descriptivo` agrega las cifras
