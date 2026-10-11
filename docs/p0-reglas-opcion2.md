@@ -359,3 +359,44 @@ población de v1.0, con la misma verdad (S4 estricto). No cambian el modelo.
 - **Si el modelo sirve en el corte 1 o 2,** el asistente no cambia hasta que se decidan H1, H2 y H3. Mostrar el P0
   sistemático antes cambiaría el P0 del operador, que esas hipótesis miden. Si el operador decide mostrarlo antes, las
   hipótesis pendientes se cierran con los análisis anteriores al cambio, y se informa así.
+
+### Adenda del 2026-10-11: el script de la medición (escrita antes de mirar ningún análisis nuevo)
+
+- **Qué es.** `tools/p0_prospectivo.py`, con sus pruebas en `tests/test_p0_prospectivo.py`. Calcula los tres cortes, H1,
+  H2, H3a y H3b como dicen §9 y sus adendas. Se escribió cuando la población todavía estaba vacía, así que el cálculo
+  también queda fijado antes de ver datos.
+- **Cómo se usa.** Desde la raíz del checkout principal, `python tools/p0_prospectivo.py`. Solo lee.
+  - Por defecto dice cuánto falta para cada corte y cada hipótesis, y muestra el resultado solo de los que ya llegaron a
+    su número con todos sus análisis resueltos.
+  - `--descriptivo` agrega las cifras acumuladas, para las miradas trimestrales. No deciden nada.
+- **Lo que el plan no detallaba y el script fija.**
+  - **O2-v1.0** sale del registro en segundo plano: la línea vigente, con estado `ok` y la huella `0265dd400d07`. Si falta,
+    se recalcula con el código congelado y las velas cerradas en el ancla, como el registro. El informe dice cuántas
+    salieron de cada lado.
+  - **B** no se registra: se recalcula con el código de la evaluación (`predictions_for` sobre el banco).
+  - **Cuándo cuenta un análisis:** cuando su S4 estricto está resuelto, con las reglas de `core/outcome_metrics.py`. Los
+    que no se pueden resolver nunca, como una vela que toca los dos niveles, quedan fuera, como en la evaluación.
+  - **Cuándo se mira un corte:** cuando sus N opiniones están resueltas y ningún análisis anterior tiene el modelo
+    pendiente de cálculo. Si no, ese análisis podría sumarse después y cambiar el conjunto. Lo mismo vale para H1 y H3.
+  - **El P0 del operador** es la capa P0 cargada: Long o Short. Neutral o vacío no opina. **La tesis** es el lado del
+    EVP respecto del precio de partida.
+  - **H1, "el sistema no opina":** O2-v1.0 tiene una línea válida con dirección 0. Sin línea válida, el análisis no
+    cuenta.
+  - **H3** usa los análisis de la población hasta el que trae la opinión 190, inclusive. Los que no tienen una línea
+    válida de O2-v1.0 quedan fuera. El edge real se recalcula con las capas guardadas, P0 a P4, y el informe dice en
+    cuántos análisis difiere del guardado.
+  - **La prueba de signos** es la binomial exacta unilateral, sin empates.
+  - **Los sorteos** son 100,000, en bloques de 10,000, con `numpy.random.default_rng(20261009)` y `permuted` por fila.
+  - **R** se mide desde el precio de partida, y es descriptivo:
+    - si toca primero su nivel en 48 h, gana la distancia a ese nivel dividida por la distancia al contrario;
+    - si toca primero el contrario, −1;
+    - si en 48 h no toca ninguno, se cierra al cierre de la vela 1H de las 48 h.
+  - **Una vez tomada la decisión principal,** los cortes siguientes no se miran.
+- **Validación.** Corrido sobre los 97 análisis de la evaluación, moviendo el inicio de la población (ninguno de la
+  población real), reproduce exactamente las cifras ya publicadas:
+  - O2-v1.0 39/71 (+7), B 34/65 (+3), el P0 del operador 43/91 (−5) y la tesis 52/97;
+  - el edge real 36/61 (+11), y H3a 36/55 (+17), con 15 análisis mejores y 9 peores;
+  - H1 8/24 y H2 1/10;
+  - el edge recalculado coincide con el guardado en los 97.
+
+  H3b no se puede reproducir así: el registro de D600 empieza el 2026-10-09, y en esos análisis x2 vale 0.
