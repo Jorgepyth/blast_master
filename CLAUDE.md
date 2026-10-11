@@ -336,6 +336,8 @@ Rama `claude/p0-sistematico` (worktree del mismo nombre).
     `calculate_edge_score` y sus P1 a P4. En los 97 análisis, sin haberlo registrado antes, acertó 65% con neto +17,
     contra 59% y +11 del edge real: el P0 sistemático dejó en Choppy 15 análisis en los que el edge real había acertado
     5. Se decide junto con la principal, con una prueba de signos en los análisis donde los dos edges difieren.
+    Desde `7960190` tiene dos partes: H3a (solo P0 sistemático) y H3b (P0 sistemático y el P2 de D600), corregidas
+    con Holm. En los 97 dieron lo mismo: cambiar el P2 movió 4 análisis.
   - Las miradas cada 3 meses, desde el 2027-01-09, son solo descriptivas.
   - **No buscar valores ni reglas sobre esos análisis.**
 - **Registro en segundo plano** (`c421eb7`, `tools/p0_model_feedback.py`):
