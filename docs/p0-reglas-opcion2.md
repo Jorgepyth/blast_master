@@ -438,3 +438,19 @@ citan los identificadores viejos; estos son los nuevos:
 | `0761fa6` | `739ed4c` | CLAUDE.md |
 
 Los commits del 2026-10-06 anteriores a `d1e5c36` (del prompt `76c9a53` al protocolo `60f9171`) no cambiaron.
+
+### Adenda del 2026-10-11: el P2 sistemático se ve siempre (escrita antes de mirar ningún análisis nuevo)
+
+- **Qué cambia.** Desde que se integra la vista P2 (`tools/p2_vista.py`, Ctrl+J en el detalle del análisis), el operador
+  puede ver el P2 sistemático (D y D600) de cualquier análisis en cualquier momento, también antes de cargar el Tactical
+  Audit. Es decisión del operador: se le ofreció mostrarlo solo con el análisis ya resuelto, y eligió mostrarlo siempre.
+- **Qué no cambia.**
+  - El P0 sistemático sigue oculto: la vista no lo muestra.
+  - La decisión principal (O2-v1.0 contra el azar justo) no depende de lo que vea el operador.
+  - Las reglas de H1, H2, H3a y H3b, y el script de la medición.
+- **Qué significa para las conclusiones.** La población empieza después de esta adenda (no tiene ningún análisis
+  todavía), así que se mide entera con el P2 sistemático a la vista.
+  - En H3, las capas P1, P3 y P4 del operador pueden dejar de ser independientes del P2 sistemático, si lo mira antes de
+    cargarlas. H3 responde entonces si el edge mejora con el P0 sistemático **en ese régimen**, no a ciegas.
+  - Lo mismo vale para el P0 del operador en H1 y H2, aunque lo que ve es el modelo de P2, no el de P0.
+  - La comparación del P2 del operador contra D (evaluación "P2 banco v2") deja de ser a ciegas desde esta fecha.
