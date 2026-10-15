@@ -108,7 +108,10 @@ Modelo de datos real: 7 tablas (`unified_department`, `analysis_layer`, `efficie
     de esas temporalidades con sus EMA y el resultado del análisis.
     - El P2 de cada modelo sale del registro; si no hay línea, se calcula al abrir con `model_p2`.
     - **Muestra el P2 sistemático siempre,** también con el análisis abierto (decisión del usuario). Desde ese día, el P2
-      del operador ya no se compara a ciegas contra D. Nunca muestra el P0 sistemático.
+      del operador ya no se compara a ciegas contra D.
+    - **El P0 sistemático (O2-v1.0) aparece solo con el análisis resuelto** (tocó un nivel o pasaron 48 h; opción A del
+      usuario, 2026-10-15). Antes, la vista dice cuánto falta y el dato no entra al HTML. Sale del registro del P0, o se
+      calcula al abrir con `model_p0`.
     - Ctrl+J llega como salto de línea (LF) y Enter como CR, así que no se confunden.
   - **Velas semanales de los índices y el modelo D600 (2026-10-09):** D necesita 800 velas semanales cerradas (umbral
     del prompt original de P2 sistemático, para que la EMA200 semanal esté formada), así que en los índices da siempre
@@ -374,7 +377,9 @@ push).
   - Las miradas cada 3 meses, desde el 2027-01-09, son solo descriptivas.
   - **No buscar valores ni reglas sobre esos análisis.**
   - **El P2 sistemático está a la vista** (vista P2, Ctrl+J): la población se mide entera así, y H3 responde para ese
-    régimen, no a ciegas (adenda "el P2 sistemático se ve siempre"). El P0 sistemático sigue oculto.
+    régimen, no a ciegas (adenda "el P2 sistemático se ve siempre"). **El P0 sistemático se ve solo con el análisis
+    resuelto** (adenda del 2026-10-15): H1, H2 y H3 responden para ese régimen. P0 a P4 se cargan antes de guardar, así
+    que la vista no toca las capas de su propio análisis; el efecto posible es de aprendizaje entre análisis.
   - **El cálculo también quedó fijado antes de tener datos:** `tools/p0_prospectivo.py` (adenda "el script de la
     medición"). Desde la raíz del checkout principal, `python tools/p0_prospectivo.py` muestra cuánto falta para cada
     corte y cada hipótesis, y el resultado solo de los que ya llegaron a su número. `--descriptivo` agrega las cifras
