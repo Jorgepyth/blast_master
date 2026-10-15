@@ -470,3 +470,20 @@ Los commits del 2026-10-06 anteriores a `d1e5c36` (del prompt `76c9a53` al proto
 - **Cómo se reporta.** Cada activo por separado y todos juntos. Las decisiones se toman con todos juntos: los tres cortes,
   H1 y H2 a los 66 y 29 casos, y H3 a las 190 opiniones.
 - **El script.** `tools/p0_prospectivo.py` suma la cuenta 003 a su lista. Nada más cambia.
+
+### Adenda del 2026-10-15: el P0 sistemático se ve en la vista P2 con el análisis ya resuelto
+
+- **Qué cambia.** La vista P2 (Ctrl+J en el detalle del análisis) muestra también el P0 sistemático (O2-v1.0), pero
+  solo cuando el análisis ya se resolvió: tocó un nivel o pasaron las 48 h de S4 estricto. Antes de eso la vista dice
+  cuánto falta, y el dato no entra al HTML. Es la opción A que eligió el operador; las otras eran mostrarlo siempre o no
+  mostrarlo hasta decidir H1, H2 y H3.
+- **Corrección de la adenda "el P2 sistemático se ve siempre".** Esa adenda decía que P1, P3 y P4 podían dejar de ser
+  independientes si el operador miraba la vista antes de cargarlos. No es así: P0 a P4 se cargan en el asistente del
+  análisis nuevo, antes de guardar, y la vista solo existe para análisis guardados. Una vista no puede tocar las capas
+  de su propio análisis.
+- **Lo que sí puede pasar es un aprendizaje de un análisis a otro.** Al ver cómo leyó el sistema los análisis ya
+  cerrados, el operador puede ir ajustando sus lecturas siguientes, justo en los casos que miden H1 y H2 (cuando el
+  sistema no opina, o cuando su P0 va contra su tesis). Por eso H1, H2 y H3 responden, desde esta fecha, para el régimen
+  "con el P0 sistemático visible después de resolver", no a ciegas.
+- **Lo que no cambia.** El asistente sigue sin mostrar nada sistemático mientras se carga un análisis. La decisión
+  principal no depende de lo que vea el operador. Las reglas de las hipótesis y el script quedan igual.
