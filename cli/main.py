@@ -1083,6 +1083,41 @@ def flow_flight_sessions():
             input("Press Enter to continue...")
             return
 
+CLI_ERRORS_LOG = os.path.join(".data", "cli_errors.log")
+_TRADE_ID_NAMES = ("trade_id", "selected_id", "preselected_trade_id", "inspect_id")
+
+
+def log_cli_error(exc: BaseException, menu_choice=None, path: str = CLI_ERRORS_LOG) -> Optional[str]:
+    """Guarda en `.data/cli_errors.log` el detalle de un error que cerró el CLI: hora, opción del menú, cuenta activa, el
+    análisis que se estaba trabajando (si alguna variable `trade_id` del camino lo dice) y el traceback completo. Solo
+    agrega texto. Si no existe la carpeta `.data/` no crea nada (así los tests no la crean). Nunca levanta."""
+    try:
+        if not os.path.isdir(os.path.dirname(path) or "."):
+            return None
+        import traceback as _tb
+        trade_ids = []
+        tb = exc.__traceback__
+        while tb is not None:
+            for name in _TRADE_ID_NAMES:
+                value = tb.tb_frame.f_locals.get(name)
+                if isinstance(value, str) and value and value not in trade_ids:
+                    trade_ids.append(value)
+            tb = tb.tb_next
+        account = ACTIVE_SESSION["db_name"] if ACTIVE_SESSION else "cuenta principal"
+        lines = [
+            "=" * 100,
+            f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S}  {type(exc).__name__}: {exc}",
+            f"menú: {menu_choice}  ·  cuenta: {account}  ·  análisis: {', '.join(trade_ids) or 'no identificado'}",
+            "".join(_tb.format_exception(type(exc), exc, exc.__traceback__)).rstrip(),
+            "",
+        ]
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+        return path
+    except Exception:
+        return None
+
+
 @click.group()
 def cli():
     """B.L.A.S.T Interactive Engine"""
@@ -1239,7 +1274,11 @@ def start():
                             live.refresh()
                         else:
                             break
-        except Exception:
+        except Exception as exc:
+            # Un error que cierra el CLI queda guardado con su detalle, para poder diagnosticarlo después.
+            live.stop()
+            if log_cli_error(exc, menu_choice=locals().get("selected_choice")):
+                console.print(f"[bold red]Error inesperado: el detalle quedó en {CLI_ERRORS_LOG}[/bold red]")
             raise
         finally:
             live.stop()
