@@ -102,14 +102,61 @@ def test_a_model_without_history_says_so(env):
     assert d600["status"] == "ok"
 
 
-def test_the_html_embeds_the_view_safely_and_never_the_systematic_p0(env):
+def test_the_html_embeds_the_view_safely(env):
     view = _view(env)
     page = pv.render_html(view)
     assert "</script><b>" not in page                       # el texto del operador no puede cerrar el script
     data = re.search(r'<script id="data" type="application/json">(.*?)</script>', page, re.S).group(1)
     assert json.loads(data)["operator"]["thesis"] == "Diario alcista </script><b>ojo</b>"
-    assert "O2-v1.0" not in page and "p0_model_log" not in page
     assert "https://" not in page                            # sin nada externo: se abre sin internet
+
+
+def _p0_line(trade_id="n1-abc", status="ok", model_hash=pv.P0_MODEL_HASH):
+    return {"trade_id": trade_id, "model": pv.P0_MODEL, "model_hash": model_hash, "status": status, "direction": -1,
+            "strength": "Mid", "by_tf": {
+                "1H": {"score": -1, "state": "bearish", "situation": "trend_no_event", "leg": {"a": 1510.0, "b": 1490.0}},
+                "4H": {"score": -2, "state": "bearish", "situation": "trend_0_rupture", "leg": {"a": 1520.0, "b": 1480.0}},
+                "12H": {"score": 0, "state": "range", "situation": "range", "leg": None},
+                "1D": {"score": 0, "state": "insufficient_history", "situation": "insufficient_history", "leg": None}}}
+
+
+def test_the_systematic_p0_is_hidden_until_the_analysis_resolves(env):
+    p0_log = env["dir"] / "p0_model_log.jsonl"
+    p0_log.write_text(json.dumps(_p0_line()) + "\n", encoding="utf-8")
+    early = datetime(2026, 10, 1, 12, 0)                       # 2 h después del ancla, sin toque: abierto
+    view = pv.build_view(env["db"], "n1-abc", data_dir=str(env["dir"]), bank_root=env["bank"], log_path=env["log"],
+                         p0_log_path=str(p0_log), models=["D"], now=early)
+    assert view["result"]["resolved"] is False and view["result"]["hours_left"] == pytest.approx(46)
+    assert view["p0"] == {"hidden": True, "hours_left": pytest.approx(46)}
+    page = pv.render_html(view)
+    data = re.search(r'<script id="data" type="application/json">(.*?)</script>', page, re.S).group(1)
+    assert json.loads(data)["p0"] == {"hidden": True, "hours_left": pytest.approx(46)}   # el dato no viaja en el HTML
+    assert "ruptura del nivel 0" not in page
+
+
+def test_a_resolved_analysis_shows_the_systematic_p0_from_the_log(env):
+    p0_log = env["dir"] / "p0_model_log.jsonl"
+    p0_log.write_text(json.dumps(_p0_line()) + "\n", encoding="utf-8")
+    view = pv.build_view(env["db"], "n1-abc", data_dir=str(env["dir"]), bank_root=env["bank"], log_path=env["log"],
+                         p0_log_path=str(p0_log), models=["D"], now=NOW)   # 51 h después del ancla: resuelto
+    assert view["result"]["resolved"] is True
+    p0 = view["p0"]
+    assert (p0["status"], p0["source"], p0["direction"], p0["strength"]) == ("ok", "registro", -1, "Mid")
+    assert [r["tf"] for r in p0["rows"]] == ["1H", "4H", "12H", "1D"]
+    assert p0["rows"][1] == {"tf": "4H", "state": "Bajista", "situation": "ruptura del nivel 0", "score": -2,
+                             "leg": [1520.0, 1480.0]}
+    assert view["operator_p0"]["direction"] is None            # este análisis no tiene capa P0 cargada
+
+
+def test_a_line_with_another_recipe_is_not_used_and_the_model_is_computed(env):
+    p0_log = env["dir"] / "p0_model_log.jsonl"
+    p0_log.write_text(json.dumps(_p0_line(model_hash="otra")) + "\n", encoding="utf-8")
+    view = pv.build_view(env["db"], "n1-abc", data_dir=str(env["dir"]), bank_root=env["bank"], log_path=env["log"],
+                         p0_log_path=str(p0_log), models=["D"], now=NOW)
+    # El banco de prueba no tiene 15M: calculado al abrir, el modelo dice por qué no puede
+    assert view["p0"]["source"] == "calculado al abrir"
+    assert view["p0"]["status"] == "timeframe_not_in_bank:15M"
+    assert view["p0"]["text"] == "falta la temporalidad 15M en el banco"
 
 
 def test_open_p2_view_writes_the_page_and_an_error_page_when_it_fails(env, tmp_path):

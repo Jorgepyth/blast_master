@@ -4,7 +4,9 @@ tools/p2_vista.py — La vista P2 de un análisis: un HTML que se abre con Ctrl+
 Muestra el P2 del operador (la capa cargada), el P2 sistemático de cada modelo de `P2_LOG_MODELS` (D y D600) con su
 cuenta por temporalidad, las velas de esas temporalidades con sus EMA 20, 100 y 200, y el resultado del análisis.
 - **Siempre muestra el P2 sistemático,** aunque el análisis siga abierto (decisión del operador, 2026-10-11).
-- **Nunca muestra el P0 sistemático:** sigue oculto hasta decidir H1, H2 y H3 (`docs/p0-reglas-opcion2.md`).
+- **El P0 sistemático (O2-v1.0) aparece solo con el análisis resuelto:** tocó un nivel o pasaron 48 h (opción A del
+  operador, 2026-10-15; `docs/p0-reglas-opcion2.md`). Antes no entra ni al HTML, para no influir en las lecturas que
+  miden H1, H2 y H3.
 - **Solo lee** las DBs (`mode=ro`), el banco y el registro del P2. Escribe un solo archivo, el HTML, en
   `${ACCOUNTS_DATA_DIR}/reports/`: tiene datos del journal y queda fuera de git.
 - **El P2 de cada modelo sale del registro.** Si no hay línea vigente (un análisis anterior al alta del modelo, o una que
@@ -36,6 +38,8 @@ import pandas as pd
 import config.auto_resolution as cfg
 from core.candle_resolution import OUTCOME_CONFIRMED, OUTCOME_INVALIDATED, OUTCOME_OPEN
 from core.outcome_metrics import analysis_anchor
+from tools import p0_model_feedback as p0log
+from tools import p0_opcion2 as o2
 from tools import p2_backtest
 from tools.auto_resolution import propose_for_trade, read_analysis_rows
 from tools.candle_bank import bank_csv_path, read_candle_csv
@@ -45,6 +49,17 @@ BARS_BEFORE = 90      # velas cerradas en el ancla que se dibujan por temporalid
 BARS_AFTER = 24       # velas posteriores, para "Mostrar lo que pasó después"
 GT_OFFSET = timedelta(hours=6)   # las horas del banco y de la DB son de Guatemala (UTC−6, sin horario de verano)
 SCALE_WORDS = {-2: "bajista fuerte", -1: "bajista media", 0: "neutral o débil", 1: "alcista media", 2: "alcista fuerte"}
+P0_MODEL, P0_MODEL_HASH = "O2-v1.0", "0265dd400d07"
+STATE_WORDS = {"bullish": "Alcista", "bearish": "Bajista", "range": "Rango", "insufficient_history": "Sin historia"}
+SITUATION_WORDS = {
+    "insufficient_history": "sin historia suficiente",
+    "range": "rango: sin tendencia",
+    "trend_no_event": "tendencia, sin evento en un nivel",
+    "trend_retracement_or_1_rejection": "rechazo en un nivel de retroceso",
+    "trend_retracement_or_1_rupture": "ruptura de un nivel de retroceso",
+    "trend_0_rejection": "rechazo en el nivel 0",
+    "trend_0_rupture": "ruptura del nivel 0",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -180,39 +195,71 @@ def chart_series(bank_dir: str, timeframes: Sequence[str], anchor: datetime, bef
 
 
 def resolution_summary(db_path: str, trade_id: str, bank_root: str, anchor: datetime,
-                       now: Optional[datetime] = None) -> Dict[str, str]:
-    """El resultado del análisis según las velas (el mismo resolvedor de los audits), en dos líneas."""
-    now = now or datetime.now()
+                       now: Optional[datetime] = None) -> dict:
+    """El resultado del análisis según las velas (el mismo resolvedor de los audits), en dos líneas, y si ya se resolvió:
+    tocó un nivel, o pasaron las 48 h de S4 estricto. `hours_left` dice cuánto falta cuando todavía no."""
+    now = now or p0log._now_gt()
+    window = timedelta(hours=cfg.S4_WINDOW_H)
+    left = max(0.0, (window - (now - anchor)).total_seconds() / 3600)
+    by_time = {"resolved": left == 0, "hours_left": None if left == 0 else left}
     try:
         proposal = propose_for_trade(db_path, trade_id, bank_root)
     except Exception as exc:  # la vista no se cae por el resultado: lo dice
-        return {"title": "Sin resultado", "note": f"no se pudo calcular ({type(exc).__name__})"}
+        return {"title": "Sin resultado", "note": f"no se pudo calcular ({type(exc).__name__})", **by_time}
     res = proposal.resolution
-    window = timedelta(hours=cfg.S4_WINDOW_H)
     if res is not None and res.outcome in (OUTCOME_CONFIRMED, OUTCOME_INVALIDATED) and res.first_touch is not None:
         hours = (res.first_touch.touch_time - anchor).total_seconds() / 3600
         hit = res.outcome == OUTCOME_CONFIRMED
         title = "Tocó el objetivo" if hit else "Tocó la invalidación"
         s4 = "en S4 estricto, acierto" if hit and hours <= cfg.S4_WINDOW_H else "en S4 estricto, falla"
-        return {"title": title, "note": f"a las {hours:.0f} h · {s4}"}
+        return {"title": title, "note": f"a las {hours:.0f} h · {s4}", "resolved": True, "hours_left": None}
     if res is not None and res.outcome == OUTCOME_OPEN:
-        return {"title": "Sin toque", "note": "no tocó ningún nivel en todo el horizonte · en S4 estricto, falla"}
-    if now - anchor < window:
-        left = window - (now - anchor)
-        return {"title": "Abierto", "note": f"faltan {left.total_seconds() / 3600:.0f} h para las 48 h"}
+        return {"title": "Sin toque", "note": "no tocó ningún nivel en todo el horizonte · en S4 estricto, falla",
+                "resolved": True, "hours_left": None}
+    if not by_time["resolved"]:
+        return {"title": "Abierto", "note": f"faltan {left:.0f} h para las 48 h", **by_time}
     reason = proposal.reason or (res.outcome if res else "")
     if reason == cfg.REASON_PENDING_CANDLES:
-        return {"title": "Sin toque todavía", "note": "las velas todavía no cubren todo el camino"}
-    return {"title": "Sin resultado", "note": status_text(reason, symbol=proposal.symbol) if reason else ""}
+        return {"title": "Sin toque todavía", "note": "las velas todavía no cubren todo el camino", **by_time}
+    return {"title": "Sin resultado", "note": status_text(reason, symbol=proposal.symbol) if reason else "",
+            **by_time}
+
+
+def systematic_p0(trade_id: str, symbol: Optional[str], anchor: datetime, bank_root: str, log_path: str) -> dict:
+    """El P0 sistemático (O2-v1.0) del análisis: la línea vigente del registro, con la huella congelada, o calculado
+    ahora con la misma función que el registro (velas cerradas en el ancla)."""
+    line = latest_lines(read_log(log_path)).get((trade_id, P0_MODEL))
+    if line is not None and line.data.get("status") == STATUS_OK and line.data.get("model_hash") == P0_MODEL_HASH:
+        status, direction, strength, by_tf = STATUS_OK, line.data.get("direction"), line.data.get("strength"), \
+            line.data.get("by_tf") or {}
+        source = "registro"
+    else:
+        status, direction, strength, by_tf = p0log.model_p0(o2.MODELS_BY_NAME[P0_MODEL], symbol, anchor, bank_root)
+        source = "calculado al abrir"
+    if status != STATUS_OK:
+        return {"model": P0_MODEL, "status": status, "source": source, "text": status_text(status, symbol=symbol)}
+    rows = []
+    for tf in o2.ORDER:
+        d = by_tf.get(tf)
+        if not d:
+            continue
+        leg = d.get("leg") or None
+        rows.append({"tf": tf, "state": STATE_WORDS.get(d.get("state"), d.get("state") or "—"),
+                     "situation": SITUATION_WORDS.get(d.get("situation"), d.get("situation") or "—"),
+                     "score": d.get("score"), "leg": None if leg is None else [leg.get("a"), leg.get("b")]})
+    return {"model": P0_MODEL, "status": STATUS_OK, "source": source, "direction": direction, "strength": strength,
+            "rows": rows}
 
 
 def build_view(db_path: str, trade_id: str, data_dir: Optional[str] = None, bank_root: Optional[str] = None,
                log_path: Optional[str] = None, models: Optional[Sequence[str]] = None,
-               now: Optional[datetime] = None) -> dict:
-    """Todo lo que la vista necesita de un análisis, sin escribir nada."""
+               now: Optional[datetime] = None, p0_log_path: Optional[str] = None) -> dict:
+    """Todo lo que la vista necesita de un análisis, sin escribir nada. El P0 sistemático solo entra si el análisis ya
+    se resolvió; si no, la vista dice cuánto falta y el dato no está en ningún lado del HTML."""
     data_dir = cfg.ACCOUNTS_DATA_DIR if data_dir is None else data_dir
     bank_root = os.path.join(data_dir, "candle_bank") if bank_root is None else bank_root
     log_path = os.path.join(data_dir, cfg.P2_MODEL_LOG_NAME) if log_path is None else log_path
+    p0_log_path = os.path.join(data_dir, cfg.P0_MODEL_LOG_NAME) if p0_log_path is None else p0_log_path
     models = list(cfg.P2_LOG_MODELS) if models is None else list(models)
     row = find_analysis(db_path, trade_id)
     anchor = analysis_anchor(row.analysis_start_time, row.created_at, row.is_backdated)
@@ -229,6 +276,7 @@ def build_view(db_path: str, trade_id: str, data_dir: Optional[str] = None, bank
     thesis_dir = 0
     if row.edge_validation_price is not None and row.structural_invalidation is not None:
         thesis_dir = 1 if row.edge_validation_price > row.structural_invalidation else -1
+    result = resolution_summary(db_path, row.trade_id, bank_root, anchor, now)
     return {
         "generated_at": (now or datetime.now()).strftime("%Y-%m-%d %H:%M"),
         "analysis": {"id": row.trade_id, "id8": row.trade_id[:8], "asset": row.asset, "symbol": symbol,
@@ -237,7 +285,10 @@ def build_view(db_path: str, trade_id: str, data_dir: Optional[str] = None, bank
         "operator": operator_layer(db_path, row.trade_id),
         "models": systematic_p2(row.trade_id, symbol, anchor, bank_root, log_path, models, weekly),
         "charts": charts,
-        "result": resolution_summary(db_path, row.trade_id, bank_root, anchor, now),
+        "result": result,
+        "operator_p0": operator_layer(db_path, row.trade_id, "P0"),
+        "p0": systematic_p0(row.trade_id, symbol, anchor, bank_root, p0_log_path) if result["resolved"]
+        else {"hidden": True, "hours_left": result["hours_left"]},
         "scale_words": {str(k): v for k, v in SCALE_WORDS.items()},
     }
 
@@ -440,7 +491,7 @@ footer p { margin: 4px 0; }
 <body>
 <div class="wrap">
   <header>
-    <p class="eyebrow">Vista P2 · Ctrl+J desde el detalle del análisis</p>
+    <p class="eyebrow">Vista P2 y P0 · Ctrl+J desde el detalle del análisis</p>
     <h1 id="title"></h1>
     <p class="meta" id="meta"></p>
   </header>
@@ -449,6 +500,13 @@ footer p { margin: 4px 0; }
     <p class="sub" id="resumen-frase"></p>
     <div class="tiles" id="tiles"></div>
     <div class="scale" id="scale" aria-label="Tu P2 y el P2 sistemático en la escala de −2 a +2"></div>
+  </section>
+  <section aria-labelledby="t-p0">
+    <h2 id="t-p0">P0: el próximo movimiento</h2>
+    <p class="sub" id="p0-frase"></p>
+    <div class="tiles" id="p0-tiles"></div>
+    <div class="tbl" id="p0-tbl-wrap"><table id="tbl-p0"></table></div>
+    <p class="callout" id="p0-note"></p>
   </section>
   <section aria-labelledby="t-velas">
     <h2 id="t-velas">Las velas que vio el modelo</h2>
@@ -483,7 +541,7 @@ footer p { margin: 4px 0; }
   </section>
   <footer>
     <p id="generated"></p>
-    <p>El P0 sistemático no aparece aquí: sigue oculto hasta que se decidan H1, H2 y H3.</p>
+    <p>El P0 sistemático aparece solo con el análisis resuelto, para no influir en lo que miden H1, H2 y H3.</p>
   </footer>
 </div>
 <script id="data" type="application/json">__DATA__</script>
@@ -594,6 +652,48 @@ footer p { margin: 4px 0; }
     hostModels.appendChild(sec);
   }
   document.getElementById("thesis").textContent = OP.thesis || "Sin texto.";
+
+  /* P0: el del operador siempre; el sistemático solo con el análisis resuelto */
+  const P0 = D.p0, OP0 = D.operator_p0;
+  const STR = { Strong: "fuerte", Mid: "media", Weak: "débil" };
+  const dirTxt = (d, s) => d > 0 ? "Long" + (s ? " · " + (STR[s] || s) : "") : d < 0 ? "Short" + (s ? " · " + (STR[s] || s) : "") : "No opina";
+  const op0Dir = OP0.direction === "Long" ? 1 : OP0.direction === "Short" ? -1 : 0;
+  const p0Tiles = [["Tu P0", OP0.direction ? (op0Dir ? dirTxt(op0Dir, OP0.strength) : "Neutral") : "Sin cargar", OP0.direction ? "lo que cargaste" : "la capa P0 no está cargada"]];
+  const p0Frase = document.getElementById("p0-frase"), p0Note = document.getElementById("p0-note");
+  if (P0.hidden) {
+    p0Frase.textContent = "El P0 sistemático se muestra cuando el análisis se resuelva: cuando toque un nivel o pasen 48 horas" +
+      (P0.hours_left != null ? " (faltan " + Math.ceil(P0.hours_left) + " h)." : ".");
+    p0Tiles.push(["P0 sistemático (O2-v1.0)", "Oculto por ahora", "se ve con el análisis resuelto"]);
+    document.getElementById("p0-tbl-wrap").hidden = true;
+    p0Note.textContent = "Así no influye en tus próximas lecturas mientras se miden H1, H2 y H3.";
+  } else if (P0.status !== "ok") {
+    p0Frase.textContent = "El P0 sistemático no se pudo calcular para este análisis.";
+    p0Tiles.push(["P0 sistemático (" + P0.model + ")", "No disponible", P0.text]);
+    document.getElementById("p0-tbl-wrap").hidden = true;
+    p0Note.hidden = true;
+  } else {
+    p0Frase.textContent = P0.direction === 0 ? "El P0 sistemático no opina en este análisis."
+      : op0Dir === P0.direction ? "Tu P0 y el P0 sistemático coinciden en la dirección: " + dirTxt(P0.direction) + "."
+      : "Tu P0 y el P0 sistemático leen distinto.";
+    p0Tiles.push(["P0 sistemático (" + P0.model + ")", dirTxt(P0.direction, P0.strength), P0.source]);
+    const t = document.getElementById("tbl-p0"), hd = el("thead"), h = el("tr");
+    [["Temporalidad"], ["Estructura"], ["Lo que pasó en el tramo"], ["Tramo A → B", 1], ["Puntaje", 1]].forEach(x => h.appendChild(el("th", x[1] ? "n" : null, x[0])));
+    hd.appendChild(h);
+    const bd = el("tbody");
+    for (const r of P0.rows) {
+      const tr = el("tr");
+      tr.appendChild(el("td", null, r.tf));
+      tr.appendChild(el("td", null, r.state));
+      tr.appendChild(el("td", null, r.situation));
+      tr.appendChild(el("td", "n", r.leg ? fmt1.format(r.leg[0]) + " → " + fmt1.format(r.leg[1]) : "—"));
+      tr.appendChild(el("td", "n", r.score == null ? "—" : signed(r.score)));
+      bd.appendChild(tr);
+    }
+    t.replaceChildren(hd, bd);
+    p0Note.textContent = "Se combina de la temporalidad más chica a la más grande: manda la primera con dirección; si las mayores la contradicen más de lo que la apoyan, no opina. Fuerza: fuerte si todas las mayores coinciden, media si algunas, débil si ninguna.";
+  }
+  const p0Host = document.getElementById("p0-tiles");
+  for (const t of p0Tiles) { const d = el("div", "tile"); d.appendChild(el("span", "label", t[0])); d.appendChild(el("span", "value", t[1])); d.appendChild(el("span", "note", t[2])); p0Host.appendChild(d); }
 
   /* Velas */
   const TF_ORDER = Object.keys(D.charts);
