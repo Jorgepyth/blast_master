@@ -29,7 +29,8 @@ def test_constants_match_the_plan():
     assert (pp.H1_N, pp.H2_N, pp.H_LIMIT) == (66, 29, 0.50)
     assert pp.H3_HOLM == (0.025, 0.05)
     assert (pp.MODEL, pp.MODEL_HASH, pp.P2_MODEL, pp.B_MODEL) == ("O2-v1.0", "0265dd400d07", "D600", "B")
-    assert set(pp.ACCOUNTS) == {"XAUUSD", "BTCUSD", "US500"}
+    assert set(pp.ACCOUNTS) == {"XAUUSD", "BTCUSD", "US500", "USTEC"}
+    assert pp.ACCOUNTS["USTEC"] == ("003", "flight_account_003_us100.db")
 
 
 def test_hit_counts_no_touch_as_a_loss_for_anyone():

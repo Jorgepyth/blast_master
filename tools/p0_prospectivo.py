@@ -58,6 +58,7 @@ ACCOUNTS = {                                            # símbolo MT5 → (cuen
     "XAUUSD": ("000", "flight_account_001_xauusd.db"),
     "BTCUSD": ("002", "flight_account_002_btcusdtp.db"),
     "US500": ("001", "flight_account_000_us500.db"),
+    "USTEC": ("003", "flight_account_003_us100.db"),   # adenda del 2026-10-14
 }
 MODEL = "O2-v1.0"
 MODEL_HASH = "0265dd400d07"
