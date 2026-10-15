@@ -70,7 +70,7 @@ Modelo de datos real: 7 tablas (`unified_department`, `analysis_layer`, `efficie
     El backfill real del 2026-10-05 (T63, corrida `e36eadb7`) movió las horas viejas del guardado a
     `audit_registration_time`, en 80 audits de XAU, 24 de BTC y 5 de US100. Los 5 de US100 quedaron con
     `resolution_time` vacía y `clock_unverified`, y se llenan en el primer backfill después de que su reloj se
-    verifique (T49b). `resolution_time_source` dice de dónde salió cada hora: `candles`, `corrected` (el operador) o el
+    verifique (T49b). El reloj se verificó el 2026-10-13: falta correr ese backfill. `resolution_time_source` dice de dónde salió cada hora: `candles`, `corrected` (el operador) o el
     motivo por el que está vacía.
   - **Propuestas de los audits:** el Efficiency y el Tactical traen valores `(auto)` de las velas. Lo que el operador
     juzga nunca se propone: Real Bias B, emociones, gates, la lección (INV-8). `specific_bias_compliance` (Valid o
@@ -83,9 +83,22 @@ Modelo de datos real: 7 tablas (`unified_department`, `analysis_layer`, `efficie
     símbolos van de a uno, en un proceso aparte (`tools/auto_export.py`, `tools/candle_sync.py`). **Abre MT5 si está
     cerrado** (`mt5.initialize()`), y el usuario lo aceptó (N54). Con el mercado cerrado se saltea sin tocar el banco.
     Todo queda en `.data/candle_export.log`.
-  - **Relojes del banco** (`.data/candle_bank/<SÍMBOLO>/status.json`): XAUUSD, BTCUSD y US500 (este desde el
-    2026-10-05) están verificados. USTEC sigue `clock_unverified`: necesita 10 referencias propias que calcen, por la
-    regla estricta N43. Sin reloj verificado, esa cuenta no recibe propuestas.
+  - **Relojes del banco** (`.data/candle_bank/<SÍMBOLO>/status.json`): XAUUSD, BTCUSD, US500 (desde el 2026-10-05) y
+    USTEC están verificados. USTEC se verificó el 2026-10-13 con 10 referencias propias (N43; la décima fue el mark price
+    de un análisis de US100), y el banco recibió todo su historial: 740 velas semanales.
+    - Una referencia se fecha con la hora de guardado (`created_at`), no con `mark_price_time`. Si el export corre justo
+      después de guardar, puede caer fuera del rango exportado y contar recién en el export siguiente.
+  - **Velas guardadas incompletas (BTCUSD, 2026-10-13).** El export del domingo 11-10 a las 15:57 guardó la vela de
+    ~13:58 GT de cada temporalidad (8 velas, 1M a 1D) antes de que el broker terminara de llenarla. Los exports
+    siguientes traían la versión final, y la fusión los rechazaba con `clock_misaligned (overlapping candles differ
+    from the bank in ...)`.
+    - **Cómo reconocerlo:** solo difiere una vela por temporalidad, todas con el mismo cierre, y el resto de la
+      superposición coincide.
+    - **Qué se hizo, con autorización del usuario:** se reemplazaron esas 8 líneas por la versión final del broker,
+      con el candado del banco tomado. El respaldo está en `.data/archives/candle_bank_BTCUSD_pre_fix_20261013_073237`.
+      El export siguiente fusionó.
+    - **Pendiente:** que el export no guarde la última vela de una temporalidad cuando el precio lleva rato quieto,
+      como en un fin de semana. Hasta entonces el problema puede repetirse.
   - **Registro del P2 sistemático (N38, N40, N42):** el P2 del modelo D de `tools/p2_backtest.py` se calcula para cada
     análisis nuevo (con `analysis_start_time`) de las cuentas reales, y se agrega a `.data/p2_model_log.jsonl`. Nunca
     se muestra en el wizard: se ve con `p2-model` y con la vista P2. Un modelo nuevo se suma en `P2_LOG_MODELS` con la
@@ -111,8 +124,7 @@ Modelo de datos real: 7 tablas (`unified_department`, `analysis_layer`, `efficie
       - Probado con datos reales: en los 4 análisis de US500 del 05 al 08-10, D da `insufficient_history:1W` y D600 da
         un valor.
     - La otra alternativa, velas semanales externas, no se usó: rompe la regla de "solo velas verificadas" (T4).
-    - USTEC no tiene ninguna vela en el banco: su reloj sigue sin verificar (9 de las 10 referencias). Ni D ni D600
-      pueden correr ahí hasta que se verifique.
+    - USTEC tiene velas en el banco desde el 2026-10-13 (740 semanales): D600 corre ahí y D no.
     - El P0 sistemático no usa 1W: esto no lo afecta.
   - **Registro del P0 sistemático:** es igual al del P2, pero escribe solo después de cada export fusionado, no al
     guardar. Detalle en la sección "P0 sistemático y opción 2".
@@ -162,7 +174,8 @@ desplazar, contra 26/34 con +3h. `windows_export/export_p2_ohlc.py` ahora convie
 la hora del servidor (`--server-utc-offset`, que por defecto se detecta del último tick y
 exige mercado abierto), y `tools/p2_backtest.py:calibrate_clock_offset()` valida el reloj
 contra fills + `mark_price` y aborta los pipelines si no cuadra. Para US100 el símbolo MT5
-es `USTEC`, y su historia semanal (732 velas) no alcanza el mínimo de 800 de los modelos P2.
+es `USTEC`, y su historia semanal (740 velas en el banco) no alcanza el mínimo de 800 de los modelos P2; D600, que
+pide 600, sí corre.
 
 **Pendiente con fecha: confirmar `BROKER_DST_RULE` (spec 002; anotado el 2026-09-29 a pedido del
 usuario).** El `.env` tiene `BROKER_DST_RULE=us`: se asume que el servidor del broker cambia de hora
@@ -335,7 +348,14 @@ push).
   - Un rechazo en un nivel de Fibonacci deja de servir a las 3 velas, y pasa lo mismo con los niveles falsos.
   - Los P0 y P2 sistemáticos coinciden en 35 de 36 análisis donde opinan los dos: combinarlos no aporta.
 - **Medición prospectiva** (§9 del doc, con sus adendas):
-  - Entran los análisis de XAU, BTC y US500 con ancla posterior a 2026-10-09 17:00 GT, medidos con S4 estricto.
+  - Entran los análisis de XAU, BTC, US500 y USTEC con ancla posterior a 2026-10-09 17:00 GT, medidos con S4
+    estricto. USTEC entró con la adenda `3d099ec` (2026-10-14), con sus dos análisis ya guardados (`c01c9e93`,
+    `d4f26e3b`), antes de mirar su resultado.
+  - **Un análisis sin objetivo o sin invalidación queda fuera** (filtro `no_levels`, el mismo de la evaluación): sin
+    los dos precios no hay carrera que medir. Pasa con los análisis Choppy que se guardan sin niveles: en US500, 5 de 6
+    desde el 2026-09-28; en oro, 5 de 35. Además de achicar la población, sesga H3, que gana sobre todo en análisis
+    Choppy en los que el P0 sistemático sí ve dirección. Se le recomendó al usuario cargar los dos precios también en
+    los Choppy.
   - La decisión llega a las 190 opiniones del modelo y se compara contra el **azar justo** (adenda `8e52447`), no
     contra 50%. El azar justo es el acierto de 10,000 sorteos con la misma mezcla de Long y Short del modelo, y da
     alrededor de 44%: en S4 estricto, que en 48 h no se toque ningún nivel es pérdida para cualquiera. Contra 50%, la
