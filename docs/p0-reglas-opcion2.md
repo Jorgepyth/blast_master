@@ -454,3 +454,19 @@ Los commits del 2026-10-06 anteriores a `d1e5c36` (del prompt `76c9a53` al proto
     cargarlas. H3 responde entonces si el edge mejora con el P0 sistemático **en ese régimen**, no a ciegas.
   - Lo mismo vale para el P0 del operador en H1 y H2, aunque lo que ve es el modelo de P2, no el de P0.
   - La comparación del P2 del operador contra D (evaluación "P2 banco v2") deja de ser a ciegas desde esta fecha.
+
+### Adenda del 2026-10-14: USTEC (US100) entra a la población (escrita antes de mirar ningún resultado de USTEC)
+
+- **Qué cambia.** La población de v1.0, la de H1 y H2, y la de H3a y H3b suman la cuenta de US100 (símbolo MT5 `USTEC`).
+  Las reglas son las mismas: ancla posterior a 2026-10-09 17:00 GT, los mismos filtros y la misma verdad (S4 estricto).
+- **Por qué ahora.** La adenda de US500 dejó fuera a USTEC mientras su reloj no estuviera verificado. Se verificó el
+  2026-10-13 a las 07:01 con referencias propias, y el banco recibió todo su historial (740 velas semanales).
+- **Entran los análisis ya guardados.** Desde el 2026-10-09 17:00 hay dos de US100: `c01c9e93` (13-10) y `d4f26e3b`
+  (14-10). No se miró el resultado de ninguno. Del primero solo se vio que O2-v1.0 no opina y que D600 da 0.
+- **El modelo no cambia.** O2-v1.0 no usa 1W. Se calibró con oro y BTC, así que en USTEC queda fuera de muestra también
+  por el activo, como en US500.
+- **P2 sistemático.** D600 corre en USTEC (740 velas semanales; pide 600). D no corre (pide 800). H3b usa D600, así que
+  cubre USTEC.
+- **Cómo se reporta.** Cada activo por separado y todos juntos. Las decisiones se toman con todos juntos: los tres cortes,
+  H1 y H2 a los 66 y 29 casos, y H3 a las 190 opiniones.
+- **El script.** `tools/p0_prospectivo.py` suma la cuenta 003 a su lista. Nada más cambia.
