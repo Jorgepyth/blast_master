@@ -15,8 +15,8 @@ def _caught():
 
 
 def test_the_error_is_appended_with_menu_account_analysis_and_traceback(tmp_path):
-    (tmp_path / ".data").mkdir()
-    path = tmp_path / ".data" / "cli_errors.log"
+    (tmp_path / "datos").mkdir()
+    path = tmp_path / "datos" / "cli_errors.log"
     assert main.log_cli_error(_caught(), menu_choice="2", path=str(path)) == str(path)
     main.log_cli_error(_caught(), menu_choice="7", path=str(path))
     text = path.read_text(encoding="utf-8")
@@ -27,12 +27,19 @@ def test_the_error_is_appended_with_menu_account_analysis_and_traceback(tmp_path
 
 
 def test_without_the_data_folder_nothing_is_created(tmp_path):
-    path = tmp_path / ".data" / "cli_errors.log"
+    path = tmp_path / "datos" / "cli_errors.log"
     assert main.log_cli_error(_caught(), path=str(path)) is None
-    assert not (tmp_path / ".data").exists()
+    assert not (tmp_path / "datos").exists()
 
 
 def test_it_never_raises_even_with_a_bad_path(tmp_path):
-    (tmp_path / ".data").mkdir()
-    bad = tmp_path / ".data"  # una carpeta, no un archivo: abrirla para escribir falla
+    (tmp_path / "datos").mkdir()
+    bad = tmp_path / "datos"  # una carpeta, no un archivo: abrirla para escribir falla
     assert main.log_cli_error(_caught(), path=str(bad)) is None
+
+
+def test_money_fields_left_empty_for_an_unverified_symbol_are_shown_not_crashed():
+    # Regresión del 2026-10-16: el panel de revisión del Tactical Audit formateaba con :.2f un campo en None (US500,
+    # BTC y US100 no tienen contract size verificado) y el CLI se cerraba al guardar.
+    assert main.money_text(None) == "N/A (símbolo no verificado)"
+    assert main.money_text(1234.5) == "1234.50"

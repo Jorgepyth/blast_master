@@ -3034,6 +3034,12 @@ def efficiency_proposal(trade_id):
         return None
 
 
+def money_text(value) -> str:
+    """Un campo monetario para mostrar: con 2 decimales, o el motivo si quedó vacío. Con un símbolo sin contract size
+    verificado, el validador deja los campos monetarios en `None` a propósito (Fase 2f); mostrarlo nunca debe fallar."""
+    return "N/A (símbolo no verificado)" if value is None else f"{value:.2f}"
+
+
 def auto_default(value):
     """`default=value` para un prompt, solo si las velas propusieron algo (RF-7). Sin propuesta no agrega nada, así el
     prompt queda idéntico al de antes (INV-1)."""
@@ -4797,10 +4803,10 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
                         # --- Calculated Algebraic Metrics ---
                         rev_text.append("--- Calculated Algebraic Metrics ---\n", style="bold yellow")
                         rev_text.append(f"Resolved Direction:   {audit_tactical.trade_decision}\n", style="bold cyan")
-                        rev_text.append(f"Notional Size:        {audit_tactical.notional_size:.2f}\n", style="white")
+                        rev_text.append(f"Notional Size:        {money_text(audit_tactical.notional_size)}\n", style="white")
                         _nsu = audit_tactical.notional_size_usd
                         rev_text.append(f"Notional Size USD:    {f'{_nsu:.2f}' if _nsu is not None else 'N/A (símbolo no verificado)'}\n", style="white")
-                        rev_text.append(f"Capital At Risk:      {audit_tactical.capital_at_risk:.2f}\n", style="white")
+                        rev_text.append(f"Capital At Risk:      {money_text(audit_tactical.capital_at_risk)}\n", style="white")
                         _rusd = audit_tactical.risk_usd
                         rev_text.append(f"Risk USD:             {f'{_rusd:.2f}' if _rusd is not None else 'N/A (símbolo no verificado)'}\n", style="white" if _rusd is not None else "yellow")
                         rev_text.append(f"PnL:                  {audit_tactical.pnl if audit_tactical.pnl is not None else 'N/A'}\n", style="white")
