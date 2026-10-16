@@ -288,6 +288,13 @@ test lo verifica (RF-18).
 
 - **Long:** MAE = mínimo de `low` y MFE = máximo de `high` en el camino, desde el ancla hasta la vela del toque
   inclusive. En un Short es al revés.
+- **Cambio del 2026-10-16 (pedido del usuario):** el lado del nivel que se tocó se mide **hasta las 48 h desde el
+  ancla** (la ventana de S4 estricto), y nunca antes de la vela del toque: el MFE si se tocó el objetivo, el MAE si se
+  tocó la invalidación. Dice hasta dónde llegó el precio después del nivel. El otro lado sigue hasta la vela del toque.
+  Motivo: en 83 audits, los valores que el usuario cargaba a mano antes del backfill seguían esa idea en el MFE (a
+  0.20 R de la cumbre de 48 h, contra 0.53 R de la regla anterior). Ejemplo: 20689cfd (US500, Long, objetivo 7737) pasa
+  de MFE 7737.2 a 7780.7. Si el banco todavía no cubre las 48 h, se usa lo que hay. El backfill muestra como conflicto
+  los audits guardados con la regla anterior.
 - El resultado son precios, con la precisión del CSV.
 
 **Aclaraciones de T27** (`resolve_analysis`, `start_price`):

@@ -337,8 +337,9 @@ class AnalysisResolution:
     Lo que el resolvedor sabe de un análisis (RF-4, RF-4d, RF-5). `outcome` es el de `first_touch`, o un código de
     motivo cuando no se llegó a buscar el toque (`no_levels`, `no_history`, `pending_candles`). `r` es
     |precio de partida − structural_invalidation|. `structural_mae` y `structural_mfe` son precios: el más adverso y
-    el más favorable a la tesis desde el ancla hasta la vela del toque inclusive (plan.md §3.4); solo existen si hubo
-    toque.
+    el más favorable a la tesis (plan.md §3.4, regla del 2026-10-16). El lado del nivel que se tocó se mide hasta las
+    48 h desde el ancla (hasta dónde llegó el precio), y nunca antes de la vela del toque; el otro lado, hasta la vela
+    del toque inclusive. Solo existen si hubo toque.
     """
     outcome: str
     start_price: Optional[float] = None
@@ -364,8 +365,9 @@ def resolve_analysis(
       3. precio de partida (`start_price`); si ninguna vela cerró todavía en el ancla → `no_history`;
       4. dirección de la tesis con `infer_thesis_direction`; si los dos niveles caen del mismo lado del precio de
          partida (o uno justo en él) → `no_levels`;
-      5. primer toque (`resolve_first_touch`) y, si lo hubo, MAE y MFE estructurales: en un long, el `low` más bajo y
-         el `high` más alto del camino hasta la vela del toque; en un short, al revés.
+      5. primer toque (`resolve_first_touch`) y, si lo hubo, MAE y MFE estructurales (plan.md §3.4): el lado del nivel
+         tocado (el MFE si se tocó el objetivo, el MAE si se tocó la invalidación) es el extremo del camino hasta las
+         48 h desde el ancla, y nunca antes de la vela del toque; el otro lado, el extremo hasta la vela del toque.
 
     `touched_level` (N46) es el nivel que el operador vio tocado en su gráfico aunque el banco no llegue
     (`LEVEL_VALIDATION` o `LEVEL_INVALIDATION`): ver `_excepted_touch`.
@@ -391,6 +393,12 @@ def resolve_analysis(
     if touch.outcome in (OUTCOME_CONFIRMED, OUTCOME_INVALIDATED):
         low, high = _extremes_through_touch(anchor, candles_by_timeframe, touch)
         mae, mfe = (low, high) if thesis == "long" else (high, low)
+        w_low, w_high = _extremes_through_touch(anchor, candles_by_timeframe, touch,
+                                                window_end=anchor + timedelta(hours=STRUCTURAL_WINDOW_H))
+        if touch.outcome == OUTCOME_CONFIRMED:
+            mfe = w_high if thesis == "long" else w_low
+        else:
+            mae = w_low if thesis == "long" else w_high
     return AnalysisResolution(touch.outcome, start.price, thesis, abs(start.price - structural_invalidation), touch,
                               mae, mfe)
 
@@ -430,15 +438,26 @@ def _excepted_touch(
                       path_end=bar.end, horizon_end=touch.horizon_end, exception=True, closest_price=price)
 
 
+# Ventana del lado del nivel tocado en el MAE/MFE estructural: la misma de S4 estricto (regla del 2026-10-16).
+STRUCTURAL_WINDOW_H = 48
+
+
 def _extremes_through_touch(
-    anchor: datetime, candles_by_timeframe: Mapping[str, Sequence[Candle]], touch: FirstTouch
+    anchor: datetime, candles_by_timeframe: Mapping[str, Sequence[Candle]], touch: FirstTouch,
+    window_end: Optional[datetime] = None,
 ) -> Tuple[float, float]:
-    """El `low` más bajo y el `high` más alto del camino, desde el ancla hasta la vela del toque inclusive."""
+    """El `low` más bajo y el `high` más alto del camino, desde el ancla hasta la vela del toque inclusive. Con
+    `window_end`, sigue después del toque con las velas que cierran hasta `window_end` (si el banco llega)."""
     low, high = float("inf"), float("-inf")
+    past_touch = False
     for bar in forward_path(anchor, candles_by_timeframe):
+        if past_touch and (window_end is None or bar.end > window_end):
+            break
         low, high = min(low, bar.low), max(high, bar.high)
         if bar.time == touch.touch_time and bar.timeframe == touch.timeframe:
-            break
+            past_touch = True
+            if window_end is None:
+                break
     return low, high
 
 

@@ -477,6 +477,43 @@ def test_long_invalidated_mae_reaches_the_invalidation():
     assert result.r == 10.0
 
 
+# --- Regla del 2026-10-16: el lado del nivel tocado se mide hasta las 48 h desde el ancla --------------------------
+
+def test_after_hitting_the_target_the_mfe_keeps_going_for_48_hours_and_the_mae_does_not():
+    # Toca 110.5 a las 00:15; a las 00:20 sube a 118 (cuenta para el MFE) y a las 00:25 baja a 80 (no cuenta para el MAE,
+    # que se mide solo hasta el toque). A las 48 h y 5 min sube a 130: fuera de la ventana.
+    bank = {"1M": _candles("1M", T0, 48 * 60 + 30, {11: (101.0, 97.5, 100.0), 15: (110.5, 99.0, 100.0),
+                                                     20: (118.0, 99.0, 100.0), 25: (101.0, 80.0, 100.0),
+                                                     48 * 60 + 15: (130.0, 99.0, 100.0)})}
+    result = resolve_analysis(ANCHOR, bank, 110.0, 90.0)
+    assert result.outcome == OUTCOME_CONFIRMED
+    assert (result.structural_mae, result.structural_mfe) == (97.5, 118.0)
+
+
+def test_after_hitting_the_invalidation_the_mae_keeps_going_for_48_hours_and_the_mfe_does_not():
+    # Long: sube a 103 a las 00:12, toca 89 a las 00:14, sigue bajando a 84 a las 00:30 y después sube a 125 (no cuenta).
+    bank = {"1M": _candles("1M", T0, 120, {12: (103.0, 99.0, 100.0), 14: (101.0, 89.0, 100.0),
+                                           30: (101.0, 84.0, 100.0), 40: (125.0, 99.0, 100.0)})}
+    result = resolve_analysis(ANCHOR, bank, 120.0, 90.0)
+    assert result.outcome == OUTCOME_INVALIDATED
+    assert (result.structural_mae, result.structural_mfe) == (84.0, 103.0)
+
+
+def test_short_after_hitting_the_target_the_mfe_is_the_lowest_price_in_48_hours():
+    bank = {"1M": _candles("1M", T0, 60, {11: (102.5, 99.0, 100.0), 14: (101.0, 89.5, 100.0),
+                                          20: (101.0, 85.0, 100.0), 30: (115.0, 99.0, 100.0)})}
+    result = resolve_analysis(ANCHOR, bank, 90.0, 110.0)
+    assert result.outcome == OUTCOME_CONFIRMED
+    assert (result.structural_mae, result.structural_mfe) == (102.5, 85.0)
+
+
+def test_a_touch_after_48_hours_is_never_cut_before_the_touch_candle():
+    # El objetivo se toca a las 49 h: el MFE es al menos el de la vela del toque.
+    bank = {"1M": _candles("1M", T0, 50 * 60, {49 * 60: (110.5, 99.0, 100.0)})}
+    result = resolve_analysis(ANCHOR, bank, 110.0, 90.0)
+    assert result.outcome == OUTCOME_CONFIRMED and result.structural_mfe == 110.5
+
+
 @pytest.mark.parametrize("evp, si", [(105.0, 108.0), (92.0, 95.0), (100.0, 90.0), (None, 90.0), (110.0, None)])
 def test_missing_levels_or_both_on_the_same_side_of_the_start_price_is_no_levels(evp, si):
     # RF-4d: los dos arriba, los dos abajo, uno justo en el precio de partida, o alguno vacío.
