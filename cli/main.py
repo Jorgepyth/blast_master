@@ -101,6 +101,16 @@ INQUIRER_STYLE = get_style({
     "spinner_text": "",
 }, style_override=True)
 
+# Las claves de AuditSession cuyo prompt es propio (no get_enum_choice) y devuelve un Enum. Al retomar un audit pausado
+# vuelven como texto (save_state guarda el `.value`) y hay que reconstruir el Enum; si no, `.value` falla al guardar.
+RESUME_ENUM_KEYS = {
+    "stop_deviation_reason": "StopDeviationReason",
+    "skip_reason": "SkipReason",
+    "no_trade_skip_reason": "SkipReason",
+    "conf_status": "ConfirmationStatus",
+}
+
+
 class AuditSession:
     def __init__(self, trade_id, audit_type):
         self.trade_id = trade_id
@@ -179,6 +189,12 @@ class AuditSession:
             elif func.__name__ == 'ask_entry_time' and isinstance(val, str):
                 try: val = datetime.datetime.strptime(val, "%Y-%m-%d %H:%M")
                 except ValueError: pass
+            elif key in RESUME_ENUM_KEYS and isinstance(val, str):
+                # Prompts propios (no get_enum_choice) que devuelven un Enum: el borrador lo guardó como su `.value`.
+                enum_class = globals().get(RESUME_ENUM_KEYS[key])
+                if enum_class is not None:
+                    try: val = enum_class(val)
+                    except ValueError: pass
                 
             display_val = val.value if isinstance(val, Enum) else [v.value if isinstance(v, Enum) else v for v in val] if isinstance(val, list) else val
             console.print(f"[dim]Loaded {key}: {display_val}[/dim]")

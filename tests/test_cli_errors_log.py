@@ -43,3 +43,18 @@ def test_money_fields_left_empty_for_an_unverified_symbol_are_shown_not_crashed(
     # BTC y US100 no tienen contract size verificado) y el CLI se cerraba al guardar.
     assert main.money_text(None) == "N/A (símbolo no verificado)"
     assert main.money_text(1234.5) == "1234.50"
+
+
+def test_resuming_a_paused_audit_rebuilds_the_enums_of_custom_prompts(tmp_path, monkeypatch):
+    # Regresión del 2026-10-16: al retomar b7aa8926, "stop_deviation_reason" volvía como texto y `.value` fallaba.
+    import json
+    cache = tmp_path / "paused.json"
+    cache.write_text(json.dumps({"t1": {"tac:new": {
+        "stop_deviation_reason": "discretionary_no_basis",
+        "skip_reason": list(main.SkipReason)[0].value,
+        "conf_status": list(main.ConfirmationStatus)[0].value}}}), encoding="utf-8")
+    monkeypatch.setattr(main, "CACHE_FILE", str(cache))
+    session = main.AuditSession("t1", "tac:new")
+    assert isinstance(session.prompt("stop_deviation_reason", main.ask_stop_deviation_reason), main.StopDeviationReason)
+    assert isinstance(session.prompt("skip_reason", lambda: None), main.SkipReason)
+    assert isinstance(session.prompt("conf_status", lambda: None), main.ConfirmationStatus)
