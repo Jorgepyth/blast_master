@@ -4548,6 +4548,15 @@ def flow_pending_audits(preselected_trade_id: str = None, preselected_payload: d
                         sl = session.prompt("sl", get_mandatory_float, "Stop Loss")
                         entry_p = session.prompt("entry_p", get_mandatory_float, "Entry Price")
                         size = session.prompt("size", get_mandatory_float, "Size")
+                        # Lote mínimo y paso del bróker (config/contract_specs.py): un lote que no existe se vuelve a
+                        # pedir. También cubre un lote editado desde el panel final, que vuelve a pasar por aquí.
+                        from tools.pnl_calculator import lot_size_problem as _lot_size_problem
+                        _lot_issue = _lot_size_problem(payload.get("asset"), size)
+                        while _lot_issue:
+                            console.print(f"[yellow]{_lot_issue}[/yellow]")
+                            session.state.pop("size", None)
+                            size = session.prompt("size", get_mandatory_float, "Size")
+                            _lot_issue = _lot_size_problem(payload.get("asset"), size)
                         tp = session.prompt("tp", get_mandatory_float, "Take Profit")
 
                         # --- Cuadro de P&L potencial (efímero, NO se persiste en journal.db) ---

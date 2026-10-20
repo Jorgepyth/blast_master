@@ -14,6 +14,9 @@ Marcadores de confianza (mismo estándar que ARCHITECTURE.md):
                       `tools/pnl_calculator.py` RECHAZA calcular con ese símbolo
                       hasta que un humano lo confirme y lo marque "VERIFICADO".
 
+`min_volume` y `volume_step` (opcionales) son el lote mínimo y el paso que acepta el bróker (MT5 Specification de
+IC Markets, 2026-10-20). El wizard del Tactical Audit rechaza un lote que no los cumpla.
+
 REGLA DURA: `contract_size` es un `Decimal` real o `None`. Nunca un string, nunca
 un placeholder tipo "...". `empirical_hint` (si existe) es solo referencia para el
 humano que va a verificar — `pnl_calculator` no lo usa jamás.
@@ -24,12 +27,16 @@ from decimal import Decimal
 CONTRACT_SPECS = {
     "XAUUSD": {
         "contract_size": Decimal("100"),
+        "min_volume": Decimal("0.01"),
+        "volume_step": Decimal("0.01"),
         "confidence": "VERIFICADO",
         "source": "ReportHistory-87050257.xlsx · Positions · n=265 · rel_std<0.1%",
         "derived_at": "2026-09-03",
     },
     "BTCUSD": {
         "contract_size": Decimal("1"),
+        "min_volume": Decimal("0.01"),
+        "volume_step": Decimal("0.01"),
         "confidence": "VERIFICADO",
         "source": "MT5 Specification (IC Markets), 2026-10-20 · cruzado con el margen por lote (165.73 / 0.002 = precio) "
                   "y con el hint del reporte (1.000213)",
@@ -37,12 +44,16 @@ CONTRACT_SPECS = {
     },
     "US500": {
         "contract_size": Decimal("1"),
+        "min_volume": Decimal("0.1"),
+        "volume_step": Decimal("0.1"),
         "confidence": "VERIFICADO",
         "source": "MT5 Specification (IC Markets), 2026-10-20 · cruzado con el margen por lote (38.67 / 0.005 = precio)",
         "derived_at": "2026-10-20",
     },
     "USTEC": {
         "contract_size": Decimal("1"),
+        "min_volume": Decimal("0.1"),
+        "volume_step": Decimal("0.1"),
         "confidence": "VERIFICADO",
         "source": "MT5 Specification (IC Markets), 2026-10-20 · cruzado con el margen por lote (148.57 / 0.005 = precio)",
         "derived_at": "2026-10-20",

@@ -120,3 +120,22 @@ def quantify(asset, entry_price, size_lots, stop_loss, take_profit) -> dict:
         "gain_usd": gain_usd,
         "rr": rr,
     }
+
+
+def lot_size_problem(asset, size) -> Optional[str]:
+    """El motivo por el que el bróker no aceptaría `size` lotes de `asset`, o `None` si está bien (o si el símbolo no
+    tiene volumen mínimo cargado). Un lote menor que `min_volume` o que no es múltiplo de `volume_step` no existe en el
+    bróker: un trade así está mal cargado."""
+    if asset is None or size is None:
+        return None
+    key = SYMBOL_ALIASES.get(asset, asset)
+    spec = CONTRACT_SPECS.get(key) or {}
+    min_volume, step = spec.get("min_volume"), spec.get("volume_step")
+    if min_volume is None:
+        return None
+    lots = Decimal(str(size))
+    if lots < min_volume:
+        return f"{key}: el lote mínimo es {min_volume}; {lots} no existe en el bróker."
+    if step and (lots / step) != (lots / step).to_integral_value():
+        return f"{key}: el lote tiene que ser múltiplo de {step}; {lots} no lo es."
+    return None

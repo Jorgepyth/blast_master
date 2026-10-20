@@ -6,10 +6,11 @@ quedaban vacíos o con valores viejos sin multiplicar bien (ej. US100 1250b9ed: 
 ser 3.45). El 2026-10-20 el usuario verificó en MT5 (IC Markets) un contract size de 1 para los tres
 (`config/contract_specs.py`, commit 085e794) y autorizó:
 
-1. **Corregir 3 lotes hipotéticos mal cargados** (el mínimo en US500/USTEC es 0.1 lotes):
+1. **Corregir 4 lotes mal cargados** (el mínimo en US500/USTEC es 0.1 lotes):
    - US500 b7aa8926 (fila ad8c14e1): 0.01 -> 0.1
    - US500 0c297c20 (fila 0758f56f): 0.01 -> 0.1
    - US100 e604ff68 (fila 227f82c4): 0.03 -> 0.3 (el usuario confirmó que fue hipotético)
+   - BTC c77654ac (fila b7d1c461): 1 -> 0.01 (el usuario confirmó que fueron 0.01 lotes)
 2. **Recalcular los montos** de toda fila de esas tres cuentas con lotes > 0 y entrada/SL válidos, con la misma fórmula
    del wizard (`core.math_engine.calculate_algebraic_metrics`) y contract size 1:
    `notional_size`, `capital_at_risk`, `risk_usd` y `pnl_and_cost` (este solo si hay `closing_price`; el costo no se
@@ -40,6 +41,7 @@ SIZE_FIXES = {  # db -> {tactical_audit.id: (lote viejo, lote nuevo)}
     "flight_account_000_us500.db": {"ad8c14e1-0465-4a51-9132-7e411a62a8f8": (0.01, 0.1),
                                     "0758f56f-9b96-46df-a535-427b810e30d1": (0.01, 0.1)},
     "flight_account_003_us100.db": {"227f82c4-67a7-414b-8b4f-3280728ec6ab": (0.03, 0.3)},
+    "flight_account_002_btcusdtp.db": {"b7d1c461-28c7-4b2a-9361-78930adc1bd3": (1.0, 0.01)},
 }
 MONEY = ("notional_size", "capital_at_risk", "risk_usd", "pnl_and_cost")
 WATCHED = ("size", "size_source", "size_migrated_at") + MONEY
@@ -60,6 +62,8 @@ def plan(db_name, rows, now):
         upd = {}
         size = r["size"]
         fix = SIZE_FIXES.get(db_name, {}).get(r["id"])
+        if fix is not None and abs((size or 0) - fix[1]) < 1e-12:
+            fix = None  # ya corregido en una corrida anterior: idempotente
         if fix is not None:
             assert abs((size or 0) - fix[0]) < 1e-12, (r["id"], size, fix)
             size = fix[1]

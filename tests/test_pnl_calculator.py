@@ -250,3 +250,19 @@ def test_indices_and_btc_are_verified_with_contract_size_1(asset, symbol):
     # MT5 Specification de IC Markets, 2026-10-20: contract size 1 en BTCUSD, US500 y USTEC.
     spec = resolve_spec(asset)
     assert (spec["symbol"], spec["contract_size"]) == (symbol, Decimal("1"))
+
+
+@pytest.mark.parametrize("asset, size, ok", [
+    ("US500", 0.1, True), ("US500", 0.3, True), ("US500", 1, True),
+    ("US500", 0.01, False),            # el caso real del 2026-10-20: un lote que no existe en IC Markets
+    ("US100", 0.03, False), ("US100", 0.15, False),   # menor que el mínimo / no es múltiplo de 0.1
+    ("BTCUSDT.P", 0.01, True), ("BTCUSDT.P", 0.005, False),
+    ("XAUUSDT.P", 0.05, True), ("XAUUSDT.P", 0.015, False),
+    ("EURUSD", 0.001, True),           # sin regla cargada: no se juzga
+    (None, 0.01, True),
+])
+def test_lot_size_problem_follows_the_broker_minimum_and_step(asset, size, ok):
+    problem = pnl_calculator.lot_size_problem(asset, size)
+    assert (problem is None) == ok
+    if not ok:
+        assert "lote" in problem
