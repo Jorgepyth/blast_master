@@ -35,8 +35,8 @@ def test_size_as_decimal_input_still_exact():
     assert ta.risk_usd == Decimal("8.00")
 
 
-@pytest.mark.parametrize("asset", ["BTCUSDT.P", "US100"])
-def test_unverified_symbol_nulls_risk_and_warns(asset, caplog):
+@pytest.mark.parametrize("asset", ["TESTUNV.P", "TESTUNV"])
+def test_unverified_symbol_nulls_risk_and_warns(asset, caplog, unverified_symbol):
     with caplog.at_level(logging.WARNING, logger="cli.schemas.audit_tactical"):
         ta = _mk(asset=asset, entry_price=100.0, stop_loss=99.0, take_profit=102.0,
                  closing_price=98.0)
@@ -123,10 +123,10 @@ def test_2f_lot_other_than_0_01_scales_by_size_and_contract_size():
     assert ta.pnl_and_cost == Decimal("35.40")
 
 
-def test_2f_unverified_symbol_nulls_all_money_fields():
+def test_2f_unverified_symbol_nulls_all_money_fields(unverified_symbol):
     """Símbolo NO VERIFICADO -> los 4 campos monetarios adicionales quedan None
     (no un número sin contract_size), mismo patrón ya probado para risk_usd."""
-    ta = _mk(asset="BTCUSDT.P", entry_price=79000.0, stop_loss=78000.0,
+    ta = _mk(asset="TESTUNV.P", entry_price=79000.0, stop_loss=78000.0,
              take_profit=81000.0, closing_price=77500.0, size=0.05)
     assert ta.notional_size is None
     assert ta.capital_at_risk is None

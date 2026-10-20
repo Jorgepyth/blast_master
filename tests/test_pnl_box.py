@@ -57,8 +57,8 @@ def test_accept_returns_accept():
 # --------------------------------------------------------------------------- #
 # símbolo NO VERIFICADO / desconocido / None -> N/A, sin bloquear
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("asset", ["BTCUSDT.P", "US100", "EURUSD"])
-def test_unverified_or_unknown_symbol_shows_na_and_still_returns(asset):
+@pytest.mark.parametrize("asset", ["TESTUNV.P", "TESTUNV", "EURUSD"])
+def test_unverified_or_unknown_symbol_shows_na_and_still_returns(asset, unverified_symbol):
     choice, out = _run(asset, 79000, 0.05, 78000, 81000, pick="accept")
     assert choice == "accept"                       # el wizard puede avanzar igual
     assert "N/A (símbolo no verificado)" in out

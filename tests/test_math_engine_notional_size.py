@@ -69,12 +69,12 @@ def test_2c_no_contract_size_is_regression_negative_for_risk_and_capital():
     assert r_default["capital_at_risk"] == r_none["capital_at_risk"] == Decimal("0.0800")
 
 
-def test_recalculate_tactical_math_propagates_none_for_unverified_asset():
+def test_recalculate_tactical_math_propagates_none_for_unverified_asset(unverified_symbol):
     """El repair flow (cli/main.py:recalculate_tactical_math) resuelve contract_size
     vía pnl_calculator; para un asset NO VERIFICADO pasa None y no truena."""
     from tools import pnl_calculator
     with pytest.raises(pnl_calculator.UnverifiedSymbolError):
-        pnl_calculator.resolve_spec("BTCUSDT.P")
+        pnl_calculator.resolve_spec("TESTUNV.P")
     # None se propaga como multiplicador 1 -> calculate_algebraic_metrics no falla
     r = calculate_algebraic_metrics(**_BASE, contract_size=None)
     assert r["notional_size"] == Decimal("27.4292")

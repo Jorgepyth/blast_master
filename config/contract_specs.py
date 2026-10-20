@@ -29,18 +29,23 @@ CONTRACT_SPECS = {
         "derived_at": "2026-09-03",
     },
     "BTCUSD": {
-        "contract_size": None,
-        "confidence": "NO VERIFICADO",
-        "empirical_hint": Decimal("1.000213"),  # solo referencia — nunca usado en el cálculo
-        "source": "ReportHistory-87050257.xlsx · Positions · n=5",
-        "derived_at": "2026-09-03",
+        "contract_size": Decimal("1"),
+        "confidence": "VERIFICADO",
+        "source": "MT5 Specification (IC Markets), 2026-10-20 · cruzado con el margen por lote (165.73 / 0.002 = precio) "
+                  "y con el hint del reporte (1.000213)",
+        "derived_at": "2026-10-20",
     },
-    "NAS100": {
-        "contract_size": None,
-        "confidence": "NO VERIFICADO",
-        "empirical_hint": None,  # n=1, insuficiente incluso como hint
-        "source": "ReportHistory-87050257.xlsx · Positions · n=1",
-        "derived_at": "2026-09-03",
+    "US500": {
+        "contract_size": Decimal("1"),
+        "confidence": "VERIFICADO",
+        "source": "MT5 Specification (IC Markets), 2026-10-20 · cruzado con el margen por lote (38.67 / 0.005 = precio)",
+        "derived_at": "2026-10-20",
+    },
+    "USTEC": {
+        "contract_size": Decimal("1"),
+        "confidence": "VERIFICADO",
+        "source": "MT5 Specification (IC Markets), 2026-10-20 · cruzado con el margen por lote (148.57 / 0.005 = precio)",
+        "derived_at": "2026-10-20",
     },
 }
 # --- end generated block ---
@@ -52,5 +57,5 @@ CONTRACT_SPECS = {
 SYMBOL_ALIASES = {
     "XAUUSDT.P": "XAUUSD",
     "BTCUSDT.P": "BTCUSD",
-    "US100": "NAS100",
+    "US100": "USTEC",   # antes "NAS100" (NO VERIFICADO, n=1); desde el 2026-10-20, el símbolo MT5 verificado
 }

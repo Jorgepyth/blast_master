@@ -76,8 +76,8 @@ def test_leg_usd_no_float_noise():
 # --------------------------------------------------------------------------- #
 # pnl_calculator -- rechazo de simbolos NO VERIFICADO / desconocidos
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("asset", ["BTCUSDT.P", "BTCUSD", "US100", "NAS100"])
-def test_unverified_symbol_raises_and_never_returns_number(asset):
+@pytest.mark.parametrize("asset", ["TESTUNV.P", "TESTUNV"])
+def test_unverified_symbol_raises_and_never_returns_number(asset, unverified_symbol):
     with pytest.raises(UnverifiedSymbolError) as exc:
         quantify(asset, 78000, Decimal("0.01"), 77000, 80000)
     msg = str(exc.value)
@@ -243,3 +243,10 @@ def test_real_report_segments_and_verifies_xauusd():
         if sym in summary:
             assert summary[sym]["confidence"] == "NO VERIFICADO"
             assert summary[sym]["contract_size"] is None
+
+
+@pytest.mark.parametrize("asset, symbol", [("BTCUSDT.P", "BTCUSD"), ("US500", "US500"), ("US100", "USTEC")])
+def test_indices_and_btc_are_verified_with_contract_size_1(asset, symbol):
+    # MT5 Specification de IC Markets, 2026-10-20: contract size 1 en BTCUSD, US500 y USTEC.
+    spec = resolve_spec(asset)
+    assert (spec["symbol"], spec["contract_size"]) == (symbol, Decimal("1"))

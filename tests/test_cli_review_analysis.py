@@ -207,9 +207,9 @@ def test_detail_panel_shows_persisted_risk_usd_not_recomputed(mock_select, _med,
 
 @patch("tools.database.engine_default")
 @patch("InquirerPy.inquirer.select")
-def test_detail_panel_na_for_unverified_symbol_with_null_risk(mock_select, _med, in_memory_db):
+def test_detail_panel_na_for_unverified_symbol_with_null_risk(mock_select, _med, in_memory_db, unverified_symbol):
     tools.database.engine_default = in_memory_db
-    _seed_detail(in_memory_db, uid="nv-1", asset="BTCUSDT.P", ta_kwargs=dict(
+    _seed_detail(in_memory_db, uid="nv-1", asset="TESTUNV.P", ta_kwargs=dict(
         entry_price=79000.0, closing_price=78000.0, size=0.05, stop_loss=78000.0,
         take_profit=81000.0, mae_adverse=0.1, mfe_favorable=2.0, could_hit_tp="no",
         risk_usd=None, notional_size=None, capital_at_risk=None,

@@ -104,3 +104,18 @@ sys.addaudithook(_guard_forbidden_paths)
 def _isolated_cwd(tmp_path, monkeypatch):
     """RF-16: todo test arranca en su propio tmp_path vacío, nunca en la raíz del repo."""
     monkeypatch.chdir(tmp_path)
+
+
+@pytest.fixture
+def unverified_symbol(monkeypatch):
+    """Un símbolo NO VERIFICADO de prueba (`TESTUNV`, alias `TESTUNV.P`). Desde el 2026-10-20 todos los símbolos reales
+    tienen contract size verificado, así que los tests del camino "no verificado" usan este."""
+    from config import contract_specs
+    from tools import pnl_calculator
+    spec = {"contract_size": None, "confidence": "NO VERIFICADO", "source": "test", "derived_at": "test"}
+    # Los dos objetos: el de config y el que importó pnl_calculator (pueden diferir si un test recargó el módulo).
+    for specs, aliases in ((contract_specs.CONTRACT_SPECS, contract_specs.SYMBOL_ALIASES),
+                           (pnl_calculator.CONTRACT_SPECS, pnl_calculator.SYMBOL_ALIASES)):
+        monkeypatch.setitem(specs, "TESTUNV", spec)
+        monkeypatch.setitem(aliases, "TESTUNV.P", "TESTUNV")
+    return "TESTUNV"
