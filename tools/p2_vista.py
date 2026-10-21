@@ -212,10 +212,11 @@ def resolution_summary(db_path: str, trade_id: str, bank_root: str, anchor: date
         hit = res.outcome == OUTCOME_CONFIRMED
         title = "Tocó el objetivo" if hit else "Tocó la invalidación"
         s4 = "en S4 estricto, acierto" if hit and hours <= cfg.S4_WINDOW_H else "en S4 estricto, falla"
-        return {"title": title, "note": f"a las {hours:.0f} h · {s4}", "resolved": True, "hours_left": None}
+        return {"title": title, "note": f"a las {hours:.0f} h · {s4}", "resolved": True, "hours_left": None,
+                "winner": "target" if hit else "invalidation"}
     if res is not None and res.outcome == OUTCOME_OPEN:
         return {"title": "Sin toque", "note": "no tocó ningún nivel en todo el horizonte · en S4 estricto, falla",
-                "resolved": True, "hours_left": None}
+                "resolved": True, "hours_left": None, "winner": "none"}
     if not by_time["resolved"]:
         return {"title": "Abierto", "note": f"faltan {left:.0f} h para las 48 h", **by_time}
     reason = proposal.reason or (res.outcome if res else "")
@@ -251,6 +252,54 @@ def systematic_p0(trade_id: str, symbol: Optional[str], anchor: datetime, bank_r
             "rows": rows}
 
 
+def edge_comparison(db_path: str, trade_id: str, thesis_dir: int, models: List[dict], p0: dict, result: dict) -> dict:
+    """El bias final del edge, con los cinco P manuales y con el P0 y el P2 sistemáticos (P1, P3 y P4 manuales), y qué
+    habría pasado con cada uno. El lado sistemático exige el P0, así que solo existe con el análisis resuelto."""
+    from cli.main import determine_market_bias, get_dir_val, get_str_val
+    from core.math_engine import calculate_edge_score
+    layers = [operator_layer(db_path, trade_id, f"P{k}") for k in range(5)]
+    xs = [float(L["value"]) for L in layers]
+    words = {"Bullish": "Alcista", "Bearish": "Bajista"}
+
+    def outcome(bias: str) -> dict:
+        d = 1 if bias == "Bullish" else -1 if bias == "Bearish" else 0
+        winner = result.get("winner")
+        if not result.get("resolved") or winner is None:
+            return {"verdict": "pendiente", "text": "el análisis sigue abierto"}
+        if d == 0:
+            return {"verdict": "none", "text": "no opina"}
+        if thesis_dir == 0:
+            return {"verdict": "none", "text": "sin niveles para medirlo"}
+        if winner == "none":
+            return {"verdict": "miss", "text": "falla: no tocó ningún nivel"}
+        right = thesis_dir if winner == "target" else -thesis_dir
+        return {"verdict": "hit" if d == right else "miss",
+                "text": "acierta" if d == right else "falla"}
+
+    def side(label: str, values: List[float], note: str) -> dict:
+        score = calculate_edge_score(*values)
+        bias = determine_market_bias(score)
+        return {"label": label, "score": round(score, 3), "bias": words.get(bias, "Choppy"), "note": note,
+                **outcome(bias)}
+
+    manual = side("Análisis manual", xs, "P0 a P4 como los cargaste")
+    ok_p2 = [m for m in models if m.get("status") == STATUS_OK]
+    ok_p2 = sorted(ok_p2, key=lambda m: m["name"] != "D600")
+    if p0.get("hidden"):
+        return {"manual": manual, "systematic": None, "reason": "El P0 sistemático se ve con el análisis resuelto."}
+    if p0.get("status") != STATUS_OK or not ok_p2:
+        return {"manual": manual, "systematic": None,
+                "reason": "El sistema no da P0 o P2 para este análisis, así que no hay bias sistemático."}
+    x0 = get_dir_val(p0.get("direction")) * get_str_val(p0.get("strength"))
+    p2m = ok_p2[0]
+    sysv = list(xs)
+    sysv[0], sysv[2] = float(x0), float(p2m["rescaled"])
+    systematic = side("Bias sistemático", sysv, f"P0 {p0['model']} y P2 {p2m['name']}; P1, P3 y P4 manuales")
+    return {"manual": manual, "systematic": systematic, "reason": None,
+            "layers": [{"name": f"P{k}", "manual": xs[k],
+                        "systematic": sysv[k], "is_sys": k in (0, 2)} for k in range(5)]}
+
+
 def build_view(db_path: str, trade_id: str, data_dir: Optional[str] = None, bank_root: Optional[str] = None,
                log_path: Optional[str] = None, models: Optional[Sequence[str]] = None,
                now: Optional[datetime] = None, p0_log_path: Optional[str] = None) -> dict:
@@ -277,18 +326,21 @@ def build_view(db_path: str, trade_id: str, data_dir: Optional[str] = None, bank
     if row.edge_validation_price is not None and row.structural_invalidation is not None:
         thesis_dir = 1 if row.edge_validation_price > row.structural_invalidation else -1
     result = resolution_summary(db_path, row.trade_id, bank_root, anchor, now)
+    p2_models = systematic_p2(row.trade_id, symbol, anchor, bank_root, log_path, models, weekly)
+    p0_view = systematic_p0(row.trade_id, symbol, anchor, bank_root, p0_log_path) if result["resolved"] \
+        else {"hidden": True, "hours_left": result["hours_left"]}
     return {
         "generated_at": (now or datetime.now()).strftime("%Y-%m-%d %H:%M"),
         "analysis": {"id": row.trade_id, "id8": row.trade_id[:8], "asset": row.asset, "symbol": symbol,
                      "anchor_ms": _epoch_ms(anchor), "thesis_dir": thesis_dir, "is_backdated": bool(row.is_backdated),
                      "evp": row.edge_validation_price, "si": row.structural_invalidation},
         "operator": operator_layer(db_path, row.trade_id),
-        "models": systematic_p2(row.trade_id, symbol, anchor, bank_root, log_path, models, weekly),
+        "models": p2_models,
         "charts": charts,
         "result": result,
         "operator_p0": operator_layer(db_path, row.trade_id, "P0"),
-        "p0": systematic_p0(row.trade_id, symbol, anchor, bank_root, p0_log_path) if result["resolved"]
-        else {"hidden": True, "hours_left": result["hours_left"]},
+        "p0": p0_view,
+        "comparison": edge_comparison(db_path, row.trade_id, thesis_dir, p2_models, p0_view, result),
         "scale_words": {str(k): v for k, v in SCALE_WORDS.items()},
     }
 
@@ -522,6 +574,8 @@ footer p { margin: 4px 0; }
         <span><i class="key-line" style="background: var(--ema20)"></i>EMA 20</span>
         <span><i class="key-line" style="background: var(--ema100)"></i>EMA 100</span>
         <span><i class="key-line" style="background: var(--ema200)"></i>EMA 200</span>
+        <span><i class="key-line" style="background: var(--ema200); height: 0; border-top: 2px dashed var(--ema200)"></i>Precio de validación</span>
+        <span><i class="key-line" style="background: var(--ema100); height: 0; border-top: 2px dashed var(--ema100)"></i>Precio de invalidación</span>
       </div>
       <div class="chart-box" id="chart-box">
         <svg class="chart" id="chart" tabindex="0" role="img"></svg>
@@ -535,9 +589,14 @@ footer p { margin: 4px 0; }
   </section>
   <div id="model-sections"></div>
   <section aria-labelledby="t-lectura">
-    <h2 id="t-lectura">Tu lectura del P2</h2>
-    <p class="sub small">Lo que escribiste al cargar el análisis.</p>
-    <p class="thesis" id="thesis"></p>
+    <h2 id="t-lectura">Bias final: manual contra sistemático</h2>
+    <p class="sub small">El edge con tus cinco capas contra el edge con el P0 y el P2 sistemáticos (P1, P3 y P4 quedan como los cargaste), y qué habría pasado con cada uno.</p>
+    <div class="tbl"><table id="tbl-cmp"></table></div>
+    <p class="callout" id="cmp-note"></p>
+    <details>
+      <summary>Lo que escribiste en el P2</summary>
+      <p class="thesis" id="thesis"></p>
+    </details>
   </section>
   <footer>
     <p id="generated"></p>
@@ -653,6 +712,24 @@ footer p { margin: 4px 0; }
   }
   document.getElementById("thesis").textContent = OP.thesis || "Sin texto.";
 
+  /* Bias final: manual contra sistemático */
+  (function () {
+    const C = D.comparison, t = document.getElementById("tbl-cmp"), note = document.getElementById("cmp-note");
+    const cols = [C.manual].concat(C.systematic ? [C.systematic] : []);
+    const hd = el("thead"), h = el("tr");
+    h.appendChild(el("th", null, ""));
+    cols.forEach(c => h.appendChild(el("th", null, c.label)));
+    hd.appendChild(h);
+    const bd = el("tbody");
+    const row = (name, f) => { const tr = el("tr"); tr.appendChild(el("td", null, name)); cols.forEach(c => tr.appendChild(f(c))); bd.appendChild(tr); };
+    row("Capas", c => el("td", null, c.note));
+    row("Índice del edge", c => el("td", null, fmt2s(c.score)));
+    row("Bias final", c => { const td = el("td"); td.appendChild(el("b", null, c.bias)); return td; });
+    row("Resultado", c => { const td = el("td", null, c.verdict === "hit" ? "✓ " + c.text : c.verdict === "miss" ? "✗ " + c.text : c.text); return td; });
+    t.replaceChildren(hd, bd);
+    note.textContent = C.reason || "Acierta si el bias apunta al lado que tocó primero (objetivo o invalidación); Choppy no opina; si no tocó nada en 48 h, un bias direccional falla.";
+  })();
+
   /* P0: el del operador siempre; el sistemático solo con el análisis resuelto */
   const P0 = D.p0, OP0 = D.operator_p0;
   const STR = { Strong: "fuerte", Mid: "media", Weak: "débil" };
@@ -724,9 +801,11 @@ footer p { margin: 4px 0; }
     const last = showAfter ? c.bars.length - 1 : nb - 1;
     const idx = []; for (let i = 0; i <= last; i++) idx.push(i);
     const W = Math.max(300, box.clientWidth), H = chart.clientHeight || 360;
-    const m = { l: 52, r: 66, t: 16, b: 26 }, pw = W - m.l - m.r, ph = H - m.t - m.b;
+    const m = { l: 52, r: 120, t: 16, b: 26 }, pw = W - m.l - m.r, ph = H - m.t - m.b;
     let lo = Infinity, hi = -Infinity;
     for (const i of idx) { const b = c.bars[i]; lo = Math.min(lo, b[3], c.ema20[i], c.ema100[i], c.ema200[i]); hi = Math.max(hi, b[2], c.ema20[i], c.ema100[i], c.ema200[i]); }
+    const levels = [["Validación", A.evp, "var(--ema200)"], ["Invalidación", A.si, "var(--ema100)"]].filter(l => l[1] != null);
+    for (const l of levels) { lo = Math.min(lo, l[1]); hi = Math.max(hi, l[1]); }
     const pad = (hi - lo) * 0.05 || 1; lo -= pad; hi += pad;
     const step = pw / idx.length, X = k => m.l + step * (k + 0.5), Y = v => m.t + (hi - v) / (hi - lo) * ph;
     view = { c: c, idx: idx, X: X, step: step, m: m, W: W };
@@ -774,6 +853,10 @@ footer p { margin: 4px 0; }
       if ((prev && e.y - prev.y < 13) || (next && next.y - e.y < 13)) return;
       const t = svg("text", { x: m.l + pw + 6, y: e.y + 4, class: "elabel" }); t.textContent = e.label; g.push(t);
     });
+    for (const l of levels) {
+      g.push(svg("line", { x1: m.l, x2: m.l + pw, y1: Y(l[1]), y2: Y(l[1]), stroke: l[2], "stroke-width": 1.5, "stroke-dasharray": "6 4" }));
+      const t = svg("text", { x: m.l + pw + 6, y: Y(l[1]) + 4, class: "elabel" }); t.textContent = l[0] + " " + fmt0.format(l[1]); g.push(t);
+    }
     g.push(svg("line", { id: "cross", x1: 0, x2: 0, y1: m.t, y2: m.t + ph, stroke: "var(--muted)", "stroke-width": 1, visibility: "hidden" }));
     chart.replaceChildren.apply(chart, g);
     renderTable(c);
