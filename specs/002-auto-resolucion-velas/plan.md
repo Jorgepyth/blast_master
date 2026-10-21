@@ -293,8 +293,11 @@ test lo verifica (RF-18).
   tocó la invalidación. Dice hasta dónde llegó el precio después del nivel. El otro lado sigue hasta la vela del toque.
   Motivo: en 83 audits, los valores que el usuario cargaba a mano antes del backfill seguían esa idea en el MFE (a
   0.20 R de la cumbre de 48 h, contra 0.53 R de la regla anterior). Ejemplo: 20689cfd (US500, Long, objetivo 7737) pasa
-  de MFE 7737.2 a 7780.7. Si el banco todavía no cubre las 48 h, se usa lo que hay. El backfill muestra como conflicto
-  los audits guardados con la regla anterior.
+  de MFE 7737.2 a 7780.7. El backfill muestra como conflicto los audits guardados con la regla anterior.
+- **Corrección del 2026-10-21:** mientras el banco no llegue a las 48 h, el lado del nivel tocado queda **pendiente**
+  (no se propone). Antes se usaba lo que hubiera, y el valor cambiaba en cada export: el backfill del 2026-10-21 escribió
+  en BTC 0ea8c771 un MFE de 84,749.68, cuando el ensayo de tres horas antes daba 83,798.22. El backfill lo llena cuando
+  cierra la ventana. El otro lado, hasta la vela del toque, ya es final y se propone igual.
 - El resultado son precios, con la precisión del CSV.
 
 **Aclaraciones de T27** (`resolve_analysis`, `start_price`):

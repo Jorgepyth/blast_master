@@ -78,7 +78,8 @@ Modelo de datos real: 7 tablas (`unified_department`, `analysis_layer`, `efficie
     el precio.
   - **MAE/MFE estructurales (cambio del 2026-10-16, plan.md §3.4):** el lado del nivel tocado se mide hasta las 48 h
     desde el ancla (hasta dónde llegó el precio); el otro, hasta la vela del toque. Los audits guardados antes aparecen
-    como conflicto en el backfill.
+    como conflicto en el backfill. Desde el 2026-10-21, mientras no pasen las 48 h ese lado queda vacío (pendiente) y
+    lo llena el backfill cuando cierra la ventana.
   - **Overlap es solo una etiqueta (N36, N52):** las propuestas siguen al primer toque. "Overlap Invalidation" se puede
     elegir a mano, pero nunca se propone.
   - **Export automático (`AUTO_EXPORT=true` en el `.env` del principal):** corre al abrir el CLI y al guardar un

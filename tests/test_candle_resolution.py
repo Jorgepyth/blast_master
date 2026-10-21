@@ -447,8 +447,8 @@ ANCHOR = T0 + timedelta(minutes=10, seconds=30)  # 00:10:30: la última vela cer
 def test_long_confirmed_with_start_price_r_and_hand_checked_mae_and_mfe():
     # Partida 100 (cierre de la vela de 00:09). Camino: 00:11 baja a 97.5, 00:13 sube a 104, 00:15 toca 110.5.
     # Después del toque, 00:17 baja a 80: no cuenta, la resolución ya ocurrió.
-    bank = {"1M": _candles("1M", T0, 30, {11: (101.0, 97.5, 100.0), 13: (104.0, 99.0, 100.0),
-                                           15: (110.5, 99.0, 100.0), 17: (101.0, 80.0, 100.0)})}
+    bank = {"1M": _candles("1M", T0, 48 * 60 + 30, {11: (101.0, 97.5, 100.0), 13: (104.0, 99.0, 100.0),
+                                                     15: (110.5, 99.0, 100.0), 17: (101.0, 80.0, 100.0)})}
 
     result = resolve_analysis(ANCHOR, bank, 110.0, 90.0)
 
@@ -459,8 +459,8 @@ def test_long_confirmed_with_start_price_r_and_hand_checked_mae_and_mfe():
 
 def test_short_confirmed_mae_is_the_highest_price_and_mfe_the_lowest():
     # Validación abajo (90), invalidación arriba (110): tesis short. 00:11 sube a 102.5, 00:12 baja a 95, 00:14 toca 89.5.
-    bank = {"1M": _candles("1M", T0, 30, {11: (102.5, 99.0, 100.0), 12: (101.0, 95.0, 100.0),
-                                           14: (101.0, 89.5, 100.0)})}
+    bank = {"1M": _candles("1M", T0, 48 * 60 + 30, {11: (102.5, 99.0, 100.0), 12: (101.0, 95.0, 100.0),
+                                                     14: (101.0, 89.5, 100.0)})}
 
     result = resolve_analysis(ANCHOR, bank, 90.0, 110.0)
 
@@ -469,7 +469,7 @@ def test_short_confirmed_mae_is_the_highest_price_and_mfe_the_lowest():
 
 
 def test_long_invalidated_mae_reaches_the_invalidation():
-    bank = {"1M": _candles("1M", T0, 30, {12: (103.0, 99.0, 100.0), 14: (101.0, 89.0, 100.0)})}
+    bank = {"1M": _candles("1M", T0, 48 * 60 + 30, {12: (103.0, 99.0, 100.0), 14: (101.0, 89.0, 100.0)})}
 
     result = resolve_analysis(ANCHOR, bank, 120.0, 90.0)  # objetivo más lejos que la invalidación: R es |100 - 90|
 
@@ -492,16 +492,16 @@ def test_after_hitting_the_target_the_mfe_keeps_going_for_48_hours_and_the_mae_d
 
 def test_after_hitting_the_invalidation_the_mae_keeps_going_for_48_hours_and_the_mfe_does_not():
     # Long: sube a 103 a las 00:12, toca 89 a las 00:14, sigue bajando a 84 a las 00:30 y después sube a 125 (no cuenta).
-    bank = {"1M": _candles("1M", T0, 120, {12: (103.0, 99.0, 100.0), 14: (101.0, 89.0, 100.0),
-                                           30: (101.0, 84.0, 100.0), 40: (125.0, 99.0, 100.0)})}
+    bank = {"1M": _candles("1M", T0, 48 * 60 + 30, {12: (103.0, 99.0, 100.0), 14: (101.0, 89.0, 100.0),
+                                                     30: (101.0, 84.0, 100.0), 40: (125.0, 99.0, 100.0)})}
     result = resolve_analysis(ANCHOR, bank, 120.0, 90.0)
     assert result.outcome == OUTCOME_INVALIDATED
     assert (result.structural_mae, result.structural_mfe) == (84.0, 103.0)
 
 
 def test_short_after_hitting_the_target_the_mfe_is_the_lowest_price_in_48_hours():
-    bank = {"1M": _candles("1M", T0, 60, {11: (102.5, 99.0, 100.0), 14: (101.0, 89.5, 100.0),
-                                          20: (101.0, 85.0, 100.0), 30: (115.0, 99.0, 100.0)})}
+    bank = {"1M": _candles("1M", T0, 48 * 60 + 30, {11: (102.5, 99.0, 100.0), 14: (101.0, 89.5, 100.0),
+                                                     20: (101.0, 85.0, 100.0), 30: (115.0, 99.0, 100.0)})}
     result = resolve_analysis(ANCHOR, bank, 90.0, 110.0)
     assert result.outcome == OUTCOME_CONFIRMED
     assert (result.structural_mae, result.structural_mfe) == (102.5, 85.0)
@@ -512,6 +512,29 @@ def test_a_touch_after_48_hours_is_never_cut_before_the_touch_candle():
     bank = {"1M": _candles("1M", T0, 50 * 60, {49 * 60: (110.5, 99.0, 100.0)})}
     result = resolve_analysis(ANCHOR, bank, 110.0, 90.0)
     assert result.outcome == OUTCOME_CONFIRMED and result.structural_mfe == 110.5
+
+
+def test_while_the_48_hours_are_not_in_the_bank_the_touched_side_is_pending_and_the_other_side_is_final():
+    # Confirmado a las 00:15 con solo 2 h de velas: el MFE sigue abierto (None); el MAE, hasta el toque, ya es final.
+    bank = {"1M": _candles("1M", T0, 120, {11: (101.0, 97.5, 100.0), 15: (110.5, 99.0, 100.0)})}
+    result = resolve_analysis(ANCHOR, bank, 110.0, 90.0)
+    assert result.outcome == OUTCOME_CONFIRMED
+    assert (result.structural_mae, result.structural_mfe) == (97.5, None)
+
+
+def test_invalidated_with_the_window_still_open_leaves_the_mae_pending():
+    bank = {"1M": _candles("1M", T0, 120, {12: (103.0, 99.0, 100.0), 14: (101.0, 89.0, 100.0)})}
+    result = resolve_analysis(ANCHOR, bank, 120.0, 90.0)
+    assert result.outcome == OUTCOME_INVALIDATED
+    assert (result.structural_mae, result.structural_mfe) == (None, 103.0)
+
+
+def test_the_touched_side_is_filled_as_soon_as_the_bank_reaches_the_48_hours():
+    # Las 48 h desde el ancla (00:10:30) cierran a las 48:10:30; la vela de 48:10 cierra a las 48:11, ya alcanza.
+    special = {11: (101.0, 97.5, 100.0), 15: (110.5, 99.0, 100.0), 20: (118.0, 99.0, 100.0)}
+    short = resolve_analysis(ANCHOR, {"1M": _candles("1M", T0, 48 * 60 + 10, special)}, 110.0, 90.0)
+    full = resolve_analysis(ANCHOR, {"1M": _candles("1M", T0, 48 * 60 + 11, special)}, 110.0, 90.0)
+    assert short.structural_mfe is None and full.structural_mfe == 118.0
 
 
 @pytest.mark.parametrize("evp, si", [(105.0, 108.0), (92.0, 95.0), (100.0, 90.0), (None, 90.0), (110.0, None)])
@@ -818,7 +841,8 @@ def _near_miss_bank(specials, n=60):
 
 def test_an_exception_moves_the_touch_to_the_closest_candle_before_the_real_first_touch():
     # 00:20 llega a 109.9 (no toca 110); 00:25 vuelve a 109.9 (empate: vale la primera); 00:40 toca la invalidación.
-    bank = _near_miss_bank({20: (109.9, 99.0, 100.0), 25: (109.9, 99.0, 100.0), 40: (101.0, 89.5, 100.0)})
+    bank = _near_miss_bank({20: (109.9, 99.0, 100.0), 25: (109.9, 99.0, 100.0), 40: (101.0, 89.5, 100.0)},
+                           n=48 * 60 + 30)
     assert resolve_analysis(ANCHOR, bank, 110.0, 90.0).outcome == OUTCOME_INVALIDATED
 
     resolution = resolve_analysis(ANCHOR, bank, 110.0, 90.0, touched_level=LEVEL_VALIDATION)

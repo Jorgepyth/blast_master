@@ -368,6 +368,8 @@ def resolve_analysis(
       5. primer toque (`resolve_first_touch`) y, si lo hubo, MAE y MFE estructurales (plan.md §3.4): el lado del nivel
          tocado (el MFE si se tocó el objetivo, el MAE si se tocó la invalidación) es el extremo del camino hasta las
          48 h desde el ancla, y nunca antes de la vela del toque; el otro lado, el extremo hasta la vela del toque.
+         Mientras el banco no llegue a las 48 h, el lado del nivel tocado queda en `None` (pendiente): el backfill lo
+         llena cuando cierre la ventana, en vez de guardar un extremo que todavía puede cambiar.
 
     `touched_level` (N46) es el nivel que el operador vio tocado en su gráfico aunque el banco no llegue
     (`LEVEL_VALIDATION` o `LEVEL_INVALIDATION`): ver `_excepted_touch`.
@@ -393,8 +395,11 @@ def resolve_analysis(
     if touch.outcome in (OUTCOME_CONFIRMED, OUTCOME_INVALIDATED):
         low, high = _extremes_through_touch(anchor, candles_by_timeframe, touch)
         mae, mfe = (low, high) if thesis == "long" else (high, low)
-        w_low, w_high = _extremes_through_touch(anchor, candles_by_timeframe, touch,
-                                                window_end=anchor + timedelta(hours=STRUCTURAL_WINDOW_H))
+        window_end = anchor + timedelta(hours=STRUCTURAL_WINDOW_H)
+        if bank_coverage(candles_by_timeframe).end < window_end:
+            w_low = w_high = None  # la ventana sigue abierta: el extremo todavía puede cambiar
+        else:
+            w_low, w_high = _extremes_through_touch(anchor, candles_by_timeframe, touch, window_end=window_end)
         if touch.outcome == OUTCOME_CONFIRMED:
             mfe = w_high if thesis == "long" else w_low
         else:
